@@ -1,0 +1,105 @@
+import { z } from 'zod';
+
+/** Discord IDs are snowflakes: decimal strings, currently 17-20 digits. */
+export const discordSnowflake = z
+  .string()
+  .regex(/^\d{17,20}$/, 'must be a Discord snowflake (17-20 digits)');
+
+const nodeEnv = z.enum(['development', 'test', 'production']).default('development');
+const logLevel = z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).default('info');
+
+/** A secret long enough to be worth calling a secret. */
+const secret = (min = 32) => z.string().min(min, `must be at least ${min} characters`);
+
+export const runtimeSchema = z.object({
+  NODE_ENV: nodeEnv,
+  LOG_LEVEL: logLevel,
+});
+
+export const datastoreSchema = z.object({
+  DATABASE_URL: z.url({ protocol: /^postgres(ql)?$/ }),
+  REDIS_URL: z.url({ protocol: /^rediss?$/ }),
+});
+
+export const authSchema = z.object({
+  AUTH_SECRET: secret(32),
+  AUTH_DISCORD_ID: discordSnowflake,
+  AUTH_DISCORD_SECRET: z.string().min(1),
+  /** Auth.js needs the canonical origin to build callback URLs behind proxies. */
+  AUTH_URL: z.url().optional(),
+  AUTH_TRUST_HOST: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+});
+
+export const discordSchema = z.object({
+  DISCORD_BOT_TOKEN: z.string().min(1),
+  DISCORD_APPLICATION_ID: discordSnowflake,
+  DISCORD_GUILD_ID: discordSnowflake,
+});
+
+/**
+ * Object storage. Optional outside production so a fresh clone runs against the
+ * local filesystem driver; required in production so uploads never silently
+ * land somewhere ephemeral.
+ */
+export const storageSchema = z.object({
+  R2_ACCOUNT_ID: z.string().min(1).optional(),
+  R2_ACCESS_KEY: z.string().min(1).optional(),
+  R2_SECRET_KEY: z.string().min(1).optional(),
+  R2_BUCKET: z.string().min(1).optional(),
+  /** Public base URL that fronts the bucket, used to build asset URLs. */
+  R2_PUBLIC_URL: z.url().optional(),
+});
+
+export const integrationsSchema = z.object({
+  TURNSTILE_SECRET: z.string().min(1).optional(),
+  SENTRY_DSN: z.url().optional(),
+});
+
+export const fivemSchema = z.object({
+  /** Shared secret used to sign requests between Xenon and the FiveM bridge. */
+  FIVEM_BRIDGE_SECRET: secret(32).optional(),
+  /** Base URL of the FXServer HTTP endpoint used for status and whitelist sync. */
+  FIVEM_SERVER_URL: z.url().optional(),
+});
+
+export const siteSchema = z.object({
+  NEXT_PUBLIC_SITE_URL: z.url(),
+  NEXT_PUBLIC_TURNSTILE_SITE_KEY: z.string().min(1).optional(),
+});
+
+/**
+ * Integrations that may be stubbed in development but must be fully configured
+ * in production. Enforced here rather than at the call site so there is exactly
+ * one place that decides what "production ready" means.
+ */
+const productionRequired = [
+  ['R2_ACCOUNT_ID', 'object storage'],
+  ['R2_ACCESS_KEY', 'object storage'],
+  ['R2_SECRET_KEY', 'object storage'],
+  ['R2_BUCKET', 'object storage'],
+  ['R2_PUBLIC_URL', 'object storage'],
+  ['TURNSTILE_SECRET', 'abuse protection'],
+  ['NEXT_PUBLIC_TURNSTILE_SITE_KEY', 'abuse protection'],
+  ['FIVEM_BRIDGE_SECRET', 'FiveM bridge'],
+] as const satisfies readonly (readonly [string, string])[];
+
+export function enforceProductionIntegrations(
+  value: Record<string, unknown>,
+  ctx: z.RefinementCtx,
+): void {
+  if (value.NODE_ENV !== 'production') return;
+
+  for (const [key, subsystem] of productionRequired) {
+    if (!(key in value)) continue;
+    if (value[key] === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: [key],
+        message: `is required in production (${subsystem} would otherwise run unconfigured)`,
+      });
+    }
+  }
+}

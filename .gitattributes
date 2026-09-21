@@ -1,0 +1,15 @@
+# Normalise to LF in the repository regardless of the checkout platform, so a
+# Windows contributor and a Linux CI runner produce identical diffs.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.webp binary
+*.avif binary
+*.mp4 binary
+*.webm binary
+*.woff2 binary
+*.ico binary
+
+pnpm-lock.yaml linguist-generated=true
+packages/database/prisma/migrations/** linguist-generated=true

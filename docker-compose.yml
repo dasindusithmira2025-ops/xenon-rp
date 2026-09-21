@@ -1,0 +1,47 @@
+# Local development infrastructure for XenonRP.
+# Production runs managed Postgres/Redis; this file exists so a fresh clone has
+# a working stack with one command and never needs a hand-installed database.
+name: xenonrp
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: xenon
+      POSTGRES_PASSWORD: xenon
+      POSTGRES_DB: xenon
+      # Deterministic collation so index ordering matches production.
+      POSTGRES_INITDB_ARGS: '--locale-provider=icu --icu-locale=en-US --encoding=UTF8'
+    ports:
+      # Host port deliberately non-default: other projects on a dev machine
+      # commonly hold 5432. Container-internal port is unchanged.
+      - '5442:5432'
+    volumes:
+      # Postgres 18 images expect the mount one level up, at
+      # /var/lib/postgresql, so that pg_upgrade --link can work later.
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U xenon -d xenon']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    # appendonly keeps queued jobs across a restart of the dev stack.
+    command: ['redis-server', '--appendonly', 'yes']
+    ports:
+      - '6389:6379'
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:
+  redis-data:

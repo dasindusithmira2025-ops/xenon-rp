@@ -1,0 +1,44 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# build output
+dist/
+build/
+.next/
+out/
+*.tsbuildinfo
+.turbo/
+
+# env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# test output
+coverage/
+playwright-report/
+test-results/
+blob-report/
+.playwright/
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# os / editor
+.DS_Store
+Thumbs.db
+.idea/
+*.swp
+
+# local tooling state
+.kilo/
+.claude/settings.local.json
+
+# prisma local artifacts
+packages/database/prisma/*.db
+packages/database/generated/

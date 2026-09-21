@@ -1,0 +1,40 @@
+{
+  "name": "xenonrp",
+  "private": true,
+  "version": "0.1.0",
+  "description": "XenonRP \u00e2\u20ac\u201d the platform for the XENON ROLEPLAY community (web, Discord, FiveM).",
+  "packageManager": "pnpm@10.26.2",
+  "engines": {
+    "node": ">=24.17.0",
+    "pnpm": ">=10.20.0"
+  },
+  "type": "module",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:watch": "turbo run test:watch",
+    "test:e2e": "pnpm --filter @xenon/web test:e2e",
+    "format": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs,json,md,css,yml,yaml}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs,json,md,css,yml,yaml}\"",
+    "clean": "turbo run clean && rimraf node_modules",
+    "db:generate": "pnpm --filter @xenon/database generate",
+    "db:migrate": "pnpm --filter @xenon/database migrate",
+    "db:deploy": "pnpm --filter @xenon/database deploy",
+    "db:studio": "pnpm --filter @xenon/database studio",
+    "db:seed": "pnpm --filter @xenon/database seed",
+    "infra:up": "docker compose up -d",
+    "infra:down": "docker compose down",
+    "infra:reset": "docker compose down -v"
+  },
+  "devDependencies": {
+    "@xenon/config": "workspace:*",
+    "prettier": "3.9.8",
+    "prettier-plugin-tailwindcss": "0.8.1",
+    "rimraf": "6.1.3",
+    "turbo": "2.11.2",
+    "typescript": "6.0.3"
+  }
+}

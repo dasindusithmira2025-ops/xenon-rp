@@ -1,0 +1,6 @@
+pnpm-lock.yaml
+.next/
+dist/
+coverage/
+.turbo/
+packages/database/generated/
