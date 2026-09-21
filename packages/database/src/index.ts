@@ -3,3 +3,7 @@ export * from '../generated/client/client';
 
 // The configured singleton and the transaction-aware handle every service takes.
 export { prisma, type Db } from './client';
+export { allocatePublicId } from './public-id';
+
+// Type-level guard that core's domain unions still match the Prisma enums.
+import './enum-parity';

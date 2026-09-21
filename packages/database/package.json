@@ -16,15 +16,14 @@
     "seed": "tsx prisma/seed.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "clean": "rimraf generated .turbo *.tsbuildinfo"
+    "clean": "rimraf generated .turbo *.tsbuildinfo",
+    "grant-owner": "tsx prisma/grant-owner.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",
     "@prisma/client": "7.10.0",
     "@xenon/config": "workspace:*",
-    "@xenon/logger": "workspace:*",
+    "@xenon/core": "workspace:*",
     "pg": "8.23.0"
   },
   "devDependencies": {

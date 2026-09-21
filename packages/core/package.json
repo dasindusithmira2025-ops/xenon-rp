@@ -1,0 +1,23 @@
+{
+  "name": "@xenon/core",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rimraf .turbo coverage *.tsbuildinfo"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "@xenon/config": "workspace:*",
+    "eslint": "10.11.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}

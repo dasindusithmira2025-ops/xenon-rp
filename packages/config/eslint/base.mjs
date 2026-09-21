@@ -15,7 +15,16 @@ export function baseConfig(tsconfigRootDir) {
     {
       // Flat-config and build files are not part of any tsconfig project, so
       // type-aware linting cannot parse them.
-      ignores: ['dist/**', '.next/**', '.turbo/**', 'coverage/**', 'generated/**', '**/*.mjs', '**/*.cjs', '*.config.*'],
+      ignores: [
+        'dist/**',
+        '.next/**',
+        '.turbo/**',
+        'coverage/**',
+        'generated/**',
+        '**/*.mjs',
+        '**/*.cjs',
+        '*.config.*',
+      ],
     },
     js.configs.recommended,
     ...tseslint.configs.strictTypeChecked,

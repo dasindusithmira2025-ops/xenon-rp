@@ -1,14 +1,14 @@
 packages:
-  - "apps/*"
-  - "packages/*"
-  - "fivem/*"
+  - 'apps/*'
+  - 'packages/*'
+  - 'fivem/*'
 
 # Postinstall scripts are opt-in. These four need them: Prisma downloads its
 # query engine, esbuild and unrs-resolver install a native binary, and sharp
 # fetches platform-specific libvips.
 onlyBuiltDependencies:
-  - "@prisma/client"
-  - "@prisma/engines"
+  - '@prisma/client'
+  - '@prisma/engines'
   - esbuild
   - prisma
   - sharp

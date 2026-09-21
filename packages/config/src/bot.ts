@@ -1,11 +1,10 @@
-
 import { lazyEnv, parseEnv } from './parse';
 import {
   datastoreSchema,
   discordSchema,
-  enforceProductionIntegrations,
   fivemSchema,
   integrationsSchema,
+  requireInProduction,
   runtimeSchema,
   siteSchema,
 } from './schema';
@@ -18,13 +17,14 @@ import type { z } from 'zod';
  * Holds the bot token and no OAuth client secret: the bot never performs a
  * user-facing OAuth exchange.
  */
-const botSchema = runtimeSchema
-  .extend(datastoreSchema.shape)
-  .extend(discordSchema.shape)
-  .extend(integrationsSchema.shape)
-  .extend(fivemSchema.shape)
-  .extend({ NEXT_PUBLIC_SITE_URL: siteSchema.shape.NEXT_PUBLIC_SITE_URL })
-  .superRefine(enforceProductionIntegrations);
+const botSchema = requireInProduction(
+  runtimeSchema
+    .extend(datastoreSchema.shape)
+    .extend(discordSchema.shape)
+    .extend(integrationsSchema.shape)
+    .extend(fivemSchema.shape)
+    .extend({ NEXT_PUBLIC_SITE_URL: siteSchema.shape.NEXT_PUBLIC_SITE_URL }),
+);
 
 export type BotEnv = z.output<typeof botSchema>;
 

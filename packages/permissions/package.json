@@ -1,0 +1,28 @@
+{
+  "name": "@xenon/permissions",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rimraf .turbo coverage *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@xenon/core": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "@xenon/config": "workspace:*",
+    "@xenon/database": "workspace:*",
+    "eslint": "10.11.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  },
+  "//dependencyNote": "@xenon/database is type-only here - resolveActor takes a `Db` handle rather than importing a client - so it is a devDependency and the package graph stays one-way."
+}

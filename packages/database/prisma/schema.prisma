@@ -446,6 +446,11 @@ model ApplicationTemplate {
   departmentId String?
   department   Department? @relation(fields: [departmentId], references: [id], onDelete: SetNull)
 
+  /// Segment used in submission public ids: `WL` yields XN-WL-1842. Two to four
+  /// uppercase letters. Not unique, because the number is globally unique across
+  /// all submissions and so the identifier still resolves to exactly one row.
+  publicIdPrefix String
+
   status ApplicationTemplateStatus @default(DRAFT)
 
   /// Availability window. Null means unbounded in that direction.

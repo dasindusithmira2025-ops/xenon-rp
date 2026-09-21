@@ -5,8 +5,5 @@
   "printWidth": 100,
   "tabWidth": 2,
   "arrowParens": "always",
-  "endOfLine": "lf",
-  "plugins": ["prettier-plugin-tailwindcss"],
-  "tailwindStylesheet": "./apps/web/src/app/globals.css",
-  "tailwindFunctions": ["cn", "cva"]
+  "endOfLine": "lf"
 }

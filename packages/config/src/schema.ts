@@ -86,20 +86,35 @@ const productionRequired = [
   ['FIVEM_BRIDGE_SECRET', 'FiveM bridge'],
 ] as const satisfies readonly (readonly [string, string])[];
 
-export function enforceProductionIntegrations(
-  value: Record<string, unknown>,
-  ctx: z.RefinementCtx,
-): void {
-  if (value.NODE_ENV !== 'production') return;
+/**
+ * Wrap a schema so that production refuses to start with a stubbed integration.
+ *
+ * The set of keys to enforce is taken from the schema's own shape, captured
+ * here at construction time. Reading it from the parsed value instead would
+ * silently do nothing: Zod omits absent optional keys from its output, so
+ * `'R2_BUCKET' in value` is false in exactly the case the guard exists to
+ * catch, and production would boot with storage unconfigured.
+ *
+ * Each runtime therefore only has to answer for the integrations it actually
+ * declares - the bot is not asked about Turnstile, and the web tier is not
+ * asked about variables it never reads.
+ */
+export function requireInProduction<TShape extends z.ZodRawShape>(schema: z.ZodObject<TShape>) {
+  const declared = new Set(Object.keys(schema.shape));
 
-  for (const [key, subsystem] of productionRequired) {
-    if (!(key in value)) continue;
-    if (value[key] === undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        path: [key],
-        message: `is required in production (${subsystem} would otherwise run unconfigured)`,
-      });
+  return schema.superRefine((value, ctx) => {
+    const record = value as Record<string, unknown> & { NODE_ENV?: string };
+    if (record.NODE_ENV !== 'production') return;
+
+    for (const [key, subsystem] of productionRequired) {
+      if (!declared.has(key)) continue;
+      if (record[key] === undefined) {
+        ctx.addIssue({
+          code: 'custom',
+          path: [key],
+          message: `is required in production (${subsystem} would otherwise run unconfigured)`,
+        });
+      }
     }
-  }
+  });
 }

@@ -1,12 +1,11 @@
-
 import { lazyEnv, parseEnv } from './parse';
 import {
   authSchema,
   datastoreSchema,
   discordSnowflake,
-  enforceProductionIntegrations,
   fivemSchema,
   integrationsSchema,
+  requireInProduction,
   runtimeSchema,
   siteSchema,
   storageSchema,
@@ -21,18 +20,19 @@ import type { z } from 'zod';
  * Discord Gateway or the bot's REST identity. It enqueues jobs that the bot
  * process performs, which keeps the most sensitive credential in one process.
  */
-const webServerSchema = runtimeSchema
-  .extend(datastoreSchema.shape)
-  .extend(authSchema.shape)
-  .extend({
-    DISCORD_GUILD_ID: discordSnowflake,
-    DISCORD_APPLICATION_ID: discordSnowflake,
-  })
-  .extend(storageSchema.shape)
-  .extend(integrationsSchema.shape)
-  .extend(fivemSchema.shape)
-  .extend(siteSchema.shape)
-  .superRefine(enforceProductionIntegrations);
+const webServerSchema = requireInProduction(
+  runtimeSchema
+    .extend(datastoreSchema.shape)
+    .extend(authSchema.shape)
+    .extend({
+      DISCORD_GUILD_ID: discordSnowflake,
+      DISCORD_APPLICATION_ID: discordSnowflake,
+    })
+    .extend(storageSchema.shape)
+    .extend(integrationsSchema.shape)
+    .extend(fivemSchema.shape)
+    .extend(siteSchema.shape),
+);
 
 export type ServerEnv = z.output<typeof webServerSchema>;
 
@@ -43,7 +43,11 @@ export const serverEnv: ServerEnv = lazyEnv(() =>
 /** True when every credential the media pipeline needs is present. */
 export function hasObjectStorage(env: ServerEnv = serverEnv): boolean {
   return Boolean(
-    env.R2_ACCOUNT_ID && env.R2_ACCESS_KEY && env.R2_SECRET_KEY && env.R2_BUCKET && env.R2_PUBLIC_URL,
+    env.R2_ACCOUNT_ID &&
+    env.R2_ACCESS_KEY &&
+    env.R2_SECRET_KEY &&
+    env.R2_BUCKET &&
+    env.R2_PUBLIC_URL,
   );
 }
 

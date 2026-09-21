@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # A new push supersedes an in-flight run for the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Values here are for ephemeral CI services only. Real secrets come from the
+  # repository's encrypted secrets and are never echoed into logs.
+  DATABASE_URL: postgresql://xenon:xenon@localhost:5432/xenon_test?schema=public
+  REDIS_URL: redis://localhost:6379
+  NEXT_PUBLIC_SITE_URL: http://localhost:3000
+  AUTH_SECRET: ci-only-secret-value-not-used-in-production-32
+  AUTH_DISCORD_ID: '000000000000000000'
+  AUTH_DISCORD_SECRET: ci-only
+  DISCORD_BOT_TOKEN: ci-only
+  DISCORD_APPLICATION_ID: '000000000000000000'
+  DISCORD_GUILD_ID: '000000000000000000'
+  TURBO_TELEMETRY_DISABLED: 1
+
+jobs:
+  verify:
+    name: Lint, typecheck, test, build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: xenon
+          POSTGRES_PASSWORD: xenon
+          POSTGRES_DB: xenon_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U xenon -d xenon_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Apply migrations
+        # `migrate deploy` applies committed migrations only. It never generates
+        # or rewrites one, so a schema change without a migration fails the next
+        # step rather than silently being papered over here.
+        run: pnpm db:deploy
+
+      - name: Verify schema and migrations agree
+        # Fails when schema.prisma has drifted ahead of the migration folder,
+        # which is the mistake that would otherwise reach production as a
+        # destructive auto-migration.
+        run: pnpm --filter @xenon/database exec prisma migrate diff
+          --from-migrations prisma/migrations
+          --to-schema-datamodel prisma/schema.prisma
+          --shadow-database-url "$DATABASE_URL"
+          --exit-code
+        continue-on-error: false
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Unit and integration tests
+        run: pnpm test
+
+      - name: Build
+        run: pnpm build
