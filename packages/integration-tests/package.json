@@ -1,0 +1,33 @@
+{
+  "name": "@xenon/integration-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cross-package tests that run against a real PostgreSQL database.",
+  "scripts": {
+    "test": "vitest run --passWithNoTests",
+    "test:watch": "vitest",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "clean": "rimraf .turbo coverage *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@xenon/applications": "workspace:*",
+    "@xenon/config": "workspace:*",
+    "@xenon/core": "workspace:*",
+    "@xenon/database": "workspace:*",
+    "@xenon/discord": "workspace:*",
+    "@xenon/domain": "workspace:*",
+    "@xenon/fivem": "workspace:*",
+    "@xenon/jobs": "workspace:*",
+    "@xenon/notifications": "workspace:*",
+    "@xenon/permissions": "workspace:*",
+    "@xenon/validation": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "eslint": "10.11.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}

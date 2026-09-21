@@ -99,8 +99,7 @@ export async function setUserStatusAction(
     const id = parseInput(cuid, userId);
     const actor = await currentActor();
 
-    requirePermission(actor, 'players.ban');
-
+    // The capability check lives in setUserStatus, so every caller gets it.
     await setUserStatus(prisma, actor, id, status, reason.length > 0 ? reason : null);
     revalidatePath('/control/players');
   });

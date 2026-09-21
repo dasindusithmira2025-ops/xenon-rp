@@ -6,7 +6,7 @@ import {
   type Prisma,
   type User,
 } from '@xenon/database';
-import type { Actor } from '@xenon/permissions';
+import { type Actor, requirePermission } from '@xenon/permissions';
 import type { ProfileInput } from '@xenon/validation';
 
 import { recordAudit } from './audit';
@@ -314,7 +314,12 @@ export async function searchUsers(db: Db, query: UserSearchQuery = {}) {
   return { items, total };
 }
 
-/** Suspend or ban an account. Roles are kept so the sanction is reversible. */
+/**
+ * Suspend or ban an account. Roles are kept so the sanction is reversible.
+ *
+ * The capability is checked here rather than at the call site, so a Discord
+ * command or a worker that reaches this function cannot arrive without one.
+ */
 export async function setUserStatus(
   db: Db,
   actor: Actor,
@@ -322,6 +327,8 @@ export async function setUserStatus(
   status: 'ACTIVE' | 'SUSPENDED' | 'BANNED' | 'DEACTIVATED',
   reason: string | null,
 ): Promise<User> {
+  requirePermission(actor, 'players.ban');
+
   const before = await db.user.findUnique({ where: { id: userId }, select: { status: true } });
   if (before === null) throw new NotFoundError('User', userId);
 

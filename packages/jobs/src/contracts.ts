@@ -79,6 +79,9 @@ export const retryPolicy: Record<JobName, { attempts: number; backoffMs: number 
  * syncs roles; if a reviewer double-clicks, or a retry re-runs the service, the
  * second enqueue must not produce a second Discord message. Jobs whose id is
  * `undefined` are genuinely independent and are allowed to run once each.
+ *
+ * The separator is `~` rather than the obvious `:`, because BullMQ builds Redis
+ * keys out of job ids and refuses any id containing a colon.
  */
 export function jobIdFor<TName extends JobName>(
   name: TName,
@@ -87,11 +90,11 @@ export function jobIdFor<TName extends JobName>(
   switch (name) {
     case 'discord.review.post':
     case 'discord.review.update':
-      return `${name}:${(payload as JobPayloads['discord.review.post']).submissionId}`;
+      return `${name}~${(payload as JobPayloads['discord.review.post']).submissionId}`;
     case 'discord.dm':
-      return `${name}:${(payload as JobPayloads['discord.dm']).notificationId}`;
+      return `${name}~${(payload as JobPayloads['discord.dm']).notificationId}`;
     case 'discord.guild.sync':
-      return `${name}:${(payload as JobPayloads['discord.guild.sync']).guildId}`;
+      return `${name}~${(payload as JobPayloads['discord.guild.sync']).guildId}`;
     // Role and whitelist syncs deliberately do not collapse: two changes in
     // quick succession must both be reconciled, and each run is idempotent.
     case 'discord.channel.post':

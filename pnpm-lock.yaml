@@ -513,6 +513,55 @@ importers:
         specifier: 5.0.1
         version: 5.0.1(@types/node@26.6.2)(vite@8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
 
+  packages/integration-tests:
+    dependencies:
+      '@xenon/applications':
+        specifier: workspace:*
+        version: link:../applications
+      '@xenon/config':
+        specifier: workspace:*
+        version: link:../config
+      '@xenon/core':
+        specifier: workspace:*
+        version: link:../core
+      '@xenon/database':
+        specifier: workspace:*
+        version: link:../database
+      '@xenon/discord':
+        specifier: workspace:*
+        version: link:../discord
+      '@xenon/domain':
+        specifier: workspace:*
+        version: link:../domain
+      '@xenon/fivem':
+        specifier: workspace:*
+        version: link:../fivem
+      '@xenon/jobs':
+        specifier: workspace:*
+        version: link:../jobs
+      '@xenon/notifications':
+        specifier: workspace:*
+        version: link:../notifications
+      '@xenon/permissions':
+        specifier: workspace:*
+        version: link:../permissions
+      '@xenon/validation':
+        specifier: workspace:*
+        version: link:../validation
+    devDependencies:
+      '@types/node':
+        specifier: 26.6.2
+        version: 26.6.2
+      eslint:
+        specifier: 10.11.0
+        version: 10.11.0(jiti@2.7.0)
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: 5.0.1
+        version: 5.0.1(@types/node@26.6.2)(vite@8.3.0(@types/node@26.6.2)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.15))
+
   packages/jobs:
     dependencies:
       '@xenon/config':
