@@ -1,0 +1,410 @@
+/* =============================================================================
+   XenonRP design tokens.
+
+   One layer of semantic names over one layer of raw values. Components never
+   write a literal colour, radius or duration - they reference a token - so a
+   change to the brand is an edit here rather than a search across the app.
+
+   The palette is black-first with a single accent. #2AFD23 is loud by design
+   and is spent, not sprinkled: it marks the one thing on a screen that matters
+   most. Everything else is carried by depth, chrome and typography.
+   ========================================================================== */
+
+@import 'tailwindcss';
+
+@theme {
+  /* --- Surfaces ---------------------------------------------------------- */
+  /* Five steps from void to elevated. Real depth comes from these plus a hair
+     of border light, never from a drop shadow on a dark background. */
+  --color-void: #020302;
+  --color-black: #050705;
+  --color-surface: #090c09;
+  --color-elevated: #0d110d;
+  --color-raised: #121712;
+  --color-overlay: #161c16;
+
+  /* --- Lines ------------------------------------------------------------- */
+  --color-line: #1a211a;
+  --color-line-strong: #273027;
+  --color-line-accent: #2afd2333;
+
+  /* --- Text -------------------------------------------------------------- */
+  --color-ink: #f5f7f5;
+  --color-ink-secondary: #a6ada6;
+  --color-ink-muted: #686f68;
+  --color-ink-inverse: #050705;
+
+  /* --- Accent ------------------------------------------------------------ */
+  --color-xenon: #2afd23;
+  --color-xenon-bright: #6bff66;
+  --color-xenon-dim: #1fbd1a;
+  --color-xenon-deep: #0c4a09;
+
+  /* --- Chrome -----------------------------------------------------------
+     Cool neutral metals that sit beside the logo without competing with the
+     green. Used for rules, plates, dividers and the metallic gradient. */
+  --color-chrome-100: #e8ede8;
+  --color-chrome-200: #c8cfc8;
+  --color-chrome-300: #9aa39a;
+  --color-chrome-400: #6e766e;
+  --color-chrome-500: #474e47;
+
+  /* --- State ------------------------------------------------------------- */
+  --color-danger: #ff5a5a;
+  --color-danger-dim: #7a1f1f;
+  --color-warning: #ffb020;
+  --color-warning-dim: #6b4708;
+  --color-info: #4a9eff;
+  --color-info-dim: #143a63;
+  --color-success: #2afd23;
+  --color-success-dim: #0c4a09;
+
+  /* --- Type -------------------------------------------------------------- */
+  --font-display: var(--font-archivo), 'Archivo', 'Helvetica Neue', Arial, sans-serif;
+  --font-sans: var(--font-geist), 'Geist', -apple-system, 'Segoe UI', Roboto, sans-serif;
+  --font-mono: var(--font-geist-mono), 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
+
+  /* An editorial scale: the top end is genuinely enormous because the homepage
+     hero is meant to be read from across a room, and the bottom end stays
+     readable because dashboards live there. */
+  --text-hero: clamp(3rem, 11vw, 10.5rem);
+  --text-hero--line-height: 0.88;
+  --text-hero--letter-spacing: -0.045em;
+  --text-display: clamp(2.5rem, 7vw, 6rem);
+  --text-display--line-height: 0.92;
+  --text-display--letter-spacing: -0.035em;
+  --text-headline: clamp(2rem, 4.2vw, 3.5rem);
+  --text-headline--line-height: 1;
+  --text-headline--letter-spacing: -0.03em;
+  --text-title: clamp(1.5rem, 2.4vw, 2rem);
+  --text-title--line-height: 1.12;
+  --text-title--letter-spacing: -0.02em;
+  --text-lead: clamp(1.0625rem, 1.3vw, 1.25rem);
+  --text-lead--line-height: 1.6;
+  --text-eyebrow: 0.6875rem;
+  --text-eyebrow--line-height: 1;
+  --text-eyebrow--letter-spacing: 0.22em;
+
+  /* --- Radii ------------------------------------------------------------- */
+  /* Restrained. Large radii read as friendly and consumer; this product should
+     read as engineered. */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 10px;
+  --radius-xl: 16px;
+  --radius-pill: 999px;
+
+  /* --- Elevation --------------------------------------------------------- */
+  --shadow-sink: inset 0 1px 0 0 #ffffff08;
+  --shadow-panel: 0 1px 2px #00000080, 0 8px 24px -12px #000000cc;
+  --shadow-float: 0 4px 12px #00000099, 0 24px 48px -16px #000000e6;
+  --shadow-accent: 0 0 0 1px #2afd2340, 0 0 24px -6px #2afd2359;
+
+  /* --- Motion ------------------------------------------------------------
+     Three speeds and two curves. More than that and nothing feels like one
+     system. `--ease-out-expo` is the cinematic one; `--ease-standard` is for
+     interface feedback that must not feel slow. */
+  --duration-fast: 140ms;
+  --duration-base: 280ms;
+  --duration-slow: 620ms;
+  --duration-cinematic: 1100ms;
+  --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* --- Layout ------------------------------------------------------------ */
+  --spacing-gutter: 1.25rem;
+  --container-content: 72rem;
+  --container-wide: 90rem;
+
+  /* --- Named animations --------------------------------------------------
+     Defined here rather than pulled in from a plugin: four keyframes is less
+     code than the dependency that would supply forty. */
+  --animate-fade-in: fade-in var(--duration-base) var(--ease-standard);
+  --animate-scale-in: scale-in var(--duration-fast) var(--ease-standard);
+  --animate-slide-up: slide-up var(--duration-base) var(--ease-out-expo);
+  --animate-accordion-down: accordion-down var(--duration-base) var(--ease-standard);
+  --animate-accordion-up: accordion-up var(--duration-fast) var(--ease-standard);
+  --animate-marquee: marquee 38s linear infinite;
+
+  @keyframes fade-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes scale-in {
+    from {
+      opacity: 0;
+      transform: scale(0.96);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes slide-up {
+    from {
+      opacity: 0;
+      transform: translateY(1.5rem);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  /* Radix publishes the measured height as a custom property; animating to it
+     is what makes the disclosure smooth without a fixed height. */
+  @keyframes accordion-down {
+    from {
+      height: 0;
+      opacity: 0;
+    }
+    to {
+      height: var(--radix-accordion-content-height);
+      opacity: 1;
+    }
+  }
+
+  @keyframes accordion-up {
+    from {
+      height: var(--radix-accordion-content-height);
+      opacity: 1;
+    }
+    to {
+      height: 0;
+      opacity: 0;
+    }
+  }
+
+  @keyframes marquee {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+}
+
+/* Z-index is a small ordered set rather than arbitrary numbers, so "what sits
+   above what" is a decision made once. */
+@layer base {
+  :root {
+    --z-base: 0;
+    --z-raised: 10;
+    --z-sticky: 20;
+    --z-header: 40;
+    --z-drawer: 50;
+    --z-overlay: 60;
+    --z-modal: 70;
+    --z-toast: 80;
+
+    color-scheme: dark;
+    /* The product is dark by design, not by preference: the photography, the
+       chrome and the single accent all depend on it. There is no light theme
+       to fall out of sync. */
+    background-color: var(--color-void);
+    color: var(--color-ink);
+
+    --header-height: 4.5rem;
+  }
+
+  * {
+    border-color: var(--color-line);
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    background-color: var(--color-void);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-feature-settings: 'cv11', 'ss01';
+    font-optical-sizing: auto;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* A visible, branded focus ring everywhere. Keyboard users are not a
+     secondary audience, and the default ring is invisible on this palette. */
+  :focus-visible {
+    outline: 2px solid var(--color-xenon);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs);
+  }
+
+  ::selection {
+    background-color: var(--color-xenon);
+    color: var(--color-ink-inverse);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-family: var(--font-display);
+    font-weight: 800;
+    text-wrap: balance;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  /* Scrollbars are part of a dark interface, not an afterthought. */
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: var(--color-black);
+  }
+  ::-webkit-scrollbar-thumb {
+    background: var(--color-line-strong);
+    border-radius: var(--radius-pill);
+    border: 2px solid var(--color-black);
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--color-chrome-500);
+  }
+
+  /*
+   * Honour the system preference.
+   *
+   * Everything below turns motion off rather than making it quicker, because
+   * the people who set this flag include people for whom a fast parallax is
+   * worse than a slow one. Scroll-linked effects check the same preference in
+   * JavaScript; this is the floor, not the whole answer.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.001ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+@layer components {
+  /* --- Reusable surface treatments --------------------------------------
+     Written as component classes rather than repeated utility strings because
+     they encode a decision about depth that should be made once. */
+
+  .x-panel {
+    background-color: var(--color-surface);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sink);
+  }
+
+  .x-panel-raised {
+    background-color: var(--color-elevated);
+    border: 1px solid var(--color-line-strong);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-panel), var(--shadow-sink);
+  }
+
+  /* Hairline top light, as though a sheet of metal is catching a light source
+     above it. This is what stops dark panels reading as flat rectangles. */
+  .x-edge-light {
+    position: relative;
+  }
+  .x-edge-light::before {
+    content: '';
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, #ffffff1f 22%, #ffffff1f 78%, transparent);
+    pointer-events: none;
+  }
+
+  .x-chrome-text {
+    background: linear-gradient(
+      180deg,
+      var(--color-chrome-100) 0%,
+      var(--color-chrome-200) 38%,
+      var(--color-chrome-400) 62%,
+      var(--color-chrome-200) 100%
+    );
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .x-eyebrow {
+    font-family: var(--font-mono);
+    font-size: var(--text-eyebrow);
+    letter-spacing: var(--text-eyebrow--letter-spacing);
+    text-transform: uppercase;
+    color: var(--color-ink-muted);
+  }
+
+  /* Fine grid used behind operational screens. Low contrast on purpose: it is
+     texture, not decoration, and must never compete with data. */
+  .x-grid-field {
+    background-image:
+      linear-gradient(to right, #ffffff06 1px, transparent 1px),
+      linear-gradient(to bottom, #ffffff06 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+
+  /* Vignette that keeps hero text legible over any photography, without
+     needing a per-image treatment. */
+  .x-cinema-scrim {
+    background:
+      linear-gradient(180deg, #020302e6 0%, #02030266 34%, #02030299 72%, var(--color-void) 100%),
+      radial-gradient(120% 80% at 50% 0%, transparent 40%, #020302cc 100%);
+  }
+
+  .x-rule {
+    height: 1px;
+    background: linear-gradient(90deg, var(--color-line-strong), transparent);
+  }
+}
+
+@layer utilities {
+  .x-balance {
+    text-wrap: balance;
+  }
+
+  /* Edge-to-edge break out of a centred container. */
+  .x-bleed {
+    width: 100vw;
+    margin-left: calc(50% - 50vw);
+  }
+
+  .x-tabular {
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Animation entry state used by the reveal primitives. Declared in CSS so
+     server-rendered markup is already in the correct starting position and
+     there is no flash of fully-visible content before hydration. */
+  .x-reveal-hidden {
+    opacity: 0;
+    transform: translateY(1.25rem);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .x-reveal-hidden {
+      opacity: 1;
+      transform: none;
+    }
+  }
+}

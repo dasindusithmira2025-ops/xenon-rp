@@ -1,0 +1,29 @@
+{
+  "name": "@xenon/jobs",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rimraf .turbo coverage *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@xenon/config": "workspace:*",
+    "@xenon/core": "workspace:*",
+    "@xenon/logger": "workspace:*",
+    "bullmq": "6.3.8",
+    "ioredis": "6.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "eslint": "10.11.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}

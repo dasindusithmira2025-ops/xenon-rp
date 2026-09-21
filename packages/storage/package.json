@@ -1,0 +1,29 @@
+{
+  "name": "@xenon/storage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rimraf .turbo coverage *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "3.1136.0",
+    "@aws-sdk/s3-request-presigner": "3.1136.0",
+    "@xenon/config": "workspace:*",
+    "@xenon/core": "workspace:*",
+    "@xenon/database": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "eslint": "10.11.0",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}

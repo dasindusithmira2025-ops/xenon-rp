@@ -6,6 +6,7 @@ import {
   integrationsSchema,
   requireInProduction,
   runtimeSchema,
+  securitySchema,
   siteSchema,
 } from './schema';
 
@@ -20,6 +21,7 @@ import type { z } from 'zod';
 const botSchema = requireInProduction(
   runtimeSchema
     .extend(datastoreSchema.shape)
+    .extend(securitySchema.shape)
     .extend(discordSchema.shape)
     .extend(integrationsSchema.shape)
     .extend(fivemSchema.shape)

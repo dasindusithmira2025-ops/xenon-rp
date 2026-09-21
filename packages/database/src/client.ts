@@ -9,7 +9,10 @@ import { PrismaClient } from '../generated/client/client';
  * the same code runs inside or outside an interactive transaction. Domain
  * operations that must be atomic therefore compose without duplication.
  */
-export type Db = Omit<PrismaClient, '$connect' | '$disconnect' | '$transaction' | '$extends'>;
+export type Db = Omit<
+  PrismaClient,
+  '$connect' | '$disconnect' | '$transaction' | '$extends' | '$on' | '$use'
+>;
 
 declare global {
   var __xenonPrisma__: PrismaClient | undefined;
@@ -48,4 +51,21 @@ export const prisma: PrismaClient = globalThis.__xenonPrisma__ ?? createClient()
 
 if (process.env.NODE_ENV !== 'production') {
   globalThis.__xenonPrisma__ = prisma;
+}
+
+/**
+ * Run `fn` atomically.
+ *
+ * `Db` deliberately omits `$transaction` so that a service cannot start a
+ * nested transaction by accident. This helper closes the gap: given the root
+ * client it opens a transaction, and given a transaction handle it simply runs
+ * the callback, because the caller is already inside one. Services therefore
+ * compose - `approveApplication` can call `grantWhitelist` and both end up in
+ * the same atomic unit without either knowing about the other.
+ */
+export async function transaction<T>(db: Db, fn: (tx: Db) => Promise<T>): Promise<T> {
+  if ('$transaction' in db && typeof (db as PrismaClient).$transaction === 'function') {
+    return (db as PrismaClient).$transaction((tx) => fn(tx));
+  }
+  return fn(db);
 }

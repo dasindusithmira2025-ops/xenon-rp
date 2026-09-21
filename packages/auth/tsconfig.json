@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["DOM", "DOM.Iterable", "ES2023"],
+    "jsx": "react-jsx",
+    "types": ["node"],
+    // Auth.js infers types that reference modules inside its own package which
+    // a consumer cannot name. Nothing here is ever emitted as .d.ts - every
+    // workspace package exports its TypeScript sources directly - so turning
+    // declaration output off removes a portability requirement that exists
+    // only for a build we never run.
+    "declaration": false,
+    "declarationMap": false
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}

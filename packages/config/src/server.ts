@@ -7,6 +7,7 @@ import {
   integrationsSchema,
   requireInProduction,
   runtimeSchema,
+  securitySchema,
   siteSchema,
   storageSchema,
 } from './schema';
@@ -23,6 +24,7 @@ import type { z } from 'zod';
 const webServerSchema = requireInProduction(
   runtimeSchema
     .extend(datastoreSchema.shape)
+    .extend(securitySchema.shape)
     .extend(authSchema.shape)
     .extend({
       DISCORD_GUILD_ID: discordSnowflake,
@@ -59,4 +61,16 @@ export function hasFivemBridge(env: ServerEnv = serverEnv): boolean {
 /** True when public abuse-sensitive forms should render a Turnstile challenge. */
 export function hasTurnstile(env: ServerEnv = serverEnv): boolean {
   return Boolean(env.TURNSTILE_SECRET && env.NEXT_PUBLIC_TURNSTILE_SITE_KEY);
+}
+
+/**
+ * True when the development sign-in route may exist.
+ *
+ * Two conditions, and the NODE_ENV one is not redundant: it means that leaking
+ * `AUTH_DEV_LOGIN=true` into a production environment - by a copied `.env`, a
+ * stale platform variable, a mistake in a deploy script - cannot open a route
+ * that signs in as anybody.
+ */
+export function hasDevLogin(env: ServerEnv = serverEnv): boolean {
+  return env.NODE_ENV !== 'production' && env.AUTH_DEV_LOGIN;
 }

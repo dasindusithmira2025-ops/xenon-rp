@@ -21,6 +21,17 @@ export const datastoreSchema = z.object({
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 });
 
+/**
+ * Values used to derive non-reversible hashes of client addresses.
+ *
+ * Optional outside production with a documented development default, because a
+ * fresh clone must boot; required in production because a predictable pepper
+ * makes the stored hash of an IPv4 address trivially reversible.
+ */
+export const securitySchema = z.object({
+  HASH_PEPPER: z.string().min(16).optional(),
+});
+
 export const authSchema = z.object({
   AUTH_SECRET: secret(32),
   AUTH_DISCORD_ID: discordSnowflake,
@@ -28,6 +39,17 @@ export const authSchema = z.object({
   /** Auth.js needs the canonical origin to build callback URLs behind proxies. */
   AUTH_URL: z.url().optional(),
   AUTH_TRUST_HOST: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((value) => value === 'true'),
+  /**
+   * Opens a development-only sign-in route used by the E2E suite.
+   *
+   * Parsed here but never trusted on its own: `hasDevLogin()` additionally
+   * requires a non-production NODE_ENV, so setting this in a production
+   * environment does nothing rather than opening an authentication bypass.
+   */
+  AUTH_DEV_LOGIN: z
     .enum(['true', 'false'])
     .default('false')
     .transform((value) => value === 'true'),
@@ -84,6 +106,7 @@ const productionRequired = [
   ['TURNSTILE_SECRET', 'abuse protection'],
   ['NEXT_PUBLIC_TURNSTILE_SITE_KEY', 'abuse protection'],
   ['FIVEM_BRIDGE_SECRET', 'FiveM bridge'],
+  ['HASH_PEPPER', 'address hashing'],
 ] as const satisfies readonly (readonly [string, string])[];
 
 /**
