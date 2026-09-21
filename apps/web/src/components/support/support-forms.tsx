@@ -112,8 +112,7 @@ function TicketForm(): React.ReactElement {
     <Panel tone="raised" pad="lg" edgeLight>
       <form
         className="flex flex-col gap-6"
-        onSubmit={(event) => {
-          event.preventDefault();
+        action={() => {
           submit({ category, subject, body, mediaIds: [] }, reset);
         }}
       >
@@ -204,8 +203,7 @@ function ReportForm(): React.ReactElement {
     <Panel tone="raised" pad="lg" edgeLight>
       <form
         className="flex flex-col gap-6"
-        onSubmit={(event) => {
-          event.preventDefault();
+        action={() => {
           submit(
             {
               kind,
@@ -329,8 +327,7 @@ function AppealForm(): React.ReactElement {
     <Panel tone="raised" pad="lg" edgeLight>
       <form
         className="flex flex-col gap-6"
-        onSubmit={(event) => {
-          event.preventDefault();
+        action={() => {
           submit(
             {
               kind,

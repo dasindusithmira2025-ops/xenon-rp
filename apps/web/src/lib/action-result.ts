@@ -10,7 +10,7 @@
  * two constructors.
  */
 
-export type ActionResult<T = undefined> =
+export type ActionResult<T = void> =
   | { ok: true; data: T }
   | {
       ok: false;
@@ -23,7 +23,7 @@ export type ActionResult<T = undefined> =
 export function actionOk(): ActionResult;
 export function actionOk<T>(data: T): ActionResult<T>;
 export function actionOk<T>(data?: T): ActionResult<T | undefined> {
-  return { ok: true, data };
+  return { ok: true, data: data as T };
 }
 
 export function actionError(

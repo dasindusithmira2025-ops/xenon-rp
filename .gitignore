@@ -42,3 +42,7 @@ Thumbs.db
 # prisma local artifacts
 packages/database/prisma/*.db
 packages/database/generated/
+
+# local scratch scripts (visual QA helpers, one-off checks)
+*.local.mjs
+*.local.ts
