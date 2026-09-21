@@ -4,6 +4,7 @@
   "globalDependencies": [".env", "tsconfig.base.json"],
   "globalEnv": [
     "NODE_ENV",
+    "NEXT_PHASE",
     "CI",
     "LOG_LEVEL",
     "DATABASE_URL",

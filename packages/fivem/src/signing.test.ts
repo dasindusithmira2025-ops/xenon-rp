@@ -108,3 +108,50 @@ describe('bridge request signing', () => {
     expect(nonces.size).toBe(50);
   });
 });
+
+/*
+ * The in-game resource cannot import this module: it is copied into a FiveM
+ * server's resources directory and runs outside the workspace, so
+ * fivem/xenon_bridge/src/xenon.ts carries its own copy of the same twenty
+ * lines.
+ *
+ * This vector is what keeps the two honest. It pins the exact bytes that get
+ * hashed - `timestamp.nonce.body` - so any change to the scheme on this side
+ * fails here rather than silently at 2am when the game server stops being able
+ * to authenticate. If you change it deliberately, update both files and this
+ * digest together.
+ */
+describe('wire format', () => {
+  const GOLDEN = {
+    secret: 'xenon-test-secret-that-is-long-enough',
+    timestamp: '1758412800',
+    nonce: '0123456789abcdef0123456789abcdef',
+    body: '{"slug":"xenon-main"}',
+    signature: '4ba59dafe18dcf41297373b61a729cde2916283f42b7a0073a3b0d9223d255ef',
+  };
+
+  it('accepts a signature computed by the in-game copy of the scheme', () => {
+    const result = verifyRequest(
+      GOLDEN.secret,
+      GOLDEN.body,
+      {
+        signature: GOLDEN.signature,
+        timestamp: GOLDEN.timestamp,
+        nonce: GOLDEN.nonce,
+      },
+      Number(GOLDEN.timestamp) * 1000,
+    );
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('signs with the header names the resource sends', () => {
+    const headers = signRequest(GOLDEN.secret, GOLDEN.body);
+
+    expect(Object.keys(headers).sort()).toEqual([
+      'x-xenon-nonce',
+      'x-xenon-signature',
+      'x-xenon-timestamp',
+    ]);
+  });
+});

@@ -46,3 +46,10 @@ packages/database/generated/
 # local scratch scripts (visual QA helpers, one-off checks)
 *.local.mjs
 *.local.ts
+
+# tsc emit landing next to its sources. Everything in this repo builds into
+# dist/, so a .js beside a .ts is always a leftover from a mis-run compiler -
+# and one of those was committed once already.
+apps/bot/src/**/*.js
+apps/bot/src/**/*.js.map
+fivem/*/src/**/*.js

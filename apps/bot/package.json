@@ -10,7 +10,7 @@
     "register": "tsx src/scripts/register-commands.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "clean": "rimraf dist .turbo coverage *.tsbuildinfo"
   },

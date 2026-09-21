@@ -20,3 +20,14 @@ export type DatastoreEnv = z.output<typeof sharedSchema>;
 export const datastoreEnv: DatastoreEnv = lazyEnv(() =>
   parseEnv('datastore', sharedSchema, process.env),
 );
+
+/**
+ * True when this process is running against production.
+ *
+ * Here rather than at each call site so that scripts and low-level packages
+ * have one sanctioned way to ask, instead of reaching for `process.env`
+ * directly and drifting on what counts as production.
+ */
+export function isProduction(): boolean {
+  return process.env.NODE_ENV === 'production';
+}

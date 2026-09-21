@@ -1,6 +1,7 @@
+import { describe, expect, it } from 'vitest';
+
 import { ConflictError } from '@xenon/core';
 import type { ApplicationStatus } from '@xenon/database';
-import { describe, expect, it } from 'vitest';
 
 import {
   allowedTransitions,

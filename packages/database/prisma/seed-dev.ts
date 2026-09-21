@@ -1,7 +1,9 @@
 import '@xenon/config/load-env';
 
-import { allocatePublicId } from '../src/public-id';
+import { isProduction } from '@xenon/config/datastore';
+
 import { prisma } from '../src/client';
+import { allocatePublicId } from '../src/public-id';
 
 /**
  * Development fixtures.
@@ -21,7 +23,7 @@ import { prisma } from '../src/client';
  * updates rather than duplicates.
  */
 
-if (process.env.NODE_ENV === 'production') {
+if (isProduction()) {
   throw new Error('seed-dev must never run against production.');
 }
 
