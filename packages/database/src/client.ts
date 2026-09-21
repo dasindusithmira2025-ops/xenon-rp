@@ -1,3 +1,13 @@
+// Side-effect import, deliberately first.
+//
+// This module constructs a client the instant it is evaluated, and it cannot do
+// that without DATABASE_URL. Loading the root `.env` here rather than trusting
+// every entry point to do it first removes an entire class of ordering bug:
+// a bundler is free to hoist this module above whatever the entry file imported
+// to set the environment up, and then the failure is a confusing "DATABASE_URL
+// is not set" from a process whose `.env` is perfectly correct.
+import '@xenon/config/load-env';
+
 import { PrismaPg } from '@prisma/adapter-pg';
 
 import { PrismaClient } from '../generated/client/client';

@@ -1,0 +1,38 @@
+import { REST, Routes } from 'discord.js';
+import { commandDefinitions } from '../discord/commands';
+import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
+/**
+ * Register slash commands with Discord.
+ *
+ * Guild-scoped rather than global. Guild commands appear immediately, global
+ * ones take up to an hour to propagate, and this platform serves one community
+ * - so the only thing global registration would buy is a wait.
+ *
+ * Run it after changing `commandDefinitions`:
+ *
+ *   pnpm --filter @xenon/bot register
+ */
+async function main() {
+  if (!hasRealDiscordCredentials()) {
+    logger.error(
+      'DISCORD_BOT_TOKEN and DISCORD_GUILD_ID look like placeholders. ' +
+        'Fill them in from the Discord Developer Portal before registering commands.',
+    );
+    process.exit(1);
+  }
+  const rest = new REST({ version: '10' }).setToken(botEnv.DISCORD_BOT_TOKEN);
+  const result = await rest.put(
+    Routes.applicationGuildCommands(botEnv.DISCORD_APPLICATION_ID, botEnv.DISCORD_GUILD_ID),
+    { body: commandDefinitions },
+  );
+  const count = Array.isArray(result) ? result.length : 0;
+  logger.info(
+    { count, guildId: botEnv.DISCORD_GUILD_ID },
+    'Slash commands registered. They are available immediately.',
+  );
+}
+main().catch((error) => {
+  logger.fatal({ err: error }, 'Command registration failed');
+  process.exit(1);
+});
+//# sourceMappingURL=register-commands.js.map
