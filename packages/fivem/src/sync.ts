@@ -1,10 +1,13 @@
 import { serverEnv } from '@xenon/config/server';
-import { IntegrationError, NotFoundError } from '@xenon/core';
+import { IntegrationError, nextRestartAt, NotFoundError } from '@xenon/core';
 import type { Db, Server } from '@xenon/database';
 import { recordStatusSnapshot, recordWhitelistSync } from '@xenon/domain';
 
 import { type GameIdentifier, type GameServerAdapter, MockGameServerAdapter } from './adapter';
 import { HttpGameServerAdapter } from './http-adapter';
+
+// Re-exported so the game-server surface stays in one import for its callers.
+export { nextRestartAt };
 
 /**
  * Wiring between the domain and the game servers.
@@ -106,62 +109,6 @@ export async function syncWhitelistForUser(db: Db, userId: string): Promise<{ pu
 
   await recordWhitelistSync(db, userId, { ok: true });
   return { pushed };
-}
-
-/**
- * Compute the next scheduled restart from a cron expression.
- *
- * Supports the `minute hour * * *` shape that a restart schedule actually uses
- * (`0 6,12,18,0 * * *`). A full cron parser would be a dependency and a
- * maintenance surface for a feature nobody has asked to be more expressive.
- *
- * ponytail: minute/hour fields only; reach for a cron library if day-of-week
- * restart schedules are ever configured.
- */
-export function nextRestartAt(cron: string | null, from: Date = new Date()): Date | null {
-  if (cron === null || cron.trim().length === 0) return null;
-
-  const parts = cron.trim().split(/\s+/);
-  const [minuteField, hourField] = parts;
-  if (parts.length < 5 || minuteField === undefined || hourField === undefined) return null;
-
-  const minutes = expandField(minuteField, 0, 59);
-  const hours = expandField(hourField, 0, 23);
-  if (minutes.length === 0 || hours.length === 0) return null;
-
-  for (let dayOffset = 0; dayOffset <= 1; dayOffset += 1) {
-    for (const hour of hours) {
-      for (const minute of minutes) {
-        const candidate = new Date(from);
-        candidate.setUTCDate(candidate.getUTCDate() + dayOffset);
-        candidate.setUTCHours(hour, minute, 0, 0);
-        if (candidate > from) return candidate;
-      }
-    }
-  }
-
-  return null;
-}
-
-function expandField(field: string, min: number, max: number): number[] {
-  if (field === '*') return Array.from({ length: max - min + 1 }, (_, index) => min + index);
-
-  const values = new Set<number>();
-  for (const part of field.split(',')) {
-    const step = /^\*\/(\d+)$/.exec(part);
-    if (step?.[1] !== undefined) {
-      const interval = Number.parseInt(step[1], 10);
-      if (interval > 0) {
-        for (let value = min; value <= max; value += interval) values.add(value);
-      }
-      continue;
-    }
-
-    const value = Number.parseInt(part, 10);
-    if (Number.isInteger(value) && value >= min && value <= max) values.add(value);
-  }
-
-  return [...values].sort((a, b) => a - b);
 }
 
 /** Probe one server and store the reading. Never throws. */

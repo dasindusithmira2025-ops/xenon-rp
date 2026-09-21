@@ -35,8 +35,28 @@ export function nextConfig(tsconfigRootDir) {
       },
     },
     {
-      // Server-side code is allowed to reach for the database directly.
-      files: ['src/server/**', 'src/app/api/**', 'src/app/**/actions.ts', 'src/lib/server/**'],
+      /*
+       * Server-only surfaces may reach for the database directly.
+       *
+       * In the App Router a page, layout, route handler or metadata file is a
+       * server module by default, so the thing this rule exists to prevent -
+       * the Prisma client ending up in a browser bundle - cannot happen there.
+       * The rule still applies to everything under src/components, which is
+       * where client components actually live and where the mistake would
+       * otherwise be made.
+       */
+      files: [
+        'src/server/**',
+        'src/lib/server/**',
+        'src/app/api/**',
+        'src/app/**/actions.ts',
+        'src/app/**/page.tsx',
+        'src/app/**/layout.tsx',
+        'src/app/**/route.ts',
+        'src/app/**/opengraph-image.tsx',
+        'src/app/sitemap.ts',
+        'src/app/robots.ts',
+      ],
       rules: { 'no-restricted-imports': 'off' },
     },
   ];

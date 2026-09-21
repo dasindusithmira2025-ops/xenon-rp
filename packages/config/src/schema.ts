@@ -11,6 +11,26 @@ const logLevel = z.enum(['trace', 'debug', 'info', 'warn', 'error', 'fatal']).de
 /** A secret long enough to be worth calling a secret. */
 const secret = (min = 32) => z.string().min(min, `must be at least ${min} characters`);
 
+/**
+ * An optional variable, where an empty string means "not set".
+ *
+ * `.env.example` ships every optional key present but blank, which is the right
+ * documentation shape - an operator fills in the line rather than remembering
+ * the name. Without this, `R2_BUCKET=` would be an empty string that fails a
+ * `.min(1)` check, and a fresh clone would refuse to boot on variables it is
+ * explicitly allowed to omit.
+ *
+ * It also keeps the production guard honest: `requireInProduction` tests for
+ * `undefined`, so a blank line in a production environment is correctly read as
+ * missing rather than as a satisfied requirement.
+ */
+function optional<TSchema extends z.ZodType>(schema: TSchema) {
+  return z.preprocess(
+    (value) => (typeof value === 'string' && value.trim().length === 0 ? undefined : value),
+    schema.optional(),
+  );
+}
+
 export const runtimeSchema = z.object({
   NODE_ENV: nodeEnv,
   LOG_LEVEL: logLevel,
@@ -29,7 +49,7 @@ export const datastoreSchema = z.object({
  * makes the stored hash of an IPv4 address trivially reversible.
  */
 export const securitySchema = z.object({
-  HASH_PEPPER: z.string().min(16).optional(),
+  HASH_PEPPER: optional(z.string().min(16)),
 });
 
 export const authSchema = z.object({
@@ -37,7 +57,7 @@ export const authSchema = z.object({
   AUTH_DISCORD_ID: discordSnowflake,
   AUTH_DISCORD_SECRET: z.string().min(1),
   /** Auth.js needs the canonical origin to build callback URLs behind proxies. */
-  AUTH_URL: z.url().optional(),
+  AUTH_URL: optional(z.url()),
   AUTH_TRUST_HOST: z
     .enum(['true', 'false'])
     .default('false')
@@ -67,30 +87,41 @@ export const discordSchema = z.object({
  * land somewhere ephemeral.
  */
 export const storageSchema = z.object({
-  R2_ACCOUNT_ID: z.string().min(1).optional(),
-  R2_ACCESS_KEY: z.string().min(1).optional(),
-  R2_SECRET_KEY: z.string().min(1).optional(),
-  R2_BUCKET: z.string().min(1).optional(),
+  R2_ACCOUNT_ID: optional(z.string().min(1)),
+  R2_ACCESS_KEY: optional(z.string().min(1)),
+  R2_SECRET_KEY: optional(z.string().min(1)),
+  R2_BUCKET: optional(z.string().min(1)),
   /** Public base URL that fronts the bucket, used to build asset URLs. */
-  R2_PUBLIC_URL: z.url().optional(),
+  R2_PUBLIC_URL: optional(z.url()),
 });
 
 export const integrationsSchema = z.object({
-  TURNSTILE_SECRET: z.string().min(1).optional(),
-  SENTRY_DSN: z.url().optional(),
+  TURNSTILE_SECRET: optional(z.string().min(1)),
+  SENTRY_DSN: optional(z.url()),
 });
 
 export const fivemSchema = z.object({
   /** Shared secret used to sign requests between Xenon and the FiveM bridge. */
-  FIVEM_BRIDGE_SECRET: secret(32).optional(),
+  FIVEM_BRIDGE_SECRET: optional(secret(32)),
   /** Base URL of the FXServer HTTP endpoint used for status and whitelist sync. */
-  FIVEM_SERVER_URL: z.url().optional(),
+  FIVEM_SERVER_URL: optional(z.url()),
 });
 
 export const siteSchema = z.object({
   NEXT_PUBLIC_SITE_URL: z.url(),
-  NEXT_PUBLIC_TURNSTILE_SITE_KEY: z.string().min(1).optional(),
+  NEXT_PUBLIC_TURNSTILE_SITE_KEY: optional(z.string().min(1)),
 });
+
+/**
+ * True while Next.js is compiling rather than serving.
+ *
+ * Next sets NEXT_PHASE for the duration of `next build`. Read through a lookup
+ * that tolerates the variable being absent, because this module is also
+ * imported by the bot and by CLI scripts where Next is not involved at all.
+ */
+function isBuildPhase(): boolean {
+  return process.env.NEXT_PHASE === 'phase-production-build';
+}
 
 /**
  * Integrations that may be stubbed in development but must be fully configured
@@ -128,6 +159,16 @@ export function requireInProduction<TShape extends z.ZodRawShape>(schema: z.ZodO
   return schema.superRefine((value, ctx) => {
     const record = value as Record<string, unknown> & { NODE_ENV?: string };
     if (record.NODE_ENV !== 'production') return;
+
+    // `next build` runs with NODE_ENV=production but is not a production
+    // server: it renders pages to discover their shape, in CI, deliberately
+    // without real credentials. Enforcing runtime integrations there would make
+    // the build itself require the secrets it exists to avoid baking in.
+    //
+    // This does not weaken the guard. The same schema is parsed again when the
+    // server process actually starts, and it fails there, loudly, before
+    // serving a single request.
+    if (isBuildPhase()) return;
 
     for (const [key, subsystem] of productionRequired) {
       if (!declared.has(key)) continue;

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   NONCE_HEADER,
   SIGNATURE_HEADER,
+  type SignedHeaders,
   signRequest,
   TIMESTAMP_HEADER,
   verifyRequest,
@@ -10,7 +11,7 @@ import {
 
 const SECRET = 'a-shared-bridge-secret-at-least-32-chars';
 
-function headersFrom(signed: Record<string, string>) {
+function headersFrom(signed: SignedHeaders) {
   return {
     signature: signed[SIGNATURE_HEADER],
     timestamp: signed[TIMESTAMP_HEADER],

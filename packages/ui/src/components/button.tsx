@@ -82,8 +82,21 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function 
       aria-busy={loading || undefined}
       {...props}
     >
-      {loading ? <Loader2 className="animate-spin" aria-hidden /> : null}
-      {children}
+      {/*
+        `asChild` hands the child straight to Radix's Slot, which requires
+        exactly one element. Wrapping it alongside a spinner - even a null one -
+        gives Slot two children and it refuses at render time. A link rendered
+        through `asChild` has no loading state to show anyway, so the spinner is
+        simply not part of that branch.
+      */}
+      {asChild ? (
+        children
+      ) : (
+        <>
+          {loading ? <Loader2 className="animate-spin" aria-hidden /> : null}
+          {children}
+        </>
+      )}
     </Component>
   );
 });

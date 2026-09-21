@@ -1,0 +1,38 @@
+{
+  "name": "@xenon/bot",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "build": "tsc --project tsconfig.build.json",
+    "start": "node dist/main.js",
+    "register": "tsx src/scripts/register-commands.ts",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rimraf dist .turbo coverage *.tsbuildinfo"
+  },
+  "dependencies": {
+    "@xenon/applications": "workspace:*",
+    "@xenon/config": "workspace:*",
+    "@xenon/core": "workspace:*",
+    "@xenon/database": "workspace:*",
+    "@xenon/discord": "workspace:*",
+    "@xenon/domain": "workspace:*",
+    "@xenon/fivem": "workspace:*",
+    "@xenon/jobs": "workspace:*",
+    "@xenon/logger": "workspace:*",
+    "@xenon/notifications": "workspace:*",
+    "@xenon/permissions": "workspace:*",
+    "discord.js": "14.27.0"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.2",
+    "eslint": "10.11.0",
+    "tsx": "4.23.15",
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
+  }
+}

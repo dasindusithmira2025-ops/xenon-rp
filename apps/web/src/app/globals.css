@@ -1,0 +1,141 @@
+/*
+ * Application stylesheet.
+ *
+ * The token system and component classes live in `@xenon/ui`; this file exists
+ * to import them and to tell Tailwind where to look for class names. Tailwind 4
+ * scans the importing project by default, which would miss every utility used
+ * inside the UI package, so those sources are registered explicitly.
+ */
+
+@import '@xenon/ui/styles.css';
+
+@source "../";
+@source "../../../../packages/ui/src";
+
+/*
+ * Editor output.
+ *
+ * News bodies and department pages are stored as sanitised HTML, so their
+ * elements arrive without utility classes. Rather than pull in a typography
+ * plugin for four tags, the handful of elements the editor can actually emit
+ * are styled here, scoped to `.x-prose` so nothing leaks into the app chrome.
+ */
+@layer components {
+  .x-prose {
+    color: var(--color-ink-secondary);
+    font-size: 1.0625rem;
+    line-height: 1.75;
+  }
+
+  .x-prose > * + * {
+    margin-top: 1.25em;
+  }
+
+  .x-prose h2,
+  .x-prose h3,
+  .x-prose h4 {
+    color: var(--color-ink);
+    font-family: var(--font-display);
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    margin-top: 2em;
+    line-height: 1.2;
+  }
+
+  .x-prose h2 {
+    font-size: 1.75rem;
+  }
+  .x-prose h3 {
+    font-size: 1.375rem;
+  }
+  .x-prose h4 {
+    font-size: 1.125rem;
+  }
+
+  .x-prose a {
+    color: var(--color-xenon);
+    text-decoration: underline;
+    text-underline-offset: 3px;
+  }
+
+  .x-prose strong {
+    color: var(--color-ink);
+    font-weight: 600;
+  }
+
+  .x-prose blockquote {
+    border-left: 2px solid var(--color-xenon);
+    padding-left: 1.25rem;
+    color: var(--color-ink);
+    font-style: italic;
+  }
+
+  .x-prose ul,
+  .x-prose ol {
+    padding-left: 1.5rem;
+  }
+  .x-prose ul {
+    list-style: disc;
+  }
+  .x-prose ol {
+    list-style: decimal;
+  }
+  .x-prose li::marker {
+    color: var(--color-xenon-dim);
+  }
+  .x-prose li + li {
+    margin-top: 0.5em;
+  }
+
+  .x-prose code {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+    background: var(--color-elevated);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-sm);
+    padding: 0.1em 0.35em;
+  }
+
+  .x-prose pre {
+    background: var(--color-black);
+    border: 1px solid var(--color-line);
+    border-radius: var(--radius-md);
+    padding: 1rem;
+    overflow-x: auto;
+  }
+  .x-prose pre code {
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  .x-prose img {
+    border-radius: var(--radius-md);
+    max-width: 100%;
+    height: auto;
+  }
+
+  .x-prose hr {
+    border: 0;
+    border-top: 1px solid var(--color-line);
+  }
+
+  /* Tables inside prose scroll on their own rather than widening the page. */
+  .x-prose table {
+    display: block;
+    overflow-x: auto;
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9375rem;
+  }
+  .x-prose th,
+  .x-prose td {
+    border: 1px solid var(--color-line);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+  }
+  .x-prose th {
+    color: var(--color-ink);
+    background: var(--color-elevated);
+  }
+}

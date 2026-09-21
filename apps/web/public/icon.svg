@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!--
+    Favicon. Replaceable: swap for the community's official mark.
+    Matches <XenonMark/> so the tab icon and the header logo are the same shape.
+  -->
+  <rect width="32" height="32" rx="6" fill="#050705"/>
+  <path d="M5 4h5.6l5.4 8.1L21.4 4H27l-8.2 12.1L27 28h-5.6L16 20.1 10.6 28H5l8.2-11.9Z" fill="#E8EDE8"/>
+  <path d="M5 4h5.6l1.3 2H6.2Z" fill="#2AFD23"/>
+</svg>

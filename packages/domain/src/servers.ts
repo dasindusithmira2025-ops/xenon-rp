@@ -1,4 +1,4 @@
-import { NotFoundError } from '@xenon/core';
+import { nextRestartAt, NotFoundError } from '@xenon/core';
 import type { Db, Server, ServerStatusSnapshot } from '@xenon/database';
 import { cacheDelete, cached } from '@xenon/jobs';
 import { type Actor, requirePermission } from '@xenon/permissions';
@@ -88,7 +88,11 @@ export async function statusBoard(db: Db): Promise<StatusBoard> {
         maxPlayers: snapshot?.maxPlayers ?? server.maxPlayers,
         queueLength: state === 'ONLINE' ? (snapshot?.queueLength ?? null) : null,
         latencyMs: snapshot?.latencyMs ?? null,
-        nextRestartAt: snapshot?.nextRestartAt?.toISOString() ?? null,
+        // Prefer the value the poller recorded; fall back to computing it from
+        // the server's own schedule so a snapshot written before the cron was
+        // configured does not read as "not scheduled".
+        nextRestartAt:
+          (snapshot?.nextRestartAt ?? nextRestartAt(server.restartCron))?.toISOString() ?? null,
         connectUrl: server.connectUrl,
         updatedAt: snapshot?.createdAt.toISOString() ?? null,
         error: snapshot?.error ?? null,

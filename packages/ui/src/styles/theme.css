@@ -364,12 +364,18 @@
     background-size: 48px 48px;
   }
 
-  /* Vignette that keeps hero text legible over any photography, without
-     needing a per-image treatment. */
+  /*
+   * Hero scrim.
+   *
+   * Weighted towards the bottom-left, where the headline and the buttons sit,
+   * and deliberately light across the upper right so the image still reads as
+   * an image. A uniform black wash would guarantee contrast and destroy the
+   * photography at the same time.
+   */
   .x-cinema-scrim {
     background:
-      linear-gradient(180deg, #020302e6 0%, #02030266 34%, #02030299 72%, var(--color-void) 100%),
-      radial-gradient(120% 80% at 50% 0%, transparent 40%, #020302cc 100%);
+      linear-gradient(100deg, #020302f2 0%, #020302cc 28%, #02030259 58%, #0203021a 100%),
+      linear-gradient(180deg, #02030299 0%, transparent 26%, #02030273 78%, var(--color-void) 100%);
   }
 
   .x-rule {

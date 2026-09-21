@@ -17,7 +17,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "clean": "rimraf generated .turbo *.tsbuildinfo",
-    "grant-owner": "tsx prisma/grant-owner.ts"
+    "grant-owner": "tsx prisma/grant-owner.ts",
+    "seed:dev": "tsx prisma/seed-dev.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",

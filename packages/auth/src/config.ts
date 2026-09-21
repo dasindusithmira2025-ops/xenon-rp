@@ -53,7 +53,11 @@ export const authConfig: NextAuthConfig = {
     updateAge: 60 * 60 * 24,
   },
 
-  trustHost: serverEnv.AUTH_TRUST_HOST,
+  // Production must opt in explicitly: trusting the Host header behind a proxy
+  // that does not rewrite it lets an attacker steer the OAuth callback. In
+  // development the host is always the dev server on localhost, and requiring
+  // the flag there only produces an UntrustedHost error on a fresh clone.
+  trustHost: serverEnv.AUTH_TRUST_HOST || serverEnv.NODE_ENV !== 'production',
   secret: serverEnv.AUTH_SECRET,
 
   pages: {
