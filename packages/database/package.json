@@ -18,7 +18,8 @@
     "typecheck": "tsc --noEmit",
     "clean": "rimraf generated .turbo *.tsbuildinfo",
     "grant-owner": "tsx prisma/grant-owner.ts",
-    "seed:dev": "tsx prisma/seed-dev.ts"
+    "seed:dev": "tsx prisma/seed-dev.ts",
+    "reset": "tsx prisma/reset.ts"
   },
   "dependencies": {
     "@prisma/adapter-pg": "7.10.0",

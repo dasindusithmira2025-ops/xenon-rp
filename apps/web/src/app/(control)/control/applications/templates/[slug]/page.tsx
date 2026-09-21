@@ -5,6 +5,7 @@ import { Badge } from '@xenon/ui';
 import { ControlPage } from '~/components/control/control-page';
 import { TemplateBuilder } from '~/components/control/template-builder';
 import { requireCapability } from '~/server/context';
+import { loadOrStatus } from '~/server/load';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +30,7 @@ export default async function BuilderPage({
   await requireCapability('applications.manage_templates');
 
   const [template, departments, roles] = await Promise.all([
-    getTemplateTree(prisma, slug),
+    loadOrStatus(getTemplateTree(prisma, slug)),
     prisma.department.findMany({ select: { id: true, name: true }, orderBy: { sortOrder: 'asc' } }),
     prisma.role.findMany({ select: { key: true, name: true }, orderBy: { priority: 'desc' } }),
   ]);

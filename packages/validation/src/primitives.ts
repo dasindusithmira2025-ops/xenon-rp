@@ -38,6 +38,16 @@ export const publicId = z
   .transform((value) => normalisePublicId(value) ?? value)
   .refine(isPublicId, 'must be a Xenon identifier, e.g. XN-WL-1842');
 
+/**
+ * Either form of identifier: the database id or the public one.
+ *
+ * Staff screens address records by the identifier a human can read off the
+ * page - XN-WL-1842 - while internal callers pass the cuid. The domain
+ * services already accept both, so validating for one of them was a rule that
+ * only ever rejected the form staff actually use.
+ */
+export const reference = z.union([cuid, publicId]);
+
 export const hexColour = z
   .string()
   .regex(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/, 'must be a hex colour, e.g. #2AFD23');

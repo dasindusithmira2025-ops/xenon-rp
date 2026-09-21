@@ -11,6 +11,7 @@ import { ApplicationForm } from '~/components/applications/application-form';
 import { ApplicationTimeline } from '~/components/applications/timeline';
 import { PortalPage, PortalSection } from '~/components/portal/portal-page';
 import { currentActor, requireUserId } from '~/server/context';
+import { loadOrStatus } from '~/server/load';
 
 export const metadata: Metadata = {
   title: 'Application',
@@ -38,7 +39,7 @@ export default async function ApplicationPage({
   const { id } = await params;
   const [actor, userId] = await Promise.all([currentActor(), requireUserId()]);
 
-  const view = await getSubmissionView(prisma, actor, id);
+  const view = await loadOrStatus(getSubmissionView(prisma, actor, id));
   const { submission } = view;
 
   const [comments, characters] = await Promise.all([

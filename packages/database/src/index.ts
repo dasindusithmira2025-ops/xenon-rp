@@ -5,6 +5,7 @@ export * from '../generated/client/client';
 export { prisma, transaction, type Db } from './client';
 export { allocatePublicId } from './public-id';
 export { seedBaseline } from './seed-baseline';
+export { truncateAll } from './truncate';
 
 // Type-level guard that core's domain unions still match the Prisma enums.
 import './enum-parity';

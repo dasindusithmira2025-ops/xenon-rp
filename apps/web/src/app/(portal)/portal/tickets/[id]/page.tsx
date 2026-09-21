@@ -11,6 +11,7 @@ import type { Metadata } from 'next';
 import { PortalPage } from '~/components/portal/portal-page';
 import { TicketReply } from '~/components/portal/ticket-reply';
 import { currentActor } from '~/server/context';
+import { loadOrStatus } from '~/server/load';
 
 export const metadata: Metadata = {
   title: 'Ticket',
@@ -41,7 +42,7 @@ export default async function TicketPage({
   const { id } = await params;
   const actor = await currentActor();
 
-  const ticket = await getTicket(prisma, actor, id);
+  const ticket = await loadOrStatus(getTicket(prisma, actor, id));
   if (ticket === null) notFound();
 
   const closed = ticket.status === 'CLOSED';

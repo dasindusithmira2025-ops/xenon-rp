@@ -16,6 +16,7 @@ import { ApplicationTimeline } from '~/components/applications/timeline';
 import { ControlPage } from '~/components/control/control-page';
 import { ReviewActions } from '~/components/control/review-actions';
 import { requireCapability } from '~/server/context';
+import { loadOrStatus } from '~/server/load';
 
 export const dynamic = 'force-dynamic';
 
@@ -42,7 +43,7 @@ export default async function ReviewPage({
   const { id } = await params;
   const actor = await requireCapability('applications.view');
 
-  const view = await getSubmissionView(prisma, actor, id);
+  const view = await loadOrStatus(getSubmissionView(prisma, actor, id));
   const { submission } = view;
 
   const [comments, history, reviewers, previous] = await Promise.all([

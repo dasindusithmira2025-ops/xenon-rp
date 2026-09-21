@@ -4,6 +4,7 @@ import {
   type Prisma,
   prisma,
   seedBaseline,
+  truncateAll,
   type User,
 } from '@xenon/database';
 import { ensureUserFromDiscord } from '@xenon/domain';
@@ -32,26 +33,9 @@ function nextSnowflake(): string {
   return `9000000000000${String(snowflakeCounter).padStart(5, '0')}`;
 }
 
-/**
- * Empty every table and rebuild the baseline.
- *
- * Truncate rather than delete-in-order: the schema has enough cycles
- * (submissions reference users, users reference submissions through assignee)
- * that a hand-maintained delete order is a thing that breaks every time
- * somebody adds a relation. Table names are read from the catalogue so the list
- * cannot go stale either.
- */
+/** Empty every table and rebuild the baseline. */
 export async function resetDatabase(): Promise<void> {
-  const tables = await prisma.$queryRaw<{ tablename: string }[]>`
-    SELECT tablename FROM pg_tables
-    WHERE schemaname = 'public' AND tablename <> '_prisma_migrations'
-  `;
-
-  if (tables.length > 0) {
-    const list = tables.map((row) => `"public"."${row.tablename}"`).join(', ');
-    await prisma.$executeRawUnsafe(`TRUNCATE TABLE ${list} RESTART IDENTITY CASCADE`);
-  }
-
+  await truncateAll(prisma);
   snowflakeCounter = 0;
   await seedBaseline(prisma);
 }

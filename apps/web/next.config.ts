@@ -48,6 +48,25 @@ const isDev = process.env.NODE_ENV !== 'production';
 const nextConfig: NextConfig = {
   reactStrictMode: true,
 
+  /*
+   * Next keeps its dev-server lock inside the build directory and refuses a
+   * second dev server for the same one. The E2E suite sets this so it can run
+   * against its own server without making the developer stop theirs.
+   */
+  distDir: process.env.NEXT_DIST_DIR ?? '.next',
+
+  experimental: {
+    /*
+     * Required by `unauthorized()` and `forbidden()`, which every gated page
+     * and server action reaches through src/server/context.ts. Without this
+     * they throw instead of rendering app/unauthorized.tsx and
+     * app/forbidden.tsx, and a signed-out visit to /portal returns a blank
+     * document - which is exactly what it did until an end-to-end test
+     * navigated to one.
+     */
+    authInterrupts: true,
+  },
+
   // Next.js writes AGENTS.md / CLAUDE.md into the app directory unless told
   // not to. This repository documents itself in docs/, and generated files
   // that reappear after every dev boot are noise in `git status`.

@@ -8,6 +8,7 @@ import {
   optionalPlainText,
   plainText,
   publicId,
+  reference,
   slug,
 } from './primitives';
 import { sanitizeRichText } from './sanitize';
@@ -86,7 +87,7 @@ export const submitApplicationInput = z.object({
 });
 
 export const reviewDecisionInput = z.object({
-  submissionId: cuid,
+  submissionId: reference,
   publicNote: optionalPlainText(2000),
   staffNote: optionalPlainText(2000),
 });
@@ -102,19 +103,19 @@ export const requestChangesInput = reviewDecisionInput.extend({
 });
 
 export const assignReviewerInput = z.object({
-  submissionId: cuid,
+  submissionId: reference,
   assigneeId: cuid.nullable(),
 });
 
 export const scheduleInterviewInput = z.object({
-  submissionId: cuid,
+  submissionId: reference,
   scheduledFor: z.coerce.date(),
   location: optionalPlainText(200),
   hostId: cuid.optional(),
 });
 
 export const applicationCommentInput = z.object({
-  submissionId: cuid,
+  submissionId: reference,
   body: plainText(1, 4000),
   visibility: z.enum(['INTERNAL', 'APPLICANT']).default('INTERNAL'),
 });

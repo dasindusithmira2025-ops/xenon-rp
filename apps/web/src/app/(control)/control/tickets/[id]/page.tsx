@@ -8,6 +8,7 @@ import { Avatar, Badge, Panel } from '@xenon/ui';
 import { ControlPage } from '~/components/control/control-page';
 import { TicketWorkspace } from '~/components/control/ticket-workspace';
 import { currentActor, requireCapability } from '~/server/context';
+import { loadOrStatus } from '~/server/load';
 
 export const dynamic = 'force-dynamic';
 
@@ -29,7 +30,7 @@ export default async function ControlTicketPage({
   await requireCapability('tickets.view');
   const actor = await currentActor();
 
-  const ticket = await getTicket(prisma, actor, id);
+  const ticket = await loadOrStatus(getTicket(prisma, actor, id));
   if (ticket === null) notFound();
 
   const staff = await prisma.user.findMany({
