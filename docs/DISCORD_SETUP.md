@@ -60,6 +60,14 @@ The local infrastructure ports are PostgreSQL `5442` and Redis `6389`; preserve
 the values already present in `.env.example` unless you intentionally run the
 services elsewhere.
 
+The Discord invite and channel IDs are ordinary Xenon settings, not secrets.
+Set the invite under **Control → Settings → Discord invite URL**
+(`community.discordInvite`). Set the primary review, announcement, and log
+channel IDs under **Control → Discord**; a template can override the review
+channel for a specific application type. This repository reads the invite from
+the existing database setting rather than a `DISCORD_INVITE_URL` environment
+variable, and keeps channel IDs with their guild/template configuration.
+
 ## 3. Create and install the bot
 
 In the Developer Portal, open **Bot**, create/configure the bot user, and use
