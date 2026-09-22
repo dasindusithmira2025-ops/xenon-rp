@@ -38,6 +38,7 @@ export interface RateLimitResult {
  */
 export const rateLimits = {
   signIn: { name: 'auth:signin', limit: 10, windowSeconds: 300 },
+  discordMembershipResync: { name: 'discord:membership-resync', limit: 3, windowSeconds: 300 },
   applicationStart: { name: 'app:start', limit: 10, windowSeconds: 3600 },
   applicationSubmit: { name: 'app:submit', limit: 6, windowSeconds: 3600 },
   applicationAutosave: { name: 'app:autosave', limit: 240, windowSeconds: 300 },

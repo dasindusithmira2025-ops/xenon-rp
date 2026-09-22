@@ -73,7 +73,7 @@ export async function checkEligibility(
           label: 'Signed in with Discord',
           met: false,
           action: 'Sign in to apply',
-          href: '/api/auth/signin',
+          href: '/signin',
         },
       ],
       closedReason: openState.reason,
@@ -86,7 +86,7 @@ export async function checkEligibility(
     select: {
       createdAt: true,
       status: true,
-      discordAccount: { select: { isGuildMember: true, guildJoinedAt: true } },
+      discordAccount: { select: { guildMembershipState: true, guildJoinedAt: true } },
       gameIdentities: { where: { unlinkedAt: null }, select: { id: true }, take: 1 },
       characters: { where: { status: 'ACTIVE' }, select: { id: true }, take: 1 },
       ruleAcceptances: { select: { ruleSet: { select: { isCurrent: true } } } },
@@ -127,12 +127,21 @@ export async function checkEligibility(
   }
 
   if (template.requiresGuildMember) {
+    const membershipState = user.discordAccount?.guildMembershipState ?? 'UNKNOWN';
+    const membershipAction =
+      membershipState === 'NOT_MEMBER'
+        ? 'Join the Discord'
+        : membershipState === 'PENDING_SCREENING'
+          ? 'Finish Discord screening'
+          : membershipState === 'MISCONFIGURED'
+            ? 'Discord setup needs attention'
+            : 'Check membership status';
     requirements.push({
       key: 'guild_member',
       label: 'Member of the Xenon Discord',
-      met: user.discordAccount?.isGuildMember ?? false,
-      action: 'Join the Discord',
-      href: '/portal',
+      met: membershipState === 'MEMBER',
+      action: membershipAction,
+      href: '/portal/account',
     });
   }
 

@@ -3,8 +3,10 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import {
   approveApplication,
   autosave,
+  checkEligibility,
   getSubmissionView,
   rejectApplication,
+  requestInterview,
   requestChanges,
   startApplication,
   submitApplication,
@@ -43,6 +45,26 @@ beforeEach(async () => {
 });
 
 describe('application lifecycle', () => {
+  it('keeps unknown Discord membership distinct from confirmed absence in eligibility', async () => {
+    const template = await createTemplate({ requiresGuildMember: true });
+    const { user } = await createActor({ guildMember: false });
+    await prisma.discordAccount.update({
+      where: { userId: user.id },
+      data: { guildMembershipState: 'UNAVAILABLE' },
+    });
+
+    const eligibility = await checkEligibility(prisma, template, user.id);
+    const guildRequirement = eligibility.requirements.find((item) => item.key === 'guild_member');
+
+    expect(guildRequirement).toEqual({
+      key: 'guild_member',
+      label: 'Member of the Xenon Discord',
+      met: false,
+      action: 'Check membership status',
+      href: '/portal/account',
+    });
+  });
+
   it('carries a draft through changes and resubmission to an approval that grants access', async () => {
     const template = await createTemplate({
       grantsWhitelist: true,
@@ -199,6 +221,108 @@ describe('application lifecycle', () => {
     // A rejection grants nothing.
     const whitelist = await prisma.whitelist.findUnique({ where: { userId: applicant.id } });
     expect(whitelist).toBeNull();
+  });
+
+  it('records an interview request, staff note and applicant instructions with one transition', async () => {
+    const template = await createTemplate();
+    const { user: applicant, actor: applicantActor } = await createActor({
+      displayName: 'Interview Applicant',
+    });
+    const { actor: reviewer } = await createActor({
+      displayName: 'Interview Reviewer',
+      roleKeys: ['reviewer'],
+    });
+
+    const draft = await startApplication(prisma, applicantActor, template.slug);
+    await autosave(prisma, applicantActor, {
+      submissionId: draft.id,
+      revision: 0,
+      answers: await fillRequiredAnswers(prisma, draft.id),
+    });
+    const submitted = await submitApplication(prisma, applicantActor, draft.id);
+
+    const requested = await requestInterview(prisma, reviewer, {
+      reference: submitted.publicId,
+      publicNote: 'Please be ready to discuss your character background.',
+      staffNote: 'Ask follow-up questions about the application timeline.',
+    });
+
+    expect(requested.status).toBe('INTERVIEW_REQUIRED');
+    expect(
+      await prisma.interview.findFirstOrThrow({ where: { submissionId: draft.id } }),
+    ).toMatchObject({
+      status: 'REQUESTED',
+      notes: 'Please be ready to discuss your character background.',
+    });
+    expect(
+      await prisma.applicationReview.findFirstOrThrow({
+        where: { submissionId: draft.id, decision: 'INTERVIEW_REQUESTED' },
+      }),
+    ).toMatchObject({
+      publicNote: 'Please be ready to discuss your character background.',
+      staffNote: 'Ask follow-up questions about the application timeline.',
+      source: 'WEB',
+    });
+    expect(
+      (
+        await prisma.notification.findFirstOrThrow({
+          where: { userId: applicant.id, type: 'APPLICATION_INTERVIEW_REQUESTED' },
+        })
+      ).body,
+    ).toContain('Please be ready to discuss your character background.');
+    expect(await auditActions(draft.id)).toContain('application.interview_requested');
+    expect(await eventTypes(draft.id)).toContain('INTERVIEW_REQUESTED');
+  });
+
+  it('commits only one of two simultaneous Discord review decisions', async () => {
+    const template = await createTemplate();
+    const { actor: applicantActor } = await createActor();
+    const { actor: approver } = await createActor({ roleKeys: ['reviewer'] });
+    const { actor: rejector } = await createActor({ roleKeys: ['reviewer'] });
+
+    const draft = await startApplication(prisma, applicantActor, template.slug);
+    await autosave(prisma, applicantActor, {
+      submissionId: draft.id,
+      revision: 0,
+      answers: await fillRequiredAnswers(prisma, draft.id),
+    });
+    await submitApplication(prisma, applicantActor, draft.id);
+
+    const outcomes = await Promise.allSettled([
+      approveApplication(prisma, { ...approver, source: 'DISCORD' }, { reference: draft.publicId }),
+      rejectApplication(
+        prisma,
+        { ...rejector, source: 'DISCORD' },
+        {
+          reference: draft.publicId,
+          publicNote: 'This application needs a different approach before acceptance.',
+        },
+      ),
+    ]);
+
+    expect(outcomes.filter((outcome) => outcome.status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.filter((outcome) => outcome.status === 'rejected')).toHaveLength(1);
+
+    const final = await prisma.applicationSubmission.findUniqueOrThrow({ where: { id: draft.id } });
+    expect(['APPROVED', 'REJECTED']).toContain(final.status);
+    expect(
+      await prisma.applicationEvent.count({
+        where: { submissionId: draft.id, toStatus: { in: ['APPROVED', 'REJECTED'] } },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.applicationReview.count({
+        where: { submissionId: draft.id, decision: { in: ['APPROVED', 'REJECTED'] } },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.auditLog.count({
+        where: {
+          entityId: draft.id,
+          action: { in: ['application.approved', 'application.rejected'] },
+        },
+      }),
+    ).toBe(1);
   });
 
   it('refuses review actions from an account without the capability', async () => {

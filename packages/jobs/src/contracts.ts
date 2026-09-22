@@ -30,6 +30,8 @@ export interface JobPayloads {
   'discord.role.sync': { userId: string; reason: string };
   /** Refresh cached guild metadata and member counts. */
   'discord.guild.sync': { guildId: string };
+  /** Look up one known Discord snowflake through the bot's guild REST access. */
+  'discord.membership.sync': { userId: string; reason: string };
 
   /** Push one user's whitelist state to every configured game server. */
   'fivem.whitelist.sync': { userId: string; reason: string };
@@ -66,6 +68,7 @@ export const retryPolicy: Record<JobName, { attempts: number; backoffMs: number 
   'discord.channel.post': { attempts: 6, backoffMs: 5_000 },
   'discord.role.sync': { attempts: 8, backoffMs: 5_000 },
   'discord.guild.sync': { attempts: 3, backoffMs: 30_000 },
+  'discord.membership.sync': { attempts: 4, backoffMs: 5_000 },
   'fivem.whitelist.sync': { attempts: 10, backoffMs: 10_000 },
   'fivem.status.poll': { attempts: 2, backoffMs: 5_000 },
   'applications.expire': { attempts: 2, backoffMs: 60_000 },
@@ -77,8 +80,9 @@ export const retryPolicy: Record<JobName, { attempts: number; backoffMs: number 
  *
  * Approving an application writes the decision, updates the review card and
  * syncs roles; if a reviewer double-clicks, or a retry re-runs the service, the
- * second enqueue must not produce a second Discord message. Jobs whose id is
- * `undefined` are genuinely independent and are allowed to run once each.
+ * second enqueue must not produce a second Discord message. State refresh and
+ * membership jobs remain independent: BullMQ retains completed IDs, which
+ * would otherwise suppress a later, legitimate refresh indefinitely.
  *
  * The separator is `~` rather than the obvious `:`, because BullMQ builds Redis
  * keys out of job ids and refuses any id containing a colon.
@@ -89,14 +93,16 @@ export function jobIdFor<TName extends JobName>(
 ): string | undefined {
   switch (name) {
     case 'discord.review.post':
-    case 'discord.review.update':
-      return `${name}~${(payload as JobPayloads['discord.review.post']).submissionId}`;
+      return `discord.review.post~${(payload as JobPayloads['discord.review.post']).submissionId}`;
     case 'discord.dm':
-      return `${name}~${(payload as JobPayloads['discord.dm']).notificationId}`;
-    case 'discord.guild.sync':
-      return `${name}~${(payload as JobPayloads['discord.guild.sync']).guildId}`;
+      return `discord.dm~${(payload as JobPayloads['discord.dm']).notificationId}`;
     // Role and whitelist syncs deliberately do not collapse: two changes in
     // quick succession must both be reconciled, and each run is idempotent.
+    // Guild, membership and review updates also remain independent so a later
+    // explicit resync or state transition is not hidden by a retained job ID.
+    case 'discord.review.update':
+    case 'discord.guild.sync':
+    case 'discord.membership.sync':
     case 'discord.channel.post':
     case 'discord.role.sync':
     case 'fivem.whitelist.sync':

@@ -56,7 +56,14 @@ const submissionInclude = {
       avatarUrl: true,
       whitelistState: true,
       createdAt: true,
-      discordAccount: { select: { username: true, discordId: true, isGuildMember: true } },
+      discordAccount: {
+        select: {
+          username: true,
+          discordId: true,
+          isGuildMember: true,
+          guildMembershipState: true,
+        },
+      },
     },
   },
   character: true,
@@ -295,9 +302,23 @@ export async function autosave(
       });
     }
 
-    return tx.applicationSubmission.update({
-      where: { id: submission.id },
+    const changed = await tx.applicationSubmission.updateMany({
+      where: {
+        id: submission.id,
+        revision: input.revision,
+        status: submission.status,
+      },
       data: { revision: { increment: 1 }, lastSavedAt: savedAt },
+    });
+    if (changed.count !== 1) {
+      throw new ConflictError(
+        'APPLICATION_REVISION_CHANGED',
+        'This application was edited somewhere else. Reload to see the latest version.',
+      );
+    }
+
+    return tx.applicationSubmission.findUniqueOrThrow({
+      where: { id: submission.id },
       select: { revision: true },
     });
   });
@@ -344,8 +365,8 @@ export async function submitApplication(
 
   const now = new Date();
   await transaction(db, async (tx) => {
-    await tx.applicationSubmission.update({
-      where: { id: current.id },
+    const changed = await tx.applicationSubmission.updateMany({
+      where: { id: current.id, status: current.status },
       data: {
         status: target,
         submittedAt: now,
@@ -358,6 +379,7 @@ export async function submitApplication(
             : null,
       },
     });
+    if (changed.count !== 1) throw applicationAlreadyChanged();
 
     await tx.applicationEvent.create({
       data: {
@@ -369,15 +391,15 @@ export async function submitApplication(
         toStatus: target,
       },
     });
-  });
 
-  await recordAudit(db, actor, {
-    action: resubmission ? 'application.resubmitted' : 'application.submitted',
-    entityType: 'application_submission',
-    entityId: current.id,
-    entityLabel: current.publicId,
-    before: { status: current.status },
-    after: { status: target },
+    await recordAudit(tx, actor, {
+      action: resubmission ? 'application.resubmitted' : 'application.submitted',
+      entityType: 'application_submission',
+      entityId: current.id,
+      entityLabel: current.publicId,
+      before: { status: current.status },
+      after: { status: target },
+    });
   });
 
   const copy = notificationCopy.applicationSubmitted(current.publicId, current.template.name);
@@ -401,24 +423,34 @@ export async function withdrawApplication(
 
   assertTransition(current.status, 'WITHDRAWN');
 
-  const submission = await db.applicationSubmission.update({
-    where: { id: current.id },
-    data: { status: 'WITHDRAWN', decidedAt: new Date() },
-  });
+  const submission = await transaction(db, async (tx) => {
+    const changed = await tx.applicationSubmission.updateMany({
+      where: { id: current.id, status: current.status },
+      data: { status: 'WITHDRAWN', decidedAt: new Date() },
+    });
+    if (changed.count !== 1) throw applicationAlreadyChanged();
 
-  await appendEvent(db, actor, current.id, {
-    type: 'WITHDRAWN',
-    fromStatus: current.status,
-    toStatus: 'WITHDRAWN',
-  });
+    await tx.applicationEvent.create({
+      data: {
+        submissionId: current.id,
+        type: 'WITHDRAWN',
+        actorId: actor.userId,
+        source: actor.source,
+        fromStatus: current.status,
+        toStatus: 'WITHDRAWN',
+      },
+    });
 
-  await recordAudit(db, actor, {
-    action: 'application.withdrawn',
-    entityType: 'application_submission',
-    entityId: current.id,
-    entityLabel: current.publicId,
-    before: { status: current.status },
-    after: { status: 'WITHDRAWN' },
+    await recordAudit(tx, actor, {
+      action: 'application.withdrawn',
+      entityType: 'application_submission',
+      entityId: current.id,
+      entityLabel: current.publicId,
+      before: { status: current.status },
+      after: { status: 'WITHDRAWN' },
+    });
+
+    return tx.applicationSubmission.findUniqueOrThrow({ where: { id: current.id } });
   });
 
   await enqueueBestEffort('discord.review.update', { submissionId: current.id });
@@ -438,6 +470,23 @@ export async function listOwnSubmissions(db: Db, userId: string) {
   });
 }
 
+/** Read one player's latest application, optionally narrowed to a public id. */
+export async function getOwnApplication(db: Db, actor: Actor, reference?: string) {
+  const userId = requireUser(actor);
+  const publicId = reference === undefined ? undefined : normalisePublicId(reference);
+  if (reference !== undefined && publicId === null) return null;
+  const requestedPublicId = publicId ?? undefined;
+
+  return db.applicationSubmission.findFirst({
+    where: {
+      applicantId: userId,
+      ...(requestedPublicId === undefined ? {} : { publicId: requestedPublicId }),
+    },
+    orderBy: { updatedAt: 'desc' },
+    include: { template: { select: { name: true } } },
+  });
+}
+
 /**
  * Close applications that have sat past their window.
  *
@@ -453,17 +502,37 @@ export async function expireStaleSubmissions(db: Db, actor: Actor): Promise<numb
     select: { id: true, publicId: true, status: true, applicantId: true },
   });
 
+  let expiredCount = 0;
   for (const submission of due) {
-    await db.applicationSubmission.update({
-      where: { id: submission.id },
-      data: { status: 'EXPIRED', decidedAt: new Date() },
-    });
+    const expired = await transaction(db, async (tx) => {
+      const changed = await tx.applicationSubmission.updateMany({
+        where: { id: submission.id, status: submission.status },
+        data: { status: 'EXPIRED', decidedAt: new Date() },
+      });
+      if (changed.count !== 1) return false;
 
-    await appendEvent(db, actor, submission.id, {
-      type: 'EXPIRED',
-      fromStatus: submission.status,
-      toStatus: 'EXPIRED',
+      await tx.applicationEvent.create({
+        data: {
+          submissionId: submission.id,
+          type: 'EXPIRED',
+          actorId: actor.userId,
+          source: actor.source,
+          fromStatus: submission.status,
+          toStatus: 'EXPIRED',
+        },
+      });
+      await recordAudit(tx, actor, {
+        action: 'application.expired',
+        entityType: 'application_submission',
+        entityId: submission.id,
+        entityLabel: submission.publicId,
+        before: { status: submission.status },
+        after: { status: 'EXPIRED' },
+      });
+      return true;
     });
+    if (!expired) continue;
+    expiredCount += 1;
 
     const copy = notificationCopy.expired(submission.publicId);
     const notification = await createNotification(db, {
@@ -471,7 +540,15 @@ export async function expireStaleSubmissions(db: Db, actor: Actor): Promise<numb
       ...copy,
     });
     await dispatchPending([notification]);
+    await enqueueBestEffort('discord.review.update', { submissionId: submission.id });
   }
 
-  return due.length;
+  return expiredCount;
+}
+
+function applicationAlreadyChanged(): ConflictError {
+  return new ConflictError(
+    'APPLICATION_ALREADY_CHANGED',
+    'This application was already updated. Refresh it before taking another action.',
+  );
 }

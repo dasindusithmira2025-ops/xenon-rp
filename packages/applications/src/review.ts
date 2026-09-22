@@ -59,21 +59,27 @@ async function applyTransition(
     eventType: Parameters<typeof appendEvent>[3]['type'];
     publicId: string;
     decisionNote?: string | null;
-    extra?: Prisma.ApplicationSubmissionUpdateInput;
+    extra?: Prisma.ApplicationSubmissionUncheckedUpdateManyInput;
     metadata?: Prisma.InputJsonValue;
+    withinTransaction?: (tx: Db) => Promise<void>;
   },
 ): Promise<ApplicationSubmission> {
   assertTransition(from, to);
 
   const submission = await transaction(db, async (tx) => {
-    const updated = await tx.applicationSubmission.update({
-      where: { id: submissionId },
+    const changed = await tx.applicationSubmission.updateMany({
+      where: { id: submissionId, status: from },
       data: {
         status: to,
         ...(options.decisionNote === undefined ? {} : { decisionNote: options.decisionNote }),
         ...(isTerminal(to) ? { decidedAt: new Date() } : {}),
         ...options.extra,
       },
+    });
+    if (changed.count !== 1) throw applicationAlreadyChanged();
+
+    const updated = await tx.applicationSubmission.findUniqueOrThrow({
+      where: { id: submissionId },
     });
 
     await tx.applicationEvent.create({
@@ -88,17 +94,19 @@ async function applyTransition(
       },
     });
 
-    return updated;
-  });
+    await recordAudit(tx, actor, {
+      action: options.action,
+      entityType: 'application_submission',
+      entityId: submissionId,
+      entityLabel: options.publicId,
+      before: { status: from },
+      after: { status: to },
+      ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+    });
 
-  await recordAudit(db, actor, {
-    action: options.action,
-    entityType: 'application_submission',
-    entityId: submissionId,
-    entityLabel: options.publicId,
-    before: { status: from },
-    after: { status: to },
-    ...(options.metadata === undefined ? {} : { metadata: options.metadata }),
+    await options.withinTransaction?.(tx);
+
+    return updated;
   });
 
   await enqueueBestEffort('discord.review.update', { submissionId });
@@ -139,27 +147,40 @@ export async function claimApplication(
       action: 'application.claimed',
       eventType: 'CLAIMED',
       publicId: current.publicId,
-      extra: { assignee: { connect: { id: userId } } },
+      extra: { assigneeId: userId },
+      withinTransaction: async (tx) => {
+        await tx.applicationReview.create({
+          data: {
+            submissionId: current.id,
+            reviewerId: userId,
+            decision: 'CLAIMED',
+            source: actor.source,
+          },
+        });
+      },
     });
 
     const copy = notificationCopy.reviewStarted(current.publicId);
     const notification = await createNotification(db, { userId: current.applicantId, ...copy });
     await dispatchPending([notification]);
   } else {
-    await db.applicationSubmission.update({
-      where: { id: current.id },
-      data: { assigneeId: userId },
+    await transaction(db, async (tx) => {
+      const changed = await tx.applicationSubmission.updateMany({
+        where: { id: current.id, status: 'UNDER_REVIEW', assigneeId: current.assigneeId },
+        data: { assigneeId: userId },
+      });
+      if (changed.count !== 1) throw applicationAlreadyChanged();
+
+      await tx.applicationReview.create({
+        data: {
+          submissionId: current.id,
+          reviewerId: userId,
+          decision: 'CLAIMED',
+          source: actor.source,
+        },
+      });
     });
   }
-
-  await db.applicationReview.create({
-    data: {
-      submissionId: current.id,
-      reviewerId: userId,
-      decision: 'CLAIMED',
-      source: actor.source,
-    },
-  });
 
   return db.applicationSubmission.findUniqueOrThrow({ where: { id: current.id } });
 }
@@ -175,23 +196,28 @@ export async function assignReviewer(
 
   const current = await loadForReview(db, reference);
 
-  const submission = await db.applicationSubmission.update({
-    where: { id: current.id },
-    data: { assigneeId },
-  });
+  const submission = await transaction(db, async (tx) => {
+    const changed = await tx.applicationSubmission.updateMany({
+      where: { id: current.id, assigneeId: current.assigneeId },
+      data: { assigneeId },
+    });
+    if (changed.count !== 1) throw applicationAlreadyChanged();
 
-  await appendEvent(db, actor, current.id, {
-    type: assigneeId === null ? 'UNCLAIMED' : 'ASSIGNED',
-    metadata: { assigneeId },
-  });
+    await appendEvent(tx, actor, current.id, {
+      type: assigneeId === null ? 'UNCLAIMED' : 'ASSIGNED',
+      metadata: { assigneeId },
+    });
 
-  await recordAudit(db, actor, {
-    action: 'application.assigned',
-    entityType: 'application_submission',
-    entityId: current.id,
-    entityLabel: current.publicId,
-    before: { assigneeId: current.assigneeId },
-    after: { assigneeId },
+    await recordAudit(tx, actor, {
+      action: 'application.assigned',
+      entityType: 'application_submission',
+      entityId: current.id,
+      entityLabel: current.publicId,
+      before: { assigneeId: current.assigneeId },
+      after: { assigneeId },
+    });
+
+    return tx.applicationSubmission.findUniqueOrThrow({ where: { id: current.id } });
   });
 
   await enqueueBestEffort('discord.review.update', { submissionId: current.id });
@@ -232,19 +258,20 @@ export async function requestChanges(
         current.template.expiryDays > 0
           ? { expiresAt: new Date(Date.now() + current.template.expiryDays * 86_400_000) }
           : {},
+      withinTransaction: async (tx) => {
+        await tx.applicationReview.create({
+          data: {
+            submissionId: current.id,
+            reviewerId: userId,
+            decision: 'CHANGES_REQUESTED',
+            publicNote: input.publicNote,
+            staffNote: input.staffNote ?? null,
+            source: actor.source,
+          },
+        });
+      },
     },
   );
-
-  await db.applicationReview.create({
-    data: {
-      submissionId: current.id,
-      reviewerId: userId,
-      decision: 'CHANGES_REQUESTED',
-      publicNote: input.publicNote,
-      staffNote: input.staffNote ?? null,
-      source: actor.source,
-    },
-  });
 
   const copy = notificationCopy.changesRequested(current.publicId, input.publicNote);
   const notification = await createNotification(db, { userId: current.applicantId, ...copy });
@@ -274,31 +301,33 @@ export async function requestInterview(
       action: 'application.interview_requested',
       eventType: 'INTERVIEW_REQUESTED',
       publicId: current.publicId,
+      decisionNote: input.publicNote ?? null,
+      withinTransaction: async (tx) => {
+        const publicId = await allocatePublicId(tx, 'interview');
+        await tx.interview.create({
+          data: {
+            publicId,
+            submissionId: current.id,
+            applicantId: current.applicantId,
+            status: 'REQUESTED',
+            notes: input.publicNote ?? null,
+          },
+        });
+        await tx.applicationReview.create({
+          data: {
+            submissionId: current.id,
+            reviewerId: userId,
+            decision: 'INTERVIEW_REQUESTED',
+            publicNote: input.publicNote ?? null,
+            staffNote: input.staffNote ?? null,
+            source: actor.source,
+          },
+        });
+      },
     },
   );
 
-  const publicId = await allocatePublicId(db, 'interview');
-  await db.interview.create({
-    data: {
-      publicId,
-      submissionId: current.id,
-      applicantId: current.applicantId,
-      status: 'REQUESTED',
-    },
-  });
-
-  await db.applicationReview.create({
-    data: {
-      submissionId: current.id,
-      reviewerId: userId,
-      decision: 'INTERVIEW_REQUESTED',
-      publicNote: input.publicNote ?? null,
-      staffNote: input.staffNote ?? null,
-      source: actor.source,
-    },
-  });
-
-  const copy = notificationCopy.interviewRequested(current.publicId);
+  const copy = notificationCopy.interviewRequested(current.publicId, input.publicNote ?? null);
   const notification = await createNotification(db, { userId: current.applicantId, ...copy });
   await dispatchPending([notification]);
 
@@ -422,14 +451,19 @@ export async function approveApplication(
   assertTransition(current.status, 'APPROVED');
 
   const submission = await transaction(db, async (tx) => {
-    const updated = await tx.applicationSubmission.update({
-      where: { id: current.id },
+    const changed = await tx.applicationSubmission.updateMany({
+      where: { id: current.id, status: current.status },
       data: {
         status: 'APPROVED',
         decidedAt: new Date(),
         decisionNote: input.publicNote ?? null,
         assigneeId: current.assigneeId ?? userId,
       },
+    });
+    if (changed.count !== 1) throw applicationAlreadyChanged();
+
+    const updated = await tx.applicationSubmission.findUniqueOrThrow({
+      where: { id: current.id },
     });
 
     await tx.applicationEvent.create({
@@ -467,20 +501,20 @@ export async function approveApplication(
       });
     }
 
-    return updated;
-  });
+    await recordAudit(tx, actor, {
+      action: 'application.approved',
+      entityType: 'application_submission',
+      entityId: current.id,
+      entityLabel: current.publicId,
+      before: { status: current.status },
+      after: { status: 'APPROVED' },
+      metadata: {
+        grantedRoles: current.template.grantRoleKeys,
+        grantsWhitelist: current.template.grantsWhitelist,
+      },
+    });
 
-  await recordAudit(db, actor, {
-    action: 'application.approved',
-    entityType: 'application_submission',
-    entityId: current.id,
-    entityLabel: current.publicId,
-    before: { status: current.status },
-    after: { status: 'APPROVED' },
-    metadata: {
-      grantedRoles: current.template.grantRoleKeys,
-      grantsWhitelist: current.template.grantsWhitelist,
-    },
+    return updated;
   });
 
   const copy = notificationCopy.approved(
@@ -506,6 +540,13 @@ export async function approveApplication(
   return submission;
 }
 
+function applicationAlreadyChanged(): ConflictError {
+  return new ConflictError(
+    'APPLICATION_ALREADY_CHANGED',
+    'This application was already updated. Refresh it before taking another action.',
+  );
+}
+
 /** Reject an application. The reason is mandatory and is shown to the applicant. */
 export async function rejectApplication(
   db: Db,
@@ -522,17 +563,18 @@ export async function rejectApplication(
     eventType: 'REJECTED',
     publicId: current.publicId,
     decisionNote: input.publicNote,
-    extra: { assignee: { connect: { id: current.assigneeId ?? userId } } },
-  });
-
-  await db.applicationReview.create({
-    data: {
-      submissionId: current.id,
-      reviewerId: userId,
-      decision: 'REJECTED',
-      publicNote: input.publicNote,
-      staffNote: input.staffNote ?? null,
-      source: actor.source,
+    extra: { assigneeId: current.assigneeId ?? userId },
+    withinTransaction: async (tx) => {
+      await tx.applicationReview.create({
+        data: {
+          submissionId: current.id,
+          reviewerId: userId,
+          decision: 'REJECTED',
+          publicNote: input.publicNote,
+          staffNote: input.staffNote ?? null,
+          source: actor.source,
+        },
+      });
     },
   });
 

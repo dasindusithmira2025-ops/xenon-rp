@@ -41,10 +41,12 @@ export const notificationCopy = {
     href: applicationHref(publicId),
   }),
 
-  interviewRequested: (publicId: string): NotificationCopy => ({
+  interviewRequested: (publicId: string, instructions: string | null = null): NotificationCopy => ({
     type: 'APPLICATION_INTERVIEW_REQUESTED',
     title: 'Interview required',
-    body: `${publicId} has moved to the interview stage. Staff will be in touch to arrange a time.`,
+    body:
+      `${publicId} has moved to the interview stage. Staff will be in touch to arrange a time.` +
+      (instructions === null ? '' : `\n\n${instructions}`),
     href: applicationHref(publicId),
   }),
 
