@@ -906,6 +906,7 @@ async function seedUsers(): Promise<number> {
                 username: fixture.username,
                 globalName: fixture.displayName,
                 isGuildMember: true,
+                guildMembershipState: 'MEMBER',
                 guildJoinedAt: new Date(),
               },
             },

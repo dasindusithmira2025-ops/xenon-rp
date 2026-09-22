@@ -2,7 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { EnvironmentValidationError, lazyEnv, parseEnv } from './parse';
-import { requireInProduction, runtimeSchema, siteSchema, storageSchema } from './schema';
+import {
+  authSchema,
+  discordMode,
+  discordSchema,
+  requireInProduction,
+  runtimeSchema,
+  siteSchema,
+  storageSchema,
+  validateDiscordMode,
+} from './schema';
 
 describe('parseEnv', () => {
   const schema = z.object({
@@ -117,5 +126,80 @@ describe('requireInProduction', () => {
         .safeParse({ NODE_ENV: 'production', NEXT_PUBLIC_SITE_URL: 'https://example.com' })
         .error?.issues.map((issue) => issue.path.join('.')) ?? [];
     expect(paths).not.toContain('FIVEM_BRIDGE_SECRET');
+  });
+});
+
+describe('Discord configuration', () => {
+  const schema = validateDiscordMode(
+    runtimeSchema.extend(authSchema.shape).extend(discordSchema.shape).extend({
+      DISCORD_MODE: discordMode,
+      NEXT_PUBLIC_SITE_URL: siteSchema.shape.NEXT_PUBLIC_SITE_URL,
+    }),
+  );
+
+  const configured = {
+    NODE_ENV: 'development',
+    DISCORD_MODE: 'enabled',
+    AUTH_SECRET: 'x'.repeat(32),
+    AUTH_DISCORD_ID: '12345678901234567',
+    AUTH_DISCORD_SECRET: 'rotated-secret',
+    AUTH_URL: 'http://localhost:3200/api/auth',
+    DISCORD_APPLICATION_ID: '12345678901234567',
+    DISCORD_BOT_TOKEN: 'rotated-bot-token',
+    DISCORD_GUILD_ID: '23456789012345678',
+    NEXT_PUBLIC_SITE_URL: 'http://localhost:3200',
+  };
+
+  it('allows an explicit disabled development environment with blank credentials', () => {
+    expect(
+      schema.safeParse({
+        NODE_ENV: 'development',
+        DISCORD_MODE: 'disabled',
+        AUTH_SECRET: 'x'.repeat(32),
+        NEXT_PUBLIC_SITE_URL: 'http://localhost:3200',
+      }).success,
+    ).toBe(true);
+  });
+
+  it('requires one matching application id for OAuth and the bot', () => {
+    const result = schema.safeParse({
+      ...configured,
+      DISCORD_APPLICATION_ID: '34567890123456789',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((issue) => issue.path[0] === 'DISCORD_APPLICATION_ID')).toBe(
+      true,
+    );
+  });
+
+  it('requires complete OAuth and bot credentials when enabled', () => {
+    const result = schema.safeParse({
+      NODE_ENV: 'development',
+      DISCORD_MODE: 'enabled',
+      AUTH_SECRET: 'x'.repeat(32),
+      NEXT_PUBLIC_SITE_URL: 'http://localhost:3200',
+    });
+    expect(result.success).toBe(false);
+    const paths = result.error?.issues.map((issue) => issue.path[0]);
+    expect(paths).toContain('AUTH_DISCORD_ID');
+    expect(paths).toContain('DISCORD_BOT_TOKEN');
+  });
+
+  it('requires the canonical callback origin in production', () => {
+    const result = schema.safeParse({
+      ...configured,
+      NODE_ENV: 'production',
+      AUTH_URL: 'https://auth.example.com/api/auth',
+      NEXT_PUBLIC_SITE_URL: 'https://xenon.example.com',
+    });
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((issue) => issue.path[0] === 'AUTH_URL')).toBe(true);
+  });
+
+  it('reports a malformed callback origin as configuration instead of throwing a URL exception', () => {
+    const result = schema.safeParse({ ...configured, AUTH_URL: 'http://' });
+
+    expect(result.success).toBe(false);
+    expect(result.error?.issues.some((issue) => issue.path[0] === 'AUTH_URL')).toBe(true);
   });
 });

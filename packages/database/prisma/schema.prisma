@@ -134,11 +134,15 @@ model DiscordAccount {
   locale        String?
 
   isGuildMember Boolean   @default(false)
+  /// The latest server-side bot lookup. Unknown is never treated as "not a member".
+  guildMembershipState DiscordMembershipState @default(UNKNOWN)
   guildNickname String?
   guildJoinedAt DateTime?
   /// Role snowflakes observed at the last sync. Diagnostic only: authorization
   /// resolves from UserRole, never from this array.
   guildRoleIds  String[]  @default([])
+  guildSyncedAt DateTime?
+  guildSyncError String?
 
   syncedAt     DateTime?
   syncFailedAt DateTime?
@@ -148,12 +152,22 @@ model DiscordAccount {
   updatedAt DateTime @updatedAt
 
   @@index([isGuildMember])
+  @@index([guildMembershipState])
   @@index([syncedAt])
   @@map("discord_accounts")
 }
 
-/// Auth.js OAuth account record. Separate from DiscordAccount: this holds
-/// short-lived provider tokens, that holds durable profile data.
+enum DiscordMembershipState {
+  UNKNOWN
+  MEMBER
+  PENDING_SCREENING
+  NOT_MEMBER
+  UNAVAILABLE
+  MISCONFIGURED
+}
+
+/// Auth.js provider identity pointer. DiscordAccount holds the safe profile
+/// projection; Discord OAuth tokens are deliberately never stored here.
 model Account {
   id                String  @id @default(cuid(2))
   userId            String

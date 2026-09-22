@@ -1,6 +1,9 @@
 'use server';
 
+import { redirect } from 'next/navigation';
+
 import { signIn, signOut } from '@xenon/auth';
+import { serverEnv } from '@xenon/config/server';
 import { enforceRateLimit } from '@xenon/jobs';
 
 import { currentActor, rateLimitIdentity } from '~/server/context';
@@ -15,6 +18,8 @@ import { currentActor, rateLimitIdentity } from '~/server/context';
  */
 
 export async function signInWithDiscord(formData: FormData): Promise<void> {
+  if (serverEnv.DISCORD_MODE !== 'enabled') redirect('/signin?error=Configuration');
+
   const actor = await currentActor();
   await enforceRateLimit('signIn', rateLimitIdentity(actor));
 

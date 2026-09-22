@@ -24,7 +24,7 @@ const secret = (min = 32) => z.string().min(min, `must be at least ${min} charac
  * `undefined`, so a blank line in a production environment is correctly read as
  * missing rather than as a satisfied requirement.
  */
-function optional<TSchema extends z.ZodType>(schema: TSchema) {
+export function optional<TSchema extends z.ZodType>(schema: TSchema) {
   return z.preprocess(
     (value) => (typeof value === 'string' && value.trim().length === 0 ? undefined : value),
     schema.optional(),
@@ -54,10 +54,20 @@ export const securitySchema = z.object({
 
 export const authSchema = z.object({
   AUTH_SECRET: secret(32),
-  AUTH_DISCORD_ID: discordSnowflake,
-  AUTH_DISCORD_SECRET: z.string().min(1),
+  AUTH_DISCORD_ID: optional(discordSnowflake),
+  AUTH_DISCORD_SECRET: optional(z.string().min(1)),
   /** Auth.js needs the canonical origin to build callback URLs behind proxies. */
-  AUTH_URL: optional(z.url()),
+  AUTH_URL: optional(
+    z.url().refine((value) => {
+      const url = parseUrl(value);
+      if (url === null) return false;
+      return (
+        (url.pathname === '/' || url.pathname === '/api/auth') &&
+        url.search.length === 0 &&
+        url.hash.length === 0
+      );
+    }, 'must be an origin or end in /api/auth without query or fragment'),
+  ),
   AUTH_TRUST_HOST: z
     .enum(['true', 'false'])
     .default('false')
@@ -76,10 +86,104 @@ export const authSchema = z.object({
 });
 
 export const discordSchema = z.object({
-  DISCORD_BOT_TOKEN: z.string().min(1),
-  DISCORD_APPLICATION_ID: discordSnowflake,
-  DISCORD_GUILD_ID: discordSnowflake,
+  DISCORD_BOT_TOKEN: optional(z.string().min(1)),
+  DISCORD_APPLICATION_ID: optional(discordSnowflake),
+  DISCORD_GUILD_ID: optional(discordSnowflake),
 });
+
+export const discordMode = z.enum(['enabled', 'disabled']).default('disabled');
+
+/**
+ * Validate the shared Discord mode against only the credentials a process owns.
+ * Development can explicitly run with Discord disabled; production must have
+ * the complete real integration and may never silently fall back to a mock.
+ */
+export function validateDiscordMode<TShape extends z.ZodRawShape>(schema: z.ZodObject<TShape>) {
+  const declared = new Set(Object.keys(schema.shape));
+
+  return schema.superRefine((value, ctx) => {
+    const record = value as Record<string, unknown> & {
+      NODE_ENV?: string;
+      DISCORD_MODE?: 'enabled' | 'disabled';
+    };
+    const mode = record.DISCORD_MODE ?? 'disabled';
+    const productionRuntime = record.NODE_ENV === 'production' && !isBuildPhase();
+
+    if (productionRuntime && mode !== 'enabled') {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DISCORD_MODE'],
+        message: 'must be enabled in production; Discord cannot silently run disabled',
+      });
+    }
+
+    if (productionRuntime && declared.has('AUTH_URL') && record.AUTH_URL === undefined) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTH_URL'],
+        message: 'is required in production so OAuth callbacks use the validated public origin',
+      });
+    }
+
+    if (mode === 'enabled') {
+      for (const key of [
+        'AUTH_DISCORD_ID',
+        'AUTH_DISCORD_SECRET',
+        'DISCORD_APPLICATION_ID',
+        'DISCORD_BOT_TOKEN',
+        'DISCORD_GUILD_ID',
+      ]) {
+        if (declared.has(key) && record[key] === undefined) {
+          ctx.addIssue({
+            code: 'custom',
+            path: [key],
+            message: 'is required when DISCORD_MODE=enabled',
+          });
+        }
+      }
+    }
+
+    if (
+      typeof record.AUTH_DISCORD_ID === 'string' &&
+      typeof record.DISCORD_APPLICATION_ID === 'string' &&
+      record.AUTH_DISCORD_ID !== record.DISCORD_APPLICATION_ID
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['DISCORD_APPLICATION_ID'],
+        message: 'must match AUTH_DISCORD_ID; OAuth and bot must use the same application',
+      });
+    }
+
+    const authOrigin =
+      typeof record.AUTH_URL === 'string' ? parseUrl(record.AUTH_URL)?.origin : null;
+    const siteOrigin =
+      typeof record.NEXT_PUBLIC_SITE_URL === 'string'
+        ? parseUrl(record.NEXT_PUBLIC_SITE_URL)?.origin
+        : null;
+    if (
+      authOrigin !== undefined &&
+      authOrigin !== null &&
+      siteOrigin !== undefined &&
+      siteOrigin !== null &&
+      authOrigin !== siteOrigin
+    ) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['AUTH_URL'],
+        message: 'must use the same public origin as NEXT_PUBLIC_SITE_URL',
+      });
+    }
+  });
+}
+
+function parseUrl(value: string): URL | null {
+  try {
+    return new URL(value);
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Object storage. Optional outside production so a fresh clone runs against the

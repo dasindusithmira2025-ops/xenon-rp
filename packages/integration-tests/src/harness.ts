@@ -62,7 +62,17 @@ export async function createUser(options: TestUserOptions = {}): Promise<User> {
   if (options.guildMember ?? true) {
     await prisma.discordAccount.update({
       where: { userId: user.id },
-      data: { isGuildMember: true, guildJoinedAt: new Date() },
+      data: {
+        isGuildMember: true,
+        guildMembershipState: 'MEMBER',
+        guildJoinedAt: new Date(),
+        guildSyncedAt: new Date(),
+      },
+    });
+  } else {
+    await prisma.discordAccount.update({
+      where: { userId: user.id },
+      data: { isGuildMember: false, guildMembershipState: 'NOT_MEMBER', guildSyncedAt: new Date() },
     });
   }
 

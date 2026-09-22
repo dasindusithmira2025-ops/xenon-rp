@@ -1,12 +1,13 @@
-import { NotFoundError, normalisePublicId } from '@xenon/core';
+import { ConflictError, NotFoundError, normalisePublicId } from '@xenon/core';
 import {
   allocatePublicId,
   type Db,
   type OnboardingStep,
   type Prisma,
   type User,
+  transaction,
 } from '@xenon/database';
-import { type Actor, requirePermission } from '@xenon/permissions';
+import { type Actor, requirePermission, systemActor } from '@xenon/permissions';
 import type { ProfileInput } from '@xenon/validation';
 
 import { recordAudit } from './audit';
@@ -39,58 +40,175 @@ export interface DiscordProfile {
  * whitelist.
  */
 export async function ensureUserFromDiscord(db: Db, profile: DiscordProfile): Promise<User> {
-  const existing = await db.discordAccount.findUnique({
-    where: { discordId: profile.discordId },
-    select: { userId: true },
-  });
+  try {
+    return await transaction(db, async (tx) => {
+      const existing = await tx.discordAccount.findUnique({
+        where: { discordId: profile.discordId },
+        select: { userId: true },
+      });
 
-  if (existing !== null) {
+      if (existing !== null) {
+        await tx.discordAccount.update({
+          where: { discordId: profile.discordId },
+          data: profileFields(profile),
+        });
+
+        return tx.user.update({
+          where: { id: existing.userId },
+          data: { lastSeenAt: new Date() },
+        });
+      }
+
+      const publicId = await allocatePublicId(tx, 'user');
+
+      const created = await tx.user.create({
+        data: {
+          publicId,
+          displayName: profile.globalName ?? profile.username,
+          // Email is optional contact information, never an identity key.
+          email: profile.email ?? null,
+          avatarUrl: avatarUrlFor(profile),
+          lastSeenAt: new Date(),
+          onboardingStep: 'DISCORD_CONNECTED',
+          discordAccount: { create: { discordId: profile.discordId, ...profileFields(profile) } },
+          // Every account holds the baseline role from its first committed row.
+          roles: { create: [{ role: { connect: { key: 'member' } } }] },
+        },
+      });
+
+      const discordAccount = await tx.discordAccount.findUniqueOrThrow({
+        where: { discordId: profile.discordId },
+        select: { id: true },
+      });
+      await recordAudit(tx, systemActor, {
+        action: 'discord.account_linked',
+        entityType: 'discord_account',
+        entityId: discordAccount.id,
+        entityLabel: created.publicId,
+        after: { discordUserId: profile.discordId },
+      });
+      return created;
+    });
+  } catch (error) {
+    // Two OAuth callbacks can both observe an absent snowflake. The unique
+    // constraint chooses one transaction; the loser resolves the winner's
+    // account instead of creating a second Xenon identity or failing login.
+    if (!isUniqueViolation(error)) throw error;
+
+    const existing = await db.discordAccount.findUnique({
+      where: { discordId: profile.discordId },
+      select: { userId: true },
+    });
+    if (existing === null) throw error;
+
     await db.discordAccount.update({
       where: { discordId: profile.discordId },
-      data: {
-        username: profile.username,
-        globalName: profile.globalName ?? null,
-        discriminator: profile.discriminator ?? null,
-        avatar: profile.avatar ?? null,
-        locale: profile.locale ?? null,
-      },
+      data: profileFields(profile),
     });
-
     return db.user.update({
       where: { id: existing.userId },
       data: { lastSeenAt: new Date() },
     });
   }
+}
 
-  const publicId = await allocatePublicId(db, 'user');
+/** Raised when an OAuth callback would move a Discord snowflake between users. */
+export class DiscordIdentityConflictError extends ConflictError {
+  constructor() {
+    super(
+      'Discord identity ownership conflict',
+      'This Discord account is already connected to another Xenon account.',
+    );
+  }
+}
 
-  return db.user.create({
-    data: {
-      publicId,
-      displayName: profile.globalName ?? profile.username,
-      // Discord's email is verified by Discord; it is stored for contact only
-      // and is never a sign-in factor here.
-      email: profile.email ?? null,
-      avatarUrl: avatarUrlFor(profile),
-      lastSeenAt: new Date(),
-      onboardingStep: 'DISCORD_CONNECTED',
-      discordAccount: {
-        create: {
-          discordId: profile.discordId,
-          username: profile.username,
-          globalName: profile.globalName ?? null,
-          discriminator: profile.discriminator ?? null,
-          avatar: profile.avatar ?? null,
-          locale: profile.locale ?? null,
-        },
-      },
-      // Every account holds the baseline role, so "signed in" and "has a role
-      // row" never disagree.
-      roles: {
-        create: [{ role: { connect: { key: 'member' } } }],
-      },
-    },
+/**
+ * Refresh the safe profile projection and verify both sides of the one-to-one
+ * link. This never merges users or reassigns an existing Discord identity.
+ */
+export async function syncDiscordIdentity(
+  db: Db,
+  userId: string,
+  profile: DiscordProfile,
+): Promise<void> {
+  let linkCreated = false;
+
+  await transaction(db, async (tx) => {
+    const [byDiscordId, byUserId, user] = await Promise.all([
+      tx.discordAccount.findUnique({
+        where: { discordId: profile.discordId },
+        select: { id: true, userId: true },
+      }),
+      tx.discordAccount.findUnique({
+        where: { userId },
+        select: { discordId: true },
+      }),
+      tx.user.findUnique({
+        where: { id: userId },
+        select: { publicId: true, deletedAt: true },
+      }),
+    ]);
+
+    if (
+      user?.deletedAt !== null ||
+      (byDiscordId !== null && byDiscordId.userId !== userId) ||
+      (byUserId !== null && byUserId.discordId !== profile.discordId)
+    ) {
+      throw new DiscordIdentityConflictError();
+    }
+
+    const fields = profileFields(profile);
+    const account =
+      byDiscordId === null
+        ? await tx.discordAccount.create({
+            data: { userId, discordId: profile.discordId, ...fields },
+          })
+        : await tx.discordAccount.update({
+            where: { discordId: profile.discordId },
+            data: fields,
+          });
+    linkCreated = byDiscordId === null;
+
+    const changed = await tx.user.updateMany({
+      where: { id: userId, deletedAt: null },
+      data: { lastSeenAt: new Date(), avatarUrl: avatarUrlFor(profile) },
+    });
+    if (changed.count !== 1) throw new DiscordIdentityConflictError();
+
+    if (linkCreated) {
+      const actor: Actor = {
+        userId,
+        publicId: user.publicId,
+        label: user.publicId,
+        source: 'DISCORD',
+        permissions: new Set(),
+        roleKeys: new Set(),
+      };
+      await recordAudit(tx, actor, {
+        action: 'discord.account_linked',
+        entityType: 'discord_account',
+        entityId: account.id,
+        entityLabel: user.publicId,
+        after: { discordUserId: profile.discordId },
+      });
+    }
   });
+
+  await refreshOnboardingStep(db, userId);
+}
+
+function profileFields(profile: DiscordProfile) {
+  return {
+    username: profile.username,
+    globalName: profile.globalName ?? null,
+    discriminator: profile.discriminator ?? null,
+    avatar: profile.avatar ?? null,
+    locale: profile.locale ?? null,
+  };
+}
+
+function isUniqueViolation(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error && error.code === 'P2002';
 }
 
 function avatarUrlFor(profile: DiscordProfile): string | null {
@@ -303,7 +421,14 @@ export async function searchUsers(db: Db, query: UserSearchQuery = {}) {
       skip: query.skip ?? 0,
       take,
       include: {
-        discordAccount: { select: { username: true, discordId: true, isGuildMember: true } },
+        discordAccount: {
+          select: {
+            username: true,
+            discordId: true,
+            isGuildMember: true,
+            guildMembershipState: true,
+          },
+        },
         roles: { include: { role: { select: { key: true, name: true, colour: true } } } },
         _count: { select: { characters: true, submissions: true } },
       },

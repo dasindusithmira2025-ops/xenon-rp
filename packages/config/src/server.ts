@@ -5,11 +5,14 @@ import {
   discordSnowflake,
   fivemSchema,
   integrationsSchema,
+  optional,
   requireInProduction,
   runtimeSchema,
   securitySchema,
   siteSchema,
   storageSchema,
+  discordMode,
+  validateDiscordMode,
 } from './schema';
 
 import type { z } from 'zod';
@@ -21,19 +24,22 @@ import type { z } from 'zod';
  * Discord Gateway or the bot's REST identity. It enqueues jobs that the bot
  * process performs, which keeps the most sensitive credential in one process.
  */
-const webServerSchema = requireInProduction(
-  runtimeSchema
-    .extend(datastoreSchema.shape)
-    .extend(securitySchema.shape)
-    .extend(authSchema.shape)
-    .extend({
-      DISCORD_GUILD_ID: discordSnowflake,
-      DISCORD_APPLICATION_ID: discordSnowflake,
-    })
-    .extend(storageSchema.shape)
-    .extend(integrationsSchema.shape)
-    .extend(fivemSchema.shape)
-    .extend(siteSchema.shape),
+const webServerSchema = validateDiscordMode(
+  requireInProduction(
+    runtimeSchema
+      .extend(datastoreSchema.shape)
+      .extend(securitySchema.shape)
+      .extend(authSchema.shape)
+      .extend({
+        DISCORD_MODE: discordMode,
+        DISCORD_GUILD_ID: optional(discordSnowflake),
+        DISCORD_APPLICATION_ID: optional(discordSnowflake),
+      })
+      .extend(storageSchema.shape)
+      .extend(integrationsSchema.shape)
+      .extend(fivemSchema.shape)
+      .extend(siteSchema.shape),
+  ),
 );
 
 export type ServerEnv = z.output<typeof webServerSchema>;
@@ -41,6 +47,12 @@ export type ServerEnv = z.output<typeof webServerSchema>;
 export const serverEnv: ServerEnv = lazyEnv(() =>
   parseEnv('web server', webServerSchema, process.env),
 );
+
+/** Auth.js callback shown in Control Center and registered in the Discord portal. */
+export function discordCallbackUrl(env: ServerEnv = serverEnv): string {
+  const configuredUrl = env.AUTH_URL ?? env.NEXT_PUBLIC_SITE_URL;
+  return new URL('/api/auth/callback/discord', new URL(configuredUrl).origin).toString();
+}
 
 /** True when every credential the media pipeline needs is present. */
 export function hasObjectStorage(env: ServerEnv = serverEnv): boolean {

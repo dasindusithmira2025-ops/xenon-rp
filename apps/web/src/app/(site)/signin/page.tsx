@@ -1,8 +1,9 @@
 import Link from 'next/link';
 import { redirect } from 'next/navigation';
 
-import { hasDevLogin } from '@xenon/config/server';
-import { Button, Panel } from '@xenon/ui';
+import { hasDevLogin, serverEnv } from '@xenon/config/server';
+import { prisma } from '@xenon/database';
+import { Panel } from '@xenon/ui';
 
 import { signInWithDiscord } from './actions';
 
@@ -10,12 +11,28 @@ import type { Metadata } from 'next';
 
 import { XenonMark } from '~/components/brand/wordmark';
 import { MediaSlot } from '~/components/media/media-slot';
+import { DiscordSignIn } from '~/components/site/discord-sign-in';
 import { currentActor } from '~/server/context';
 
 export const metadata: Metadata = {
   title: 'Sign in',
   description: 'Sign in to XenonRP with Discord to apply, manage your characters and get support.',
   robots: { index: false, follow: false },
+};
+
+const authErrors: Readonly<Record<string, string>> = {
+  AccessDenied: 'Discord authorization was cancelled. You can try again whenever you are ready.',
+  OAuthAccountNotLinked: 'This Discord account is not linked to the Xenon account being used.',
+  OAuthCallback: 'Discord could not complete the sign-in callback. Try again.',
+  OAuthCallbackError: 'Discord could not complete the sign-in callback. Try again.',
+  OAuthSignin: 'Xenon could not start Discord sign-in. Check the integration setup and retry.',
+  OAuthState: 'The sign-in state expired or did not match. Start again from Xenon.',
+  InvalidCheck: 'The sign-in state expired or did not match. Start again from Xenon.',
+  Configuration: 'Discord sign-in is not configured correctly. Contact Xenon staff.',
+  SessionRequired: 'Your Xenon session could not be created. Please try again.',
+  DiscordAccountConflict:
+    'This Discord account is already connected to another Xenon account. Contact staff if you need help.',
+  DiscordUnavailable: 'Xenon could not verify your identity right now. Try again in a moment.',
 };
 
 /**
@@ -44,7 +61,14 @@ export default async function SignInPage({
 
   if (actor.userId !== null) redirect(callbackUrl);
 
-  const error = typeof params.error === 'string' ? params.error : null;
+  const errorCode = typeof params.error === 'string' ? params.error : null;
+  const error =
+    errorCode === null ? null : (authErrors[errorCode] ?? 'Sign-in did not complete. Try again.');
+  const inviteSetting =
+    error === null
+      ? null
+      : await prisma.systemSetting.findUnique({ where: { key: 'community.discordInvite' } });
+  const invite = typeof inviteSetting?.value === 'string' ? inviteSetting.value : null;
 
   return (
     <div className="relative grid min-h-dvh lg:grid-cols-2">
@@ -79,24 +103,54 @@ export default async function SignInPage({
 
           {error === null ? null : (
             <Panel tone="ghost" className="border-danger/40 bg-danger/10 text-sm text-danger">
-              Sign-in did not complete. Try again, and if it keeps failing check that you are signed
-              in to the right Discord account.
+              <p>{error}</p>
+              <div className="mt-3 flex flex-wrap gap-x-4 gap-y-2 text-xs">
+                <Link
+                  href={`/signin?callbackUrl=${encodeURIComponent(callbackUrl)}`}
+                  className="underline underline-offset-2"
+                >
+                  Retry
+                </Link>
+                <Link href="/" className="underline underline-offset-2">
+                  Return home
+                </Link>
+                {invite === null ? null : (
+                  <a
+                    href={invite}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-2"
+                  >
+                    Join Discord
+                  </a>
+                )}
+              </div>
             </Panel>
           )}
 
-          <form action={signInWithDiscord} className="flex flex-col gap-3">
-            <input type="hidden" name="callbackUrl" value={callbackUrl} />
-            <Button type="submit" variant="accent" size="xl" className="w-full">
-              Continue with Discord
-            </Button>
-          </form>
+          {serverEnv.DISCORD_MODE === 'enabled' ? (
+            <DiscordSignIn action={signInWithDiscord} callbackUrl={callbackUrl} />
+          ) : (
+            <Panel tone="ghost" className="border-warning/30 bg-warning/5">
+              <p className="text-sm text-warning">
+                Discord sign-in is disabled in this environment. Configure the Xenon Discord
+                application to enable player sign-in.
+              </p>
+            </Panel>
+          )}
 
           {hasDevLogin() ? (
             <Panel tone="ghost" className="border-warning/30 bg-warning/5">
               <p className="text-xs leading-relaxed text-warning">
                 Development sign-in is enabled. <code className="font-mono">/api/dev/session</code>{' '}
                 will sign you in as a seeded fixture account without Discord. This route does not
-                exist when NODE_ENV is production.
+                exist when NODE_ENV is production.{' '}
+                <Link
+                  href={`/api/dev/session?redirectTo=${encodeURIComponent(callbackUrl)}`}
+                  className="underline"
+                >
+                  Continue with a fixture account
+                </Link>
               </p>
             </Panel>
           ) : null}

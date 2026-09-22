@@ -1,8 +1,10 @@
 import Discord from 'next-auth/providers/discord';
 
-import { serverEnv } from '@xenon/config/server';
+import { serverEnv, discordCallbackUrl } from '@xenon/config/server';
 import { prisma } from '@xenon/database';
-import { refreshOnboardingStep } from '@xenon/domain';
+import { DiscordIdentityConflictError, syncDiscordIdentity } from '@xenon/domain';
+import { enqueueBestEffort } from '@xenon/jobs';
+import { createLogger } from '@xenon/logger';
 
 import { xenonAdapter } from './adapter';
 
@@ -23,8 +25,44 @@ import type { NextAuthConfig } from 'next-auth';
  * is, because `setUserStatus` deletes the session rows.
  */
 
-/** Scopes requested at sign-in. `guilds` powers the membership check only. */
-const DISCORD_SCOPES = ['identify', 'email', 'guilds'] as const;
+/** Player OAuth only needs the stable Discord snowflake and public profile. */
+const DISCORD_SCOPES = ['identify'] as const;
+
+function discordProviders() {
+  if (serverEnv.DISCORD_MODE !== 'enabled') return [];
+
+  const clientId = serverEnv.AUTH_DISCORD_ID;
+  const clientSecret = serverEnv.AUTH_DISCORD_SECRET;
+  if (clientId === undefined || clientSecret === undefined) {
+    throw new Error('Discord sign-in is enabled but its OAuth credentials are missing.');
+  }
+
+  return [
+    Discord({
+      clientId,
+      clientSecret,
+      authorization: { params: { scope: DISCORD_SCOPES.join(' ') } },
+      // Map Discord's shape to the adapter's expectations. Without this the
+      // display name would be the legacy `username#1234` rather than the name
+      // the person actually goes by.
+      profile(raw) {
+        const profile = raw as unknown as DiscordProfile;
+        return {
+          id: profile.id,
+          name: profile.global_name ?? profile.username,
+          email: null,
+          image: avatarUrl(profile),
+        };
+      },
+    }),
+  ];
+}
+
+const logger = createLogger({
+  service: 'auth',
+  level: serverEnv.LOG_LEVEL,
+  pretty: serverEnv.NODE_ENV !== 'production',
+});
 
 interface DiscordProfile {
   id: string;
@@ -32,7 +70,6 @@ interface DiscordProfile {
   global_name?: string | null;
   discriminator?: string | null;
   avatar?: string | null;
-  email?: string | null;
   locale?: string | null;
 }
 
@@ -65,25 +102,7 @@ export const authConfig: NextAuthConfig = {
     error: '/signin',
   },
 
-  providers: [
-    Discord({
-      clientId: serverEnv.AUTH_DISCORD_ID,
-      clientSecret: serverEnv.AUTH_DISCORD_SECRET,
-      authorization: { params: { scope: DISCORD_SCOPES.join(' ') } },
-      // Map Discord's shape to the adapter's expectations. Without this the
-      // display name would be the legacy `username#1234` rather than the name
-      // the person actually goes by.
-      profile(raw) {
-        const profile = raw as unknown as DiscordProfile;
-        return {
-          id: profile.id,
-          name: profile.global_name ?? profile.username,
-          email: profile.email ?? null,
-          image: avatarUrl(profile),
-        };
-      },
-    }),
-  ],
+  providers: discordProviders(),
 
   callbacks: {
     /**
@@ -98,36 +117,53 @@ export const authConfig: NextAuthConfig = {
       if (account?.provider !== 'discord' || profile === undefined) return true;
 
       const discord = profile as unknown as DiscordProfile;
+      const xenonUserId = user.id;
+      if (
+        xenonUserId === undefined ||
+        discord.id !== account.providerAccountId ||
+        !/^\d{17,20}$/.test(discord.id)
+      ) {
+        logger.warn(
+          { discordUserId: discord.id },
+          'Discord callback identity did not match its authenticated account',
+        );
+        return false;
+      }
 
       try {
-        await prisma.discordAccount.upsert({
-          where: { discordId: discord.id },
-          create: {
-            userId: user.id ?? '',
-            discordId: discord.id,
-            username: discord.username,
-            globalName: discord.global_name ?? null,
-            discriminator: discord.discriminator ?? null,
-            avatar: discord.avatar ?? null,
-            locale: discord.locale ?? null,
-          },
-          update: {
-            username: discord.username,
-            globalName: discord.global_name ?? null,
-            avatar: discord.avatar ?? null,
-            locale: discord.locale ?? null,
-          },
+        await syncDiscordIdentity(prisma, xenonUserId, {
+          discordId: discord.id,
+          username: discord.username,
+          globalName: discord.global_name ?? null,
+          discriminator: discord.discriminator ?? null,
+          avatar: discord.avatar ?? null,
+          locale: discord.locale ?? null,
         });
 
-        if (user.id !== undefined) {
-          await prisma.user.update({
-            where: { id: user.id },
-            data: { lastSeenAt: new Date(), avatarUrl: avatarUrl(discord) },
-          });
-          await refreshOnboardingStep(prisma, user.id);
-        }
+        await enqueueBestEffort('discord.membership.sync', {
+          userId: xenonUserId,
+          reason: 'oauth.signin',
+        });
       } catch (error) {
-        console.error('[auth] failed to mirror Discord profile', error);
+        if (error instanceof DiscordIdentityConflictError) {
+          logger.warn(
+            { discordUserId: discord.id, xenonUserId },
+            'Discord account is already linked to another Xenon identity',
+          );
+          return new URL(
+            '/signin?error=DiscordAccountConflict',
+            new URL(discordCallbackUrl()).origin,
+          ).toString();
+        }
+
+        logger.error(
+          { err: error, discordUserId: discord.id, xenonUserId },
+          'Could not synchronize the Discord identity',
+        );
+        return new URL(
+          '/signin?error=DiscordUnavailable',
+          new URL(discordCallbackUrl()).origin,
+        ).toString();
       }
 
       return true;

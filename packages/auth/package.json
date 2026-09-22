@@ -19,6 +19,8 @@
     "@xenon/core": "workspace:*",
     "@xenon/database": "workspace:*",
     "@xenon/domain": "workspace:*",
+    "@xenon/jobs": "workspace:*",
+    "@xenon/logger": "workspace:*",
     "@xenon/permissions": "workspace:*",
     "next-auth": "5.0.0-beta.32"
   },

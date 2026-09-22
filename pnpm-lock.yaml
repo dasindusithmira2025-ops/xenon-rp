@@ -278,6 +278,12 @@ importers:
       '@xenon/domain':
         specifier: workspace:*
         version: link:../domain
+      '@xenon/jobs':
+        specifier: workspace:*
+        version: link:../jobs
+      '@xenon/logger':
+        specifier: workspace:*
+        version: link:../logger
       '@xenon/permissions':
         specifier: workspace:*
         version: link:../permissions
