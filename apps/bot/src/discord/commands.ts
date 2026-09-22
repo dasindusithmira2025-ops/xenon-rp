@@ -7,6 +7,7 @@ import {
 
 import {
   approveApplication,
+  getOwnApplication,
   listReviewQueue,
   rejectApplication,
   requestChanges,
@@ -233,14 +234,7 @@ const handlers: Record<string, Handler> = {
 
     const reference = interaction.options.getString('reference');
 
-    const submission = await prisma.applicationSubmission.findFirst({
-      where: {
-        applicantId: actor.userId,
-        ...(reference === null ? {} : { publicId: reference.toUpperCase() }),
-      },
-      orderBy: { updatedAt: 'desc' },
-      include: { template: { select: { name: true } } },
-    });
+    const submission = await getOwnApplication(prisma, actor, reference ?? undefined);
 
     if (submission === null) {
       await reply(interaction, 'No application found. Start one on the website.');

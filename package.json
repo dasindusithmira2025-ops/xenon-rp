@@ -17,6 +17,7 @@
     "test": "turbo run test",
     "test:watch": "turbo run test:watch",
     "test:e2e": "pnpm --filter @xenon/web test:e2e",
+    "discord:register": "pnpm --filter @xenon/bot register",
     "format": "prettier --write \"**/*.{ts,tsx,js,mjs,cjs,json,md,css,yml,yaml}\"",
     "format:check": "prettier --check \"**/*.{ts,tsx,js,mjs,cjs,json,md,css,yml,yaml}\"",
     "clean": "turbo run clean && rimraf node_modules",

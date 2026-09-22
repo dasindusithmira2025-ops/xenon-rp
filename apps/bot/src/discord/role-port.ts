@@ -1,4 +1,4 @@
-import { DiscordAPIError, type Guild } from 'discord.js';
+import { DiscordAPIError, PermissionFlagsBits, type Guild } from 'discord.js';
 
 import type { GuildRolePort } from '@xenon/discord';
 
@@ -16,7 +16,7 @@ export function guildRolePort(guild: Guild): GuildRolePort {
   return {
     async memberRoles(discordUserId) {
       try {
-        const member = await guild.members.fetch(discordUserId);
+        const member = await guild.members.fetch({ user: discordUserId, force: true });
         return [...member.roles.cache.keys()];
       } catch (error) {
         // 10007 is "Unknown Member": they have left the guild. That is a
@@ -28,12 +28,12 @@ export function guildRolePort(guild: Guild): GuildRolePort {
     },
 
     async addRole(discordUserId, roleId) {
-      const member = await guild.members.fetch(discordUserId);
+      const member = await guild.members.fetch({ user: discordUserId, force: true });
       await member.roles.add(roleId, 'Xenon role synchronisation');
     },
 
     async removeRole(discordUserId, roleId) {
-      const member = await guild.members.fetch(discordUserId);
+      const member = await guild.members.fetch({ user: discordUserId, force: true });
       await member.roles.remove(roleId, 'Xenon role synchronisation');
     },
 
@@ -43,14 +43,18 @@ export function guildRolePort(guild: Guild): GuildRolePort {
 
       if (role === null) {
         logger.warn({ roleId }, 'Mapped Discord role no longer exists');
-        return false;
+        return { roleFound: false, hierarchyBlocked: false, manageRolesMissing: false };
       }
 
       // A role at or above the bot's highest is unmanageable no matter what
       // permissions it has. This is the single most common misconfiguration,
       // and detecting it here turns a stream of 403s into one clear message in
       // the control centre.
-      return me.roles.highest.comparePositionTo(role) > 0;
+      return {
+        roleFound: true,
+        hierarchyBlocked: me.roles.highest.comparePositionTo(role) <= 0,
+        manageRolesMissing: !me.permissions.has(PermissionFlagsBits.ManageRoles),
+      };
     },
   };
 }

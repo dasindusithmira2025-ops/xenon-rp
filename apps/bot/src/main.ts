@@ -7,7 +7,8 @@ import { closeQueue, closeRedis } from '@xenon/jobs';
 import { connectDiscord, disconnectDiscord } from './discord/client';
 import { handleCommand } from './discord/commands';
 import { handleButton, handleModal } from './discord/interactions';
-import { botEnv, hasRealDiscordCredentials, logger } from './runtime';
+import { inspectDiscordInstallation } from './health/diagnostics';
+import { botEnv, logger } from './runtime';
 import { startWorker, stopWorker } from './workers';
 import { handlers, pollAllServers } from './workers/handlers';
 
@@ -37,13 +38,16 @@ const SWEEP_MS = 15 * 60_000;
 
 const timers: ReturnType<typeof setInterval>[] = [];
 
-async function beat(status: 'HEALTHY' | 'DEGRADED'): Promise<void> {
+async function beat(
+  botStatus: 'HEALTHY' | 'DEGRADED',
+  botDetail: Record<string, string | number | boolean>,
+): Promise<void> {
   try {
-    await recordHeartbeat(prisma, 'bot', status, {
-      discord: hasRealDiscordCredentials() ? 'configured' : 'not configured',
+    await recordHeartbeat(prisma, 'bot', botStatus, {
+      ...botDetail,
       node: process.version,
     });
-    await recordHeartbeat(prisma, 'worker', status, { node: process.version });
+    await recordHeartbeat(prisma, 'worker', 'HEALTHY', { node: process.version });
   } catch (error) {
     // A heartbeat failure means the database is unreachable, which the health
     // page will notice on its own. Logging and continuing is correct: the
@@ -53,7 +57,10 @@ async function beat(status: 'HEALTHY' | 'DEGRADED'): Promise<void> {
 }
 
 async function main(): Promise<void> {
-  logger.info({ env: botEnv.NODE_ENV }, 'Starting the Xenon service');
+  logger.info(
+    { env: botEnv.NODE_ENV, discordMode: botEnv.DISCORD_MODE },
+    'Starting the Xenon service',
+  );
 
   // Fail fast on the database: nothing this process does is meaningful without
   // it, and a silent start followed by every job failing is worse.
@@ -62,10 +69,8 @@ async function main(): Promise<void> {
 
   startWorker();
 
-  const client = await connectDiscord();
-
-  if (client !== null) {
-    client.on(Events.InteractionCreate, (interaction) => {
+  const client = await connectDiscord((instance) => {
+    instance.on(Events.InteractionCreate, (interaction) => {
       // Handlers are async and discord.js does not await the listener, so each
       // is explicitly caught; an unhandled rejection here would take the
       // process down and stop the worker with it.
@@ -83,38 +88,33 @@ async function main(): Promise<void> {
         logger.error({ err: error }, 'Interaction handler failed');
       });
     });
+  });
 
-    client.on(Events.GuildMemberAdd, (member) => {
-      // Somebody joining the guild may unblock an application requirement, so
-      // their membership is refreshed immediately rather than at the next sync.
-      void (async (): Promise<void> => {
-        const { updateGuildMembership } = await import('@xenon/discord');
-        await updateGuildMembership(prisma, member.id, {
-          isMember: true,
-          nickname: member.nickname,
-          joinedAt: member.joinedAt,
-          roleIds: [...member.roles.cache.keys()],
-        });
-      })().catch((error: unknown) => {
-        logger.warn({ err: error }, 'Could not record a guild join');
-      });
-    });
-
-    client.on(Events.GuildMemberRemove, (member) => {
-      void (async (): Promise<void> => {
-        const { updateGuildMembership } = await import('@xenon/discord');
-        await updateGuildMembership(prisma, member.id, { isMember: false, roleIds: [] });
-      })().catch((error: unknown) => {
-        logger.warn({ err: error }, 'Could not record a guild leave');
-      });
-    });
+  const installation = client === null ? null : await inspectDiscordInstallation(client);
+  if (installation !== null) {
+    logger.info(
+      { ...installation.detail, status: installation.status },
+      'Discord installation diagnostics complete',
+    );
   }
 
-  await beat('HEALTHY');
+  const currentBotStatus = (): 'HEALTHY' | 'DEGRADED' => {
+    if (botEnv.DISCORD_MODE === 'disabled') return 'DEGRADED';
+    if (client?.isReady() !== true || installation?.status !== 'HEALTHY') return 'DEGRADED';
+    return 'HEALTHY';
+  };
+  const currentBotDetail = (): Record<string, string | number | boolean> => ({
+    discordMode: botEnv.DISCORD_MODE,
+    gatewayReady: client?.isReady() ?? false,
+    gatewayLatencyMs: client?.ws.ping ?? -1,
+    ...(installation?.detail ?? {}),
+  });
+
+  await beat(currentBotStatus(), currentBotDetail());
 
   timers.push(
     setInterval(() => {
-      void beat(hasRealDiscordCredentials() && client === null ? 'DEGRADED' : 'HEALTHY');
+      void beat(currentBotStatus(), currentBotDetail());
     }, HEARTBEAT_MS),
   );
 

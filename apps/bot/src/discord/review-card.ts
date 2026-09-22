@@ -59,11 +59,16 @@ async function renderCard(submissionId: string) {
           displayName: true,
           createdAt: true,
           whitelistState: true,
-          discordAccount: { select: { discordId: true, isGuildMember: true } },
+          discordAccount: { select: { discordId: true, guildMembershipState: true } },
         },
       },
       character: { select: { firstName: true, lastName: true } },
       assignee: { select: { displayName: true, publicId: true } },
+      events: {
+        orderBy: { createdAt: 'desc' },
+        take: 1,
+        include: { actor: { select: { displayName: true, publicId: true } } },
+      },
     },
   });
 
@@ -80,7 +85,7 @@ async function renderCard(submissionId: string) {
       accountAgeDays: Math.floor(
         (Date.now() - submission.applicant.createdAt.getTime()) / 86_400_000,
       ),
-      isGuildMember: submission.applicant.discordAccount?.isGuildMember ?? false,
+      guildMembershipState: submission.applicant.discordAccount?.guildMembershipState ?? 'UNKNOWN',
       whitelistState: submission.applicant.whitelistState,
     },
     characterName:
@@ -91,6 +96,16 @@ async function renderCard(submissionId: string) {
     attempt: submission.attempt,
     assigneeName: submission.assignee?.displayName ?? submission.assignee?.publicId ?? null,
     decisionNote: submission.decisionNote,
+    lastAction:
+      submission.events[0] === undefined
+        ? null
+        : {
+            actorName:
+              submission.events[0].actor?.displayName ??
+              submission.events[0].actor?.publicId ??
+              'Xenon system',
+            at: submission.events[0].createdAt,
+          },
     siteUrl: botEnv.NEXT_PUBLIC_SITE_URL,
     highlights: await highlights(submissionId),
   });
@@ -99,7 +114,11 @@ async function renderCard(submissionId: string) {
     submission,
     payload: {
       embeds: [embed],
-      components: buildReviewActions(submission.publicId, submission.status),
+      components: buildReviewActions(
+        submission.publicId,
+        submission.status,
+        botEnv.NEXT_PUBLIC_SITE_URL,
+      ),
     },
   };
 }
@@ -121,15 +140,49 @@ export async function postOrUpdateReviewCard(client: Client, submissionId: strin
   const existing = await prisma.discordMessageReference.findFirst({
     where: { submissionId, kind: 'APPLICATION_REVIEW', deletedAt: null },
   });
+  const primaryGuild = await prisma.discordGuild.findFirst({ where: { isPrimary: true } });
+  if (
+    primaryGuild === null ||
+    botEnv.DISCORD_GUILD_ID === undefined ||
+    primaryGuild.guildId !== botEnv.DISCORD_GUILD_ID
+  ) {
+    logger.error(
+      { submissionId, configuredGuildId: botEnv.DISCORD_GUILD_ID ?? 'missing' },
+      'Review card delivery has no matching configured Xenon guild',
+    );
+    if (primaryGuild !== null) {
+      await prisma.discordGuild.update({
+        where: { id: primaryGuild.id },
+        data: { syncError: 'Review card delivery has no matching configured Xenon guild' },
+      });
+    }
+    return;
+  }
 
   if (existing !== null) {
     try {
       const channel = await client.channels.fetch(existing.channelId);
-      if (channel?.isTextBased() === true && 'messages' in channel) {
+      if (
+        channel?.type === ChannelType.GuildText &&
+        channel.guildId === primaryGuild.guildId &&
+        'messages' in channel
+      ) {
         const message = await channel.messages.fetch(existing.messageId);
         await message.edit(card.payload);
+        await prisma.discordGuild.update({
+          where: { id: primaryGuild.id },
+          data: { syncError: null },
+        });
         return;
       }
+      logger.warn(
+        { submissionId, channelId: existing.channelId },
+        'Stored review card channel is no longer in the configured Xenon guild',
+      );
+      await prisma.discordMessageReference.update({
+        where: { id: existing.id },
+        data: { deletedAt: new Date() },
+      });
     } catch (error) {
       // The message or channel is gone. Forget the pointer and post a new one
       // rather than failing the job forever.
@@ -141,8 +194,7 @@ export async function postOrUpdateReviewCard(client: Client, submissionId: strin
     }
   }
 
-  const guild = await prisma.discordGuild.findFirst({ where: { isPrimary: true } });
-  const channelId = card.submission.template.reviewChannelId ?? guild?.reviewChannelId ?? null;
+  const channelId = card.submission.template.reviewChannelId ?? primaryGuild.reviewChannelId;
 
   if (channelId === null) {
     logger.warn(
@@ -152,11 +204,23 @@ export async function postOrUpdateReviewCard(client: Client, submissionId: strin
     return;
   }
 
-  const channel = await client.channels.fetch(channelId);
+  const guild = await client.guilds.fetch(primaryGuild.guildId);
+  const channel = await guild.channels.fetch(channelId);
   if (channel?.type !== ChannelType.GuildText) {
-    logger.error({ channelId }, 'Review channel is missing or not a text channel');
+    const message =
+      'Review channel is missing or is not a text channel in the configured Xenon guild';
+    logger.error({ channelId, guildId: primaryGuild.guildId }, message);
+    await prisma.discordGuild.update({
+      where: { id: primaryGuild.id },
+      data: { syncError: message },
+    });
     return;
   }
+
+  await prisma.discordGuild.update({
+    where: { id: primaryGuild.id },
+    data: { syncError: null },
+  });
 
   const pingRole = card.submission.template.notifyRoleId;
   const message = await channel.send({

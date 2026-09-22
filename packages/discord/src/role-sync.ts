@@ -18,8 +18,12 @@ export interface GuildRolePort {
   memberRoles(discordUserId: string): Promise<readonly string[] | null>;
   addRole(discordUserId: string, roleId: string): Promise<void>;
   removeRole(discordUserId: string, roleId: string): Promise<void>;
-  /** False when the bot's highest role sits below the target role. */
-  canManageRole(roleId: string): Promise<boolean>;
+  /** Explains which local prerequisite prevents a configured role change. */
+  canManageRole(roleId: string): Promise<{
+    readonly roleFound: boolean;
+    readonly hierarchyBlocked: boolean;
+    readonly manageRolesMissing: boolean;
+  }>;
 }
 
 export interface RoleSyncPlan {
@@ -33,6 +37,7 @@ export interface RoleSyncOutcome extends RoleSyncPlan {
   readonly applied: boolean;
   readonly memberMissing: boolean;
   readonly errors: readonly string[];
+  readonly permanentErrors: readonly string[];
 }
 
 /**
@@ -91,6 +96,7 @@ export async function syncUserRoles(
     applied: false,
     memberMissing: false,
     errors: [],
+    permanentErrors: [],
   };
 
   if (user?.discordAccount == null) {
@@ -130,12 +136,33 @@ export async function syncUserRoles(
 
   const blocked: string[] = [];
   const errors: string[] = [];
+  const permanentErrors: string[] = [];
+  const permanentlyBlockedRoleIds: string[] = [];
 
   for (const roleId of [...plan.add, ...plan.remove]) {
     // Hierarchy is checked before attempting, so the common misconfiguration -
     // the bot's role sitting below the roles it manages - is reported as a
     // fixable setup problem rather than as a stream of 403s.
-    if (!(await port.canManageRole(roleId))) {
+    const prerequisite = await port.canManageRole(roleId);
+    if (!prerequisite.roleFound) {
+      permanentlyBlockedRoleIds.push(roleId);
+      permanentErrors.push(`role ${roleId} no longer exists in the configured guild`);
+      await db.discordRoleMapping.updateMany({
+        where: { guildId: guild.id, discordRoleId: roleId },
+        data: { hierarchyBlocked: false, lastError: 'Discord role no longer exists' },
+      });
+      continue;
+    }
+    if (prerequisite.manageRolesMissing) {
+      permanentlyBlockedRoleIds.push(roleId);
+      permanentErrors.push('bot is missing MANAGE_ROLES in the configured guild');
+      await db.discordRoleMapping.updateMany({
+        where: { guildId: guild.id, discordRoleId: roleId },
+        data: { hierarchyBlocked: false, lastError: 'Bot is missing Manage Roles permission' },
+      });
+      continue;
+    }
+    if (prerequisite.hierarchyBlocked) {
       blocked.push(roleId);
       await db.discordRoleMapping.updateMany({
         where: { guildId: guild.id, discordRoleId: roleId },
@@ -144,14 +171,37 @@ export async function syncUserRoles(
     }
   }
 
-  const blockedSet = new Set(blocked);
+  const blockedSet = new Set([...blocked, ...permanentlyBlockedRoleIds]);
 
   for (const roleId of plan.add) {
     if (blockedSet.has(roleId)) continue;
     try {
       await port.addRole(user.discordAccount.discordId, roleId);
     } catch (error) {
-      errors.push(`add ${roleId}: ${error instanceof Error ? error.message : 'failed'}`);
+      const code = discordErrorCode(error);
+      if (code === 50013 || code === 10011 || code === 10007) {
+        if (code !== 10007) {
+          await db.discordRoleMapping.updateMany({
+            where: { guildId: guild.id, discordRoleId: roleId },
+            data: {
+              hierarchyBlocked: false,
+              lastError:
+                code === 50013
+                  ? 'Bot is missing Manage Roles permission'
+                  : 'Discord role no longer exists',
+            },
+          });
+        }
+        permanentErrors.push(
+          code === 50013
+            ? `missing permission to add role ${roleId}`
+            : code === 10011
+              ? `role ${roleId} no longer exists`
+              : 'member left the configured guild during role sync',
+        );
+      } else {
+        errors.push(`add role ${roleId} failed`);
+      }
     }
   }
 
@@ -160,7 +210,30 @@ export async function syncUserRoles(
     try {
       await port.removeRole(user.discordAccount.discordId, roleId);
     } catch (error) {
-      errors.push(`remove ${roleId}: ${error instanceof Error ? error.message : 'failed'}`);
+      const code = discordErrorCode(error);
+      if (code === 50013 || code === 10011 || code === 10007) {
+        if (code !== 10007) {
+          await db.discordRoleMapping.updateMany({
+            where: { guildId: guild.id, discordRoleId: roleId },
+            data: {
+              hierarchyBlocked: false,
+              lastError:
+                code === 50013
+                  ? 'Bot is missing Manage Roles permission'
+                  : 'Discord role no longer exists',
+            },
+          });
+        }
+        permanentErrors.push(
+          code === 50013
+            ? `missing permission to remove role ${roleId}`
+            : code === 10011
+              ? `role ${roleId} no longer exists`
+              : 'member left the configured guild during role sync',
+        );
+      } else {
+        errors.push(`remove role ${roleId} failed`);
+      }
     }
   }
 
@@ -175,10 +248,17 @@ export async function syncUserRoles(
   return {
     ...plan,
     blocked,
-    applied: errors.length === 0,
+    applied: errors.length === 0 && permanentErrors.length === 0 && blocked.length === 0,
     memberMissing: false,
     errors,
+    permanentErrors,
   };
+}
+
+function discordErrorCode(error: unknown): number | null {
+  if (error === null || typeof error !== 'object' || !('code' in error)) return null;
+  const { code } = error;
+  return typeof code === 'number' ? code : null;
 }
 
 /** Record the outcome of a Discord profile sync on the account row. */
@@ -200,20 +280,38 @@ export async function updateGuildMembership(
   db: Db,
   discordId: string,
   membership: {
-    isMember: boolean;
+    isMember?: boolean;
+    pendingScreening?: boolean;
+    state?:
+      'UNKNOWN' | 'MEMBER' | 'PENDING_SCREENING' | 'NOT_MEMBER' | 'UNAVAILABLE' | 'MISCONFIGURED';
     nickname?: string | null;
     joinedAt?: Date | null;
     roleIds?: readonly string[];
+    error?: string | null;
   },
 ): Promise<void> {
+  const state =
+    membership.state ??
+    (membership.isMember === false
+      ? 'NOT_MEMBER'
+      : membership.pendingScreening === true
+        ? 'PENDING_SCREENING'
+        : membership.isMember === true
+          ? 'MEMBER'
+          : 'UNKNOWN');
+  // Membership-gated actions require screening to be complete.
+  const isMember = state === 'MEMBER';
+
   await db.discordAccount.updateMany({
     where: { discordId },
     data: {
-      isGuildMember: membership.isMember,
-      guildNickname: membership.nickname ?? null,
-      guildJoinedAt: membership.joinedAt ?? null,
+      isGuildMember: isMember,
+      guildMembershipState: state,
+      ...(membership.nickname === undefined ? {} : { guildNickname: membership.nickname }),
+      ...(membership.joinedAt === undefined ? {} : { guildJoinedAt: membership.joinedAt }),
       guildRoleIds: membership.roleIds === undefined ? undefined : [...membership.roleIds],
-      syncedAt: new Date(),
+      guildSyncedAt: new Date(),
+      guildSyncError: membership.error?.slice(0, 500) ?? null,
     },
   });
 }

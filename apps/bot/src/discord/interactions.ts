@@ -26,10 +26,9 @@ import { postOrUpdateReviewCard } from './review-card';
 /**
  * Button and modal handling for review cards.
  *
- * The flow for a decision that needs a reason - reject, request changes - is
- * button, modal, submit. The reason is mandatory in the service, so collecting
- * it in a modal is the only way a Discord click can produce a decision the
- * applicant can actually understand.
+ * Reject, request-changes and interview instructions collect concise notes in
+ * a modal. The shared Xenon application services recheck capability and state
+ * before they commit anything.
  *
  * Custom ids carry the application's public identifier because Discord message
  * state is not storage: a button clicked three weeks later has nothing else to
@@ -48,6 +47,7 @@ function parseCustomId(customId: string): { action: string; reference: string } 
 
 function modalFor(action: string, reference: string): ModalBuilder {
   const rejecting = action === 'reject';
+  const interviewing = action === 'interview';
 
   // Discord's current modal shape puts the label on a `LabelBuilder` wrapping
   // the input, rather than on the input itself. The older `setLabel` form still
@@ -55,17 +55,29 @@ function modalFor(action: string, reference: string): ModalBuilder {
   // current API costs nothing.
   return new ModalBuilder()
     .setCustomId(`app:${action}:${reference}`)
-    .setTitle(rejecting ? `Reject ${reference}` : `Changes for ${reference}`)
+    .setTitle(
+      rejecting
+        ? `Reject ${reference}`
+        : interviewing
+          ? `Interview for ${reference}`
+          : `Changes for ${reference}`,
+    )
     .addLabelComponents(
       new LabelBuilder()
-        .setLabel(rejecting ? 'Reason (the applicant reads this)' : 'What needs changing')
+        .setLabel(
+          rejecting
+            ? 'Reason (the applicant reads this)'
+            : interviewing
+              ? 'Interview instructions (applicant sees this)'
+              : 'What needs changing',
+        )
         .setTextInputComponent(
           new TextInputBuilder()
             .setCustomId('publicNote')
             .setStyle(TextInputStyle.Paragraph)
-            .setMinLength(10)
+            .setMinLength(interviewing ? 0 : 10)
             .setMaxLength(1800)
-            .setRequired(true),
+            .setRequired(!interviewing),
         ),
       new LabelBuilder()
         .setLabel('Internal note (staff only)')
@@ -87,9 +99,14 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
 
   // The modal has to be the first response to the interaction, so it is opened
   // before anything is deferred.
-  if (action === 'reject' || action === 'changes') {
+  if (action === 'reject' || action === 'changes' || action === 'interview') {
     const actor = await actorFromDiscord(interaction.user.id);
-    const permission = action === 'reject' ? 'applications.reject' : 'applications.request_changes';
+    const permission =
+      action === 'reject'
+        ? 'applications.reject'
+        : action === 'changes'
+          ? 'applications.request_changes'
+          : 'applications.interview';
 
     if (!actor.permissions.has(permission)) {
       await interaction.reply({
@@ -122,11 +139,6 @@ export async function handleButton(interaction: ButtonInteraction): Promise<void
         );
         break;
 
-      case 'interview':
-        await requestInterview(prisma, actor, { reference });
-        await interaction.editReply(`${reference} moved to the interview stage.`);
-        break;
-
       default:
         await interaction.editReply('That button is no longer supported.');
         return;
@@ -154,9 +166,19 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     if (action === 'reject') {
       await rejectApplication(prisma, actor, { reference, publicNote, staffNote });
       await interaction.editReply(`Rejected ${reference}. The applicant has been told why.`);
-    } else {
+    } else if (action === 'changes') {
       await requestChanges(prisma, actor, { reference, publicNote, staffNote });
       await interaction.editReply(`${reference} sent back for changes.`);
+    } else if (action === 'interview') {
+      await requestInterview(prisma, actor, {
+        reference,
+        publicNote: publicNote.trim() || null,
+        staffNote: staffNote.trim() || null,
+      });
+      await interaction.editReply(`${reference} moved to the interview stage.`);
+    } else {
+      await interaction.editReply('That modal is no longer supported.');
+      return;
     }
 
     await refreshCard(interaction, reference);

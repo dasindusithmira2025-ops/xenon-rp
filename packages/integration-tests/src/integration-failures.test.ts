@@ -147,7 +147,8 @@ describe('Discord unavailable', () => {
       memberRoles: () => Promise.resolve(null),
       addRole: () => Promise.reject(new Error('should not be called')),
       removeRole: () => Promise.reject(new Error('should not be called')),
-      canManageRole: () => Promise.resolve(true),
+      canManageRole: () =>
+        Promise.resolve({ roleFound: true, hierarchyBlocked: false, manageRolesMissing: false }),
     };
 
     const outcome = await syncUserRoles(prisma, port, user.id);
@@ -183,7 +184,8 @@ describe('Discord unavailable', () => {
       addRole,
       removeRole: () => Promise.resolve(),
       // The bot's own role sits below the role it is asked to grant.
-      canManageRole: () => Promise.resolve(false),
+      canManageRole: () =>
+        Promise.resolve({ roleFound: true, hierarchyBlocked: true, manageRolesMissing: false }),
     };
 
     const outcome = await syncUserRoles(prisma, port, user.id);
@@ -218,7 +220,8 @@ describe('Discord unavailable', () => {
       memberRoles: () => Promise.resolve(['900000000000000777', '900000000000000888']),
       addRole: () => Promise.resolve(),
       removeRole,
-      canManageRole: () => Promise.resolve(true),
+      canManageRole: () =>
+        Promise.resolve({ roleFound: true, hierarchyBlocked: false, manageRolesMissing: false }),
     };
 
     await syncUserRoles(prisma, port, user.id);

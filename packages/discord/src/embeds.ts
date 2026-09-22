@@ -7,7 +7,7 @@ import {
 } from 'discord.js';
 
 import { brand } from '@xenon/config';
-import type { ApplicationStatus } from '@xenon/database';
+import type { ApplicationStatus, DiscordMembershipState } from '@xenon/database';
 
 /**
  * Discord presentation.
@@ -29,7 +29,7 @@ export interface ReviewCardInput {
     readonly displayName: string | null;
     readonly discordId: string | null;
     readonly accountAgeDays: number;
-    readonly isGuildMember: boolean;
+    readonly guildMembershipState: DiscordMembershipState;
     readonly whitelistState: string;
   };
   readonly characterName: string | null;
@@ -37,6 +37,7 @@ export interface ReviewCardInput {
   readonly attempt: number;
   readonly assigneeName: string | null;
   readonly decisionNote: string | null;
+  readonly lastAction: { readonly actorName: string; readonly at: Date } | null;
   readonly siteUrl: string;
   /** A short preview of the first few answers, for triage at a glance. */
   readonly highlights: readonly { label: string; value: string }[];
@@ -108,7 +109,7 @@ export function buildReviewEmbed(input: ReviewCardInput): EmbedBuilder {
       name: 'Account',
       value: [
         `Age: ${String(input.applicant.accountAgeDays)}d`,
-        `Guild: ${input.applicant.isGuildMember ? 'yes' : 'no'}`,
+        `Guild: ${membershipLabel(input.applicant.guildMembershipState)}`,
         `Whitelist: ${input.applicant.whitelistState.toLowerCase()}`,
       ].join('\n'),
       inline: true,
@@ -130,6 +131,15 @@ export function buildReviewEmbed(input: ReviewCardInput): EmbedBuilder {
     fields.push({ name: 'Decision note', value: clamp(input.decisionNote, 600), inline: false });
   }
 
+  if (input.lastAction !== null) {
+    const timestamp = Math.floor(input.lastAction.at.getTime() / 1000);
+    fields.push({
+      name: 'Last update',
+      value: `<t:${String(timestamp)}:R> · ${input.lastAction.actorName}`,
+      inline: false,
+    });
+  }
+
   const embed = new EmbedBuilder()
     .setColor(statusColour[input.status])
     .setAuthor({ name: `${brand.shortName} · Application review`, iconURL: XENON_ICON })
@@ -140,6 +150,22 @@ export function buildReviewEmbed(input: ReviewCardInput): EmbedBuilder {
 
   if (input.submittedAt !== null) embed.setTimestamp(input.submittedAt);
   return embed;
+}
+
+function membershipLabel(state: DiscordMembershipState): string {
+  switch (state) {
+    case 'MEMBER':
+      return 'yes';
+    case 'PENDING_SCREENING':
+      return 'screening pending';
+    case 'NOT_MEMBER':
+      return 'not joined';
+    case 'MISCONFIGURED':
+      return 'setup issue';
+    case 'UNKNOWN':
+    case 'UNAVAILABLE':
+      return 'unknown';
+  }
 }
 
 /**
@@ -154,6 +180,7 @@ export function buildReviewEmbed(input: ReviewCardInput): EmbedBuilder {
 export function buildReviewActions(
   publicId: string,
   status: ApplicationStatus,
+  siteUrl: string,
 ): ActionRowBuilder<ButtonBuilder>[] {
   const decided =
     status === 'APPROVED' ||
@@ -162,7 +189,12 @@ export function buildReviewActions(
     status === 'EXPIRED' ||
     status === 'ARCHIVED';
 
-  if (decided) return [];
+  const reviewUrl = new URL(`/control/applications/${publicId}`, siteUrl).toString();
+  const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder().setLabel('Open in Xenon').setStyle(ButtonStyle.Link).setURL(reviewUrl),
+  );
+
+  if (decided) return [openRow];
 
   const row = new ActionRowBuilder<ButtonBuilder>().addComponents(
     new ButtonBuilder()
@@ -187,7 +219,7 @@ export function buildReviewActions(
       .setStyle(ButtonStyle.Danger),
   );
 
-  return [row];
+  return [openRow, row];
 }
 
 export interface NotificationEmbedInput {

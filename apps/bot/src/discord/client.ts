@@ -15,9 +15,8 @@ import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
  *  - `GuildPresences` is never requested. Who is online is not something this
  *    platform models.
  *
- * `GuildMembers` *is* requested, because role reconciliation has to know who
- * is in the guild and what they currently hold. It is the one privileged
- * intent the bot genuinely needs.
+ * `GuildMembers` is deliberately absent. Role and membership reconciliation
+ * use one-member REST lookups and do not need the privileged Gateway intent.
  */
 
 let client: Client | null = null;
@@ -39,21 +38,26 @@ export function isDiscordReady(): boolean {
  * heartbeat, the FiveM sync - runs regardless, so the platform is fully
  * exercisable before anybody creates a Discord application.
  */
-export async function connectDiscord(): Promise<Client | null> {
+export async function connectDiscord(
+  registerHandlers?: (instance: Client) => void,
+): Promise<Client | null> {
   if (!hasRealDiscordCredentials()) {
     logger.warn(
-      'Discord credentials look like placeholders. Running without a gateway connection: ' +
+      'DISCORD_MODE=disabled. Running without a gateway connection: ' +
         'Discord jobs will complete as no-ops and everything else works normally.',
     );
     return null;
   }
 
   const instance = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers],
-    // Members and users are partial until fetched; without this a DM to
-    // somebody the bot has not seen this session fails to resolve.
-    partials: [Partials.GuildMember, Partials.User, Partials.Channel],
+    intents: [GatewayIntentBits.Guilds],
+    // Users and channels are partial until fetched; the bot never listens to
+    // guild member gateway events.
+    partials: [Partials.User, Partials.Channel],
   });
+
+  // Register handlers before login can receive events.
+  registerHandlers?.(instance);
 
   instance.once('clientReady', () => {
     logger.info(
@@ -72,7 +76,45 @@ export async function connectDiscord(): Promise<Client | null> {
     logger.warn({ shardId, code: event.code }, 'Shard disconnected, will reconnect');
   });
 
-  await instance.login(botEnv.DISCORD_BOT_TOKEN);
+  const token = botEnv.DISCORD_BOT_TOKEN;
+  if (token === undefined) {
+    await instance.destroy();
+    throw new Error('DISCORD_BOT_TOKEN is required when DISCORD_MODE=enabled.');
+  }
+  const ready = new Promise<void>((resolve) => {
+    instance.once('clientReady', () => {
+      resolve();
+    });
+  });
+
+  await instance.login(token);
+
+  if (!instance.isReady()) {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        ready,
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => {
+            reject(new Error('Discord gateway did not become ready in time.'));
+          }, 20_000);
+        }),
+      ]);
+    } catch (error) {
+      await instance.destroy();
+      throw error;
+    } finally {
+      if (timeout !== undefined) clearTimeout(timeout);
+    }
+  }
+
+  if (instance.user?.id !== botEnv.DISCORD_APPLICATION_ID) {
+    await instance.destroy();
+    throw new Error(
+      'The configured DISCORD_APPLICATION_ID does not match the bot user for DISCORD_BOT_TOKEN.',
+    );
+  }
+
   client = instance;
   return instance;
 }
@@ -85,12 +127,15 @@ export async function disconnectDiscord(): Promise<void> {
 /** The configured primary guild, or null when it cannot be reached. */
 export async function primaryGuild() {
   const instance = discordClient();
-  if (instance === null) return null;
+  if (instance === null || botEnv.DISCORD_GUILD_ID === undefined) return null;
 
   try {
     return await instance.guilds.fetch(botEnv.DISCORD_GUILD_ID);
   } catch (error) {
-    logger.error({ err: error, guildId: botEnv.DISCORD_GUILD_ID }, 'Cannot reach the guild');
+    logger.error(
+      { err: error, guildId: botEnv.DISCORD_GUILD_ID },
+      'Cannot reach the configured guild',
+    );
     return null;
   }
 }

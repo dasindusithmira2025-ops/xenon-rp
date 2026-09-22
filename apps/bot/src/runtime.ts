@@ -32,10 +32,10 @@ export const logger: Logger = createLogger({
  * already been committed.
  */
 export function hasRealDiscordCredentials(): boolean {
-  const token = botEnv.DISCORD_BOT_TOKEN;
-  const guildId = botEnv.DISCORD_GUILD_ID;
-
-  return token.length > 20 && !token.toLowerCase().includes('placeholder') && !/^0+$/.test(guildId);
+  return (
+    botEnv.DISCORD_MODE === 'enabled' &&
+    Boolean(botEnv.DISCORD_BOT_TOKEN && botEnv.DISCORD_APPLICATION_ID && botEnv.DISCORD_GUILD_ID)
+  );
 }
 
 export { botEnv };

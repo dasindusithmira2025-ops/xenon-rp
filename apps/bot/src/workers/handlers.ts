@@ -3,7 +3,12 @@ import { DiscordAPIError } from 'discord.js';
 import { expireStaleSubmissions } from '@xenon/applications';
 import { IntegrationError } from '@xenon/core';
 import { prisma } from '@xenon/database';
-import { buildNotificationEmbed, syncUserRoles, updateGuildMembership } from '@xenon/discord';
+import {
+  buildNotificationEmbed,
+  syncGuildMembership,
+  syncUserRoles,
+  updateGuildMembership,
+} from '@xenon/discord';
 import {
   expireRoleAssignments,
   liftExpiredSuspensions,
@@ -16,6 +21,7 @@ import { recordDiscordDelivery } from '@xenon/notifications';
 import { systemActor } from '@xenon/permissions';
 
 import { discordClient, isDiscordReady, primaryGuild } from '../discord/client';
+import { guildMembershipPort } from '../discord/membership-port';
 import { postOrUpdateReviewCard } from '../discord/review-card';
 import { guildRolePort } from '../discord/role-port';
 import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
@@ -211,13 +217,34 @@ export const handlers: Handlers = {
         select: { discordId: true },
       });
       if (account !== null) {
-        await updateGuildMembership(prisma, account.discordId, { isMember: false });
+        await updateGuildMembership(prisma, account.discordId, {
+          state: 'NOT_MEMBER',
+          nickname: null,
+          joinedAt: null,
+          roleIds: [],
+        });
       }
       return;
     }
 
     if (outcome.errors.length > 0) {
       throw new IntegrationError('discord', outcome.errors.join('; '), { retryable: true });
+    }
+
+    if (outcome.permanentErrors.length > 0) {
+      logger.error(
+        { userId, reason, issues: outcome.permanentErrors },
+        'Role synchronization needs an operator fix; the failed job will not retry',
+      );
+      return;
+    }
+
+    if (outcome.blocked.length > 0) {
+      logger.warn(
+        { userId, reason, blockedRoleIds: outcome.blocked },
+        'Role synchronization is blocked by Discord hierarchy',
+      );
+      return;
     }
 
     logger.debug(
@@ -232,12 +259,19 @@ export const handlers: Handlers = {
     const row = await prisma.discordGuild.findUnique({ where: { id: guildId } });
     if (row === null) return;
 
+    if (row.guildId !== botEnv.DISCORD_GUILD_ID) {
+      await prisma.discordGuild.update({
+        where: { id: guildId },
+        data: { syncError: 'Configured guild does not match DISCORD_GUILD_ID' },
+      });
+      return;
+    }
+
     const client = discordClient();
     if (client === null) return;
 
     try {
       const guild = await client.guilds.fetch(row.guildId);
-      const members = await guild.members.fetch();
 
       await prisma.discordGuild.update({
         where: { id: guildId },
@@ -249,25 +283,6 @@ export const handlers: Handlers = {
           syncError: null,
         },
       });
-
-      // Refresh the cached membership projection in one pass, which is what
-      // makes the "must be in the Discord" application requirement accurate.
-      const accounts = await prisma.discordAccount.findMany({
-        select: { discordId: true, isGuildMember: true },
-      });
-
-      for (const account of accounts) {
-        const member = members.get(account.discordId);
-        const isMember = member !== undefined;
-        if (isMember === account.isGuildMember) continue;
-
-        await updateGuildMembership(prisma, account.discordId, {
-          isMember,
-          nickname: member?.nickname ?? null,
-          joinedAt: member?.joinedAt ?? null,
-          roleIds: member === undefined ? [] : [...member.roles.cache.keys()],
-        });
-      }
     } catch (error) {
       await prisma.discordGuild.update({
         where: { id: guildId },
@@ -275,6 +290,65 @@ export const handlers: Handlers = {
       });
       throw error;
     }
+  },
+
+  'discord.membership.sync': async ({ userId, reason }) => {
+    if (!requireDiscord('discord.membership.sync')) return;
+
+    const account = await prisma.discordAccount.findUnique({
+      where: { userId },
+      select: { discordId: true },
+    });
+    if (account === null) return;
+
+    const guildRow = await prisma.discordGuild.findFirst({
+      where: { isPrimary: true },
+      select: { id: true, guildId: true },
+    });
+    if (
+      guildRow === null ||
+      botEnv.DISCORD_GUILD_ID === undefined ||
+      guildRow.guildId !== botEnv.DISCORD_GUILD_ID
+    ) {
+      await updateGuildMembership(prisma, account.discordId, {
+        state: 'MISCONFIGURED',
+        error: 'Xenon primary guild does not match DISCORD_GUILD_ID',
+      });
+      logger.error(
+        { userId, reason },
+        'Discord membership check has a guild configuration mismatch',
+      );
+      return;
+    }
+
+    const client = discordClient();
+    if (client === null) return;
+
+    let guild;
+    try {
+      guild = await client.guilds.fetch(botEnv.DISCORD_GUILD_ID);
+    } catch (error) {
+      if (error instanceof DiscordAPIError && (error.code === 10004 || error.code === 50001)) {
+        await updateGuildMembership(prisma, account.discordId, {
+          state: 'MISCONFIGURED',
+          error: 'The bot cannot access the configured Xenon guild',
+        });
+        logger.error({ userId, reason }, 'Bot cannot access the configured Xenon guild');
+        return;
+      }
+
+      await updateGuildMembership(prisma, account.discordId, {
+        state: 'UNAVAILABLE',
+        error: 'Discord could not confirm this membership right now',
+      });
+      throw new IntegrationError('discord', 'Guild lookup failed', {
+        cause: error,
+        retryable: true,
+      });
+    }
+
+    const state = await syncGuildMembership(prisma, guildMembershipPort(guild), account.discordId);
+    logger.debug({ userId, reason, state }, 'Guild membership snapshot refreshed');
   },
 
   'fivem.whitelist.sync': async ({ userId, reason }) => {

@@ -1,6 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { planRoleSync } from './role-sync';
+import type { Db } from '@xenon/database';
+
+import { planRoleSync, syncUserRoles } from './role-sync';
 
 /**
  * The behaviour these cover is the one that would otherwise quietly destroy a
@@ -64,5 +66,127 @@ describe('planRoleSync', () => {
     // has caught up; refusing to add it would leave the grant unapplied.
     const plan = planRoleSync([], ['role-new'], []);
     expect(plan.add).toEqual(['role-new']);
+  });
+});
+
+describe('syncUserRoles', () => {
+  function setup({
+    current = [] as readonly string[],
+    desired = true,
+    prerequisite = { roleFound: true, hierarchyBlocked: false, manageRolesMissing: false },
+  }: {
+    current?: readonly string[];
+    desired?: boolean;
+    prerequisite?: {
+      roleFound: boolean;
+      hierarchyBlocked: boolean;
+      manageRolesMissing: boolean;
+    };
+  } = {}) {
+    const mappingUpdateMany = vi.fn(() => Promise.resolve({ count: 1 }));
+    const db = {
+      user: {
+        findUnique: vi.fn(() =>
+          Promise.resolve({
+            status: 'ACTIVE',
+            discordAccount: { discordId: 'discord-user' },
+            roles: desired ? [{ roleId: 'xenon-role' }] : [],
+          }),
+        ),
+      },
+      discordGuild: { findFirst: vi.fn(() => Promise.resolve({ id: 'guild-row' })) },
+      discordRoleMapping: {
+        findMany: vi.fn(() =>
+          Promise.resolve([
+            {
+              id: 'mapping-row',
+              roleId: 'xenon-role',
+              discordRoleId: 'discord-role',
+            },
+          ]),
+        ),
+        updateMany: mappingUpdateMany,
+      },
+    } as unknown as Db;
+
+    const calls = {
+      addRole: vi.fn(() => Promise.resolve()),
+      removeRole: vi.fn(() => Promise.resolve()),
+    };
+    const port = {
+      memberRoles: vi.fn((_discordUserId: string): Promise<readonly string[] | null> =>
+        Promise.resolve(current),
+      ),
+      addRole: calls.addRole,
+      removeRole: calls.removeRole,
+      canManageRole: vi.fn(() => Promise.resolve(prerequisite)),
+    };
+
+    return { db, port, calls, mappingUpdateMany };
+  }
+
+  it('grants and removes mapped roles idempotently', async () => {
+    const grant = setup();
+    const granted = await syncUserRoles(grant.db, grant.port, 'xenon-user');
+    expect(grant.calls.addRole).toHaveBeenCalledWith('discord-user', 'discord-role');
+    expect(granted.applied).toBe(true);
+
+    const unchanged = setup({ current: ['discord-role'] });
+    const alreadyGranted = await syncUserRoles(unchanged.db, unchanged.port, 'xenon-user');
+    expect(unchanged.calls.addRole).not.toHaveBeenCalled();
+    expect(unchanged.calls.removeRole).not.toHaveBeenCalled();
+    expect(alreadyGranted.applied).toBe(true);
+
+    const removal = setup({ current: ['discord-role'], desired: false });
+    const removed = await syncUserRoles(removal.db, removal.port, 'xenon-user');
+    expect(removal.calls.removeRole).toHaveBeenCalledWith('discord-user', 'discord-role');
+    expect(removed.applied).toBe(true);
+  });
+
+  it('records a hierarchy block without touching the member role set', async () => {
+    const fixture = setup({
+      prerequisite: { roleFound: true, hierarchyBlocked: true, manageRolesMissing: false },
+    });
+
+    const outcome = await syncUserRoles(fixture.db, fixture.port, 'xenon-user');
+
+    expect(outcome.blocked).toEqual(['discord-role']);
+    expect(outcome.applied).toBe(false);
+    expect(fixture.calls.addRole).not.toHaveBeenCalled();
+    expect(fixture.mappingUpdateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: { hierarchyBlocked: true, lastError: 'Bot role is below this role' },
+      }),
+    );
+  });
+
+  it('reports missing role and permission failures as permanent diagnostics', async () => {
+    const missingRole = setup({
+      prerequisite: { roleFound: false, hierarchyBlocked: false, manageRolesMissing: false },
+    });
+    const missing = await syncUserRoles(missingRole.db, missingRole.port, 'xenon-user');
+    expect(missing.permanentErrors[0]).toContain('no longer exists');
+    expect(missingRole.calls.addRole).not.toHaveBeenCalled();
+
+    const missingPermission = setup({
+      prerequisite: { roleFound: true, hierarchyBlocked: false, manageRolesMissing: true },
+    });
+    const permission = await syncUserRoles(
+      missingPermission.db,
+      missingPermission.port,
+      'xenon-user',
+    );
+    expect(permission.permanentErrors[0]).toContain('MANAGE_ROLES');
+    expect(missingPermission.calls.addRole).not.toHaveBeenCalled();
+  });
+
+  it('does not retry a member who is confirmed absent from the guild', async () => {
+    const fixture = setup();
+    fixture.port.memberRoles.mockResolvedValue(null);
+
+    const outcome = await syncUserRoles(fixture.db, fixture.port, 'xenon-user');
+
+    expect(outcome.memberMissing).toBe(true);
+    expect(fixture.calls.addRole).not.toHaveBeenCalled();
   });
 });

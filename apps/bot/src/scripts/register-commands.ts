@@ -15,10 +15,14 @@ import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
  *   pnpm --filter @xenon/bot register
  */
 async function main(): Promise<void> {
-  if (!hasRealDiscordCredentials()) {
+  if (
+    !hasRealDiscordCredentials() ||
+    botEnv.DISCORD_BOT_TOKEN === undefined ||
+    botEnv.DISCORD_APPLICATION_ID === undefined ||
+    botEnv.DISCORD_GUILD_ID === undefined
+  ) {
     logger.error(
-      'DISCORD_BOT_TOKEN and DISCORD_GUILD_ID look like placeholders. ' +
-        'Fill them in from the Discord Developer Portal before registering commands.',
+      'Set DISCORD_MODE=enabled and provide the rotated bot token, application ID and guild ID before registering commands.',
     );
     process.exit(1);
   }
