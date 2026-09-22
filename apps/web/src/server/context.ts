@@ -59,6 +59,24 @@ export async function requireSignedIn(): Promise<Actor> {
   return actor;
 }
 
+/**
+ * The actor, or an HTTP 403 page, having checked they hold *some* staff
+ * capability.
+ *
+ * For control-centre screens that are not gated on one particular capability -
+ * the health page is the only one - so that authorization does not rest on the
+ * layout alone. A layout does not re-run on every client-side navigation
+ * within its segment, which makes "the layout checks it" a weaker guarantee
+ * than it reads as.
+ */
+export async function requireStaff(): Promise<Actor> {
+  const actor = await currentActor();
+  if (actor.userId === null) unauthorized();
+
+  if (actor.permissions.size === 0) forbidden();
+  return actor;
+}
+
 /** The actor, or an HTTP 403 page, having checked one capability. */
 export async function requireCapability(permission: PermissionKey): Promise<Actor> {
   const actor = await currentActor();

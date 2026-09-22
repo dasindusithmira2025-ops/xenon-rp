@@ -13,20 +13,25 @@ whitelist state are projections of it, never inputs to it.
 
 Built in phases. This table is the honest state of the repository, not a plan.
 
-| Phase                    | State          |
-| ------------------------ | -------------- |
-| 0 — Foundation           | ✅ Done        |
-| 1 — Public experience    | ⬜ Not started |
-| 2 — Identity & RBAC      | ⬜ Not started |
-| 3 — Application platform | ⬜ Not started |
-| 4 — Discord bot          | ⬜ Not started |
-| 5 — FiveM integration    | ⬜ Not started |
-| 6 — Operations           | ⬜ Not started |
-| 7 — Production hardening | ⬜ Not started |
+| Phase                    | State                                      |
+| ------------------------ | ------------------------------------------ |
+| 0 — Foundation           | ✅ Done                                    |
+| 1 — Public experience    | ✅ Done                                    |
+| 2 — Identity & RBAC      | ✅ Done                                    |
+| 3 — Application platform | ✅ Done                                    |
+| 4 — Discord bot          | ✅ Done — unverified against a live guild  |
+| 5 — FiveM integration    | ✅ Done — unverified against a live server |
+| 6 — Operations           | ✅ Done                                    |
+| 7 — Production hardening | 🟨 Code complete, QA outstanding           |
 
-Phase 0 delivers the workspace, validated configuration, the canonical database
-schema with migrations, the capability catalogue with a seeded RBAC structure,
-structured logging and CI.
+"Unverified" is meant literally. The Discord and FiveM integrations are covered
+by tests against ports, adapters and signed fixtures, and have not been run
+against a real guild or a real FXServer. Treat the first live run as a test.
+
+No community content is seeded. Departments, rules, application questions,
+Discord role mappings, servers and media are empty until staff configure them
+in `/control`, because guessed content is content somebody has to find and
+delete later.
 
 ---
 
@@ -95,12 +100,17 @@ packages/
   database/            Prisma schema, migrations, client, seed
   permissions/         Actor, capability checks, actor resolution
   auth/                Auth.js configuration and session helpers
+  domain/              Users, roles, whitelist, tickets, reports, appeals, rules
   applications/        The application engine and its state machine
   discord/             Discord API adapters and embed builders
+  fivem/               Game-server adapters, request signing, account linking
+  jobs/                BullMQ queue, rate limiting, caching
+  storage/             Upload validation and the R2 / local drivers
   notifications/       One notification abstraction across web / DM / channel
   validation/          Shared Zod schemas
   ui/                  Design system and shared components
   logger/              Structured logging with central redaction
+  integration-tests/   Cross-package tests against a real PostgreSQL database
 
 fivem/
   xenon_bridge/        FiveM resource (JS built from TypeScript)
@@ -116,20 +126,23 @@ depends on `core`, and everything else depends on those. See
 
 ## Common commands
 
-| Command                   | What it does                                   |
-| ------------------------- | ---------------------------------------------- |
-| `pnpm dev`                | Run every app in watch mode                    |
-| `pnpm lint`               | ESLint across the workspace                    |
-| `pnpm typecheck`          | `tsc --noEmit` per package                     |
-| `pnpm test`               | Unit and integration tests                     |
-| `pnpm build`              | Production build of every app                  |
-| `pnpm format`             | Prettier write                                 |
-| `pnpm db:migrate`         | Create and apply a migration                   |
-| `pnpm db:deploy`          | Apply committed migrations (CI and production) |
-| `pnpm db:studio`          | Prisma Studio                                  |
-| `pnpm db:seed`            | Idempotent baseline seed                       |
-| `pnpm infra:up` / `:down` | Start / stop Postgres and Redis                |
-| `pnpm infra:reset`        | Stop and **delete** local database volumes     |
+| Command                   | What it does                                      |
+| ------------------------- | ------------------------------------------------- |
+| `pnpm dev`                | Run every app in watch mode                       |
+| `pnpm lint`               | ESLint across the workspace                       |
+| `pnpm typecheck`          | `tsc --noEmit` per package                        |
+| `pnpm test`               | Unit and integration tests                        |
+| `pnpm build`              | Production build of every app                     |
+| `pnpm format`             | Prettier write                                    |
+| `pnpm db:migrate`         | Create and apply a migration                      |
+| `pnpm db:deploy`          | Apply committed migrations (CI and production)    |
+| `pnpm db:studio`          | Prisma Studio                                     |
+| `pnpm db:seed`            | Idempotent baseline seed                          |
+| `pnpm db:seed:dev`        | Development fixtures — never in production        |
+| `pnpm db:reset`           | Empty a **test** database and reseed the baseline |
+| `pnpm test:e2e`           | Playwright end-to-end suite                       |
+| `pnpm infra:up` / `:down` | Start / stop Postgres and Redis                   |
+| `pnpm infra:reset`        | Stop and **delete** local database volumes        |
 
 ### Becoming an admin
 
@@ -146,12 +159,14 @@ The escalation path deliberately requires database access, not merely a session.
 
 ## Documentation
 
-| Document                                          | Covers                                    |
-| ------------------------------------------------- | ----------------------------------------- |
-| [ARCHITECTURE.md](docs/ARCHITECTURE.md)           | Package boundaries and why they are drawn |
-| [LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md) | Running the stack, troubleshooting        |
-| [DATABASE.md](docs/DATABASE.md)                   | Schema tour and migration rules           |
-| [PERMISSIONS.md](docs/PERMISSIONS.md)             | The capability model                      |
-
-`DISCORD_SETUP.md`, `FIVEM_SETUP.md`, `SECURITY.md`, `OPERATIONS.md` and
-`DEPLOYMENT.md` land with the phases that make them true.
+| Document                                          | Covers                                        |
+| ------------------------------------------------- | --------------------------------------------- |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md)           | Package boundaries and why they are drawn     |
+| [LOCAL_DEVELOPMENT.md](docs/LOCAL_DEVELOPMENT.md) | Running the stack, troubleshooting            |
+| [DATABASE.md](docs/DATABASE.md)                   | Schema tour and migration rules               |
+| [PERMISSIONS.md](docs/PERMISSIONS.md)             | The capability model                          |
+| [DISCORD_SETUP.md](docs/DISCORD_SETUP.md)         | OAuth, the bot, role mappings, hierarchy      |
+| [FIVEM_SETUP.md](docs/FIVEM_SETUP.md)             | The bridge, account linking, the connect gate |
+| [SECURITY.md](docs/SECURITY.md)                   | Every control and where the decision lives    |
+| [OPERATIONS.md](docs/OPERATIONS.md)               | Health, queue, incidents, backups             |
+| [DEPLOYMENT.md](docs/DEPLOYMENT.md)               | Going to production, with a checklist         |

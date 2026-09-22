@@ -26,6 +26,7 @@
     "db:studio": "pnpm --filter @xenon/database run studio",
     "db:seed": "pnpm --filter @xenon/database run seed",
     "db:seed:dev": "pnpm --filter @xenon/database run seed:dev",
+    "db:reset": "pnpm --filter @xenon/database run reset",
     "infra:up": "docker compose up -d",
     "infra:down": "docker compose down",
     "infra:reset": "docker compose down -v"

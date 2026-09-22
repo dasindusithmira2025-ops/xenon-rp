@@ -15,13 +15,19 @@ env:
   # repository's encrypted secrets and are never echoed into logs.
   DATABASE_URL: postgresql://xenon:xenon@localhost:5432/xenon_test?schema=public
   REDIS_URL: redis://localhost:6379
-  NEXT_PUBLIC_SITE_URL: http://localhost:3000
+  NEXT_PUBLIC_SITE_URL: http://localhost:3200
   AUTH_SECRET: ci-only-secret-value-not-used-in-production-32
   AUTH_DISCORD_ID: '000000000000000000'
   AUTH_DISCORD_SECRET: ci-only
   DISCORD_BOT_TOKEN: ci-only
   DISCORD_APPLICATION_ID: '000000000000000000'
   DISCORD_GUILD_ID: '000000000000000000'
+  # Peppers the hash of client addresses. Required in production; a fixed
+  # value here keeps the integration suite deterministic.
+  HASH_PEPPER: ci-only-pepper-value-not-used-in-production
+  # Signs bridge requests. Present so the bridge endpoints exist in the E2E
+  # run rather than answering 503.
+  FIVEM_BRIDGE_SECRET: ci-only-bridge-secret-not-used-in-production
   TURBO_TELEMETRY_DISABLED: 1
 
 jobs:
@@ -91,7 +97,72 @@ jobs:
         run: pnpm typecheck
 
       - name: Unit and integration tests
+        # The integration suite runs against its own database, derived from
+        # DATABASE_URL. That name already ends in `_test`, so it is used as-is.
         run: pnpm test
 
       - name: Build
         run: pnpm build
+
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Separate from `verify` so a browser flake is legible as a browser flake,
+    # and so the fast gate still reports in a couple of minutes.
+    needs: verify
+
+    env:
+      # The dev sign-in route the suite uses refuses to exist unless both this
+      # and a non-production NODE_ENV hold. See docs/SECURITY.md.
+      AUTH_DEV_LOGIN: 'true'
+
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: xenon
+          POSTGRES_PASSWORD: xenon
+          POSTGRES_DB: xenon_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U xenon -d xenon_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:8-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm db:generate
+
+      - name: Install browsers
+        run: pnpm --filter @xenon/web exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        # Playwright owns the database from here: its global setup migrates,
+        # empties and seeds `xenon_e2e`, and starts the web server itself.
+        run: pnpm test:e2e
+
+      - name: Upload report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/web/playwright-report/
+          retention-days: 7

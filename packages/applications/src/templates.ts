@@ -10,7 +10,6 @@ import { type Actor, requirePermission } from '@xenon/permissions';
 import type { QuestionInput, TemplateInput } from '@xenon/validation';
 
 import { checkEligibility, templateOpenState } from './eligibility';
-import { toRenderableSections } from './form-model';
 
 /**
  * The form builder.
@@ -332,17 +331,6 @@ export async function reorderSections(
   for (const [index, id] of orderedIds.entries()) {
     await db.applicationSection.update({ where: { id }, data: { sortOrder: index } });
   }
-}
-
-/** Render a template exactly as an applicant would see it, without saving. */
-export async function previewTemplate(db: Db, actor: Actor, templateId: string) {
-  requirePermission(actor, 'applications.manage_templates');
-
-  const template = await getTemplateTree(db, templateId);
-  return {
-    template,
-    sections: toRenderableSections(template.sections, { includeStaffOnly: false }),
-  };
 }
 
 // --- Public listing ----------------------------------------------------------

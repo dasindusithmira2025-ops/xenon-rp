@@ -5,7 +5,7 @@ import { storageStatus } from '@xenon/storage';
 import { Badge, Panel } from '@xenon/ui';
 
 import { ControlPage, MetricTile } from '~/components/control/control-page';
-import { requireSignedIn } from '~/server/context';
+import { requireStaff } from '~/server/context';
 
 export const dynamic = 'force-dynamic';
 
@@ -30,9 +30,11 @@ const tone = {
  * a stale heartbeat is the signal.
  */
 export default async function HealthPage(): Promise<React.ReactElement> {
-  // Visible to any staff member: knowing whether the platform is up is not
-  // privileged information, and no secret is rendered on this page.
-  await requireSignedIn();
+  // Any staff capability is enough: knowing whether the platform is up is not
+  // privileged among staff, and no secret is rendered here. It is still
+  // checked on the page rather than left to the layout - queue depths and
+  // sync backlogs are not for players.
+  await requireStaff();
 
   const [report, queue, storage, unsynced] = await Promise.all([
     healthReport(prisma),
