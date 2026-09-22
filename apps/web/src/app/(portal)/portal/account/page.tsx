@@ -1,12 +1,12 @@
-import { ArrowUpRight } from 'lucide-react';
-
+import { serverEnv } from '@xenon/config/server';
 import { prisma } from '@xenon/database';
 import { allSettings, onboardingState } from '@xenon/domain';
 import { activeLinkToken } from '@xenon/fivem';
-import { Badge, Button, Panel } from '@xenon/ui';
+import { Badge, Panel } from '@xenon/ui';
 
 import type { Metadata } from 'next';
 
+import { DiscordMembership } from '~/components/portal/discord-membership';
 import { FivemLinkPanel } from '~/components/portal/fivem-link-panel';
 import { PortalPage, PortalSection } from '~/components/portal/portal-page';
 import { ProfileForm } from '~/components/portal/profile-form';
@@ -45,9 +45,9 @@ export default async function AccountPage(): Promise<React.ReactElement> {
             username: true,
             globalName: true,
             discordId: true,
-            isGuildMember: true,
-            guildJoinedAt: true,
-            syncedAt: true,
+            guildMembershipState: true,
+            guildSyncedAt: true,
+            guildSyncError: true,
           },
         },
         gameIdentities: {
@@ -87,7 +87,7 @@ export default async function AccountPage(): Promise<React.ReactElement> {
         </Panel>
       </PortalSection>
 
-      <PortalSection title="Discord" description="Your identity. This cannot be changed here.">
+      <PortalSection title="Discord" description="Your identity and Xenon community membership.">
         <Panel tone="flat" pad="lg" className="flex flex-col gap-4">
           {user.discordAccount === null ? (
             <p className="text-sm text-ink-muted">No Discord account is linked.</p>
@@ -100,21 +100,19 @@ export default async function AccountPage(): Promise<React.ReactElement> {
                   value={user.discordAccount.globalName ?? user.discordAccount.username}
                 />
                 <Detail label="Discord ID" value={user.discordAccount.discordId} mono />
-                <Detail
-                  label="Guild"
-                  value={user.discordAccount.isGuildMember ? 'Member' : 'Not a member'}
-                />
+                <div className="flex flex-col gap-2 sm:col-span-2">
+                  <dt className="x-eyebrow">Xenon community</dt>
+                  <dd>
+                    <DiscordMembership
+                      state={user.discordAccount.guildMembershipState}
+                      syncedAt={user.discordAccount.guildSyncedAt?.toISOString() ?? null}
+                      error={user.discordAccount.guildSyncError}
+                      invite={typeof invite === 'string' && invite.length > 0 ? invite : null}
+                      enabled={serverEnv.DISCORD_MODE === 'enabled'}
+                    />
+                  </dd>
+                </div>
               </dl>
-
-              {user.discordAccount.isGuildMember ||
-              invite === undefined ||
-              invite.length === 0 ? null : (
-                <Button variant="outline" asChild className="self-start">
-                  <a href={invite} target="_blank" rel="noopener noreferrer">
-                    Join the Discord <ArrowUpRight />
-                  </a>
-                </Button>
-              )}
             </>
           )}
         </Panel>

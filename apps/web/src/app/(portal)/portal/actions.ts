@@ -4,11 +4,14 @@ import { revalidatePath } from 'next/cache';
 import { headers } from 'next/headers';
 
 import { withdrawApplication } from '@xenon/applications';
+import { serverEnv } from '@xenon/config/server';
+import { IntegrationError } from '@xenon/core';
 import { prisma } from '@xenon/database';
 import {
   acceptRules,
   createCharacter,
   currentRuleSet,
+  recordAudit,
   replyToTicket,
   retireCharacter,
   updateCharacter,
@@ -16,6 +19,7 @@ import {
   withdrawAppeal,
 } from '@xenon/domain';
 import { issueLinkCode, unlinkIdentity } from '@xenon/fivem';
+import { enqueue, enforceRateLimit } from '@xenon/jobs';
 import { markAllNotificationsRead, markNotificationRead } from '@xenon/notifications';
 import { characterInput, cuid, profileInput, ticketReplyInput } from '@xenon/validation';
 
@@ -96,6 +100,43 @@ export async function unlinkIdentityAction(identityId: string): Promise<ActionRe
     await unlinkIdentity(prisma, actor, id);
     revalidatePath('/portal/account');
     revalidatePath('/portal');
+  });
+}
+
+/** Ask the persistent bot to refresh this account's current guild membership. */
+export async function resyncDiscordMembershipAction(): Promise<
+  ActionResult<{ requestedAt: string }>
+> {
+  return runAction(async () => {
+    const actor = await requireSignedIn();
+    const userId = actor.userId ?? '';
+    await enforceRateLimit('discordMembershipResync', userId);
+
+    if (serverEnv.DISCORD_MODE !== 'enabled') {
+      throw new IntegrationError('discord', 'Discord is disabled in this environment', {
+        retryable: false,
+      });
+    }
+
+    const account = await prisma.discordAccount.findUnique({
+      where: { userId },
+      select: { id: true, discordId: true },
+    });
+    if (account === null) {
+      throw new IntegrationError('discord', 'No Discord account is linked', { retryable: false });
+    }
+
+    const requestedAt = new Date();
+    await enqueue('discord.membership.sync', { userId, reason: 'portal.manual_resync' });
+    await recordAudit(prisma, actor, {
+      action: 'discord.membership_resync_requested',
+      entityType: 'discord_account',
+      entityId: account.id,
+      metadata: { discordUserId: account.discordId },
+    });
+
+    revalidatePath('/portal/account');
+    return { requestedAt: requestedAt.toISOString() };
   });
 }
 

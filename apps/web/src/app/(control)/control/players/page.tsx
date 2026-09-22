@@ -110,9 +110,15 @@ export default async function PlayersPage({
                     ) : (
                       <span className="flex items-center gap-2">
                         <span className="truncate">{user.discordAccount.username}</span>
-                        {user.discordAccount.isGuildMember ? null : (
-                          <span className="shrink-0 text-warning">(not in guild)</span>
-                        )}
+                        <span
+                          className={
+                            user.discordAccount.guildMembershipState === 'MEMBER'
+                              ? 'shrink-0 text-ink-muted'
+                              : 'shrink-0 text-warning'
+                          }
+                        >
+                          ({membershipLabel(user.discordAccount.guildMembershipState)})
+                        </span>
                       </span>
                     )}
                   </TD>
@@ -158,6 +164,23 @@ export default async function PlayersPage({
       ) : null}
     </ControlPage>
   );
+}
+
+function membershipLabel(state: string): string {
+  switch (state) {
+    case 'MEMBER':
+      return 'member';
+    case 'PENDING_SCREENING':
+      return 'screening pending';
+    case 'NOT_MEMBER':
+      return 'not joined';
+    case 'MISCONFIGURED':
+      return 'setup issue';
+    case 'UNAVAILABLE':
+      return 'unknown';
+    default:
+      return 'not checked';
+  }
 }
 
 function PageLink({

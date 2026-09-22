@@ -109,7 +109,7 @@ export default async function PlayerPage({
               <Row label="Discord ID" value={user.discordAccount?.discordId ?? '—'} mono />
               <Row
                 label="In guild"
-                value={user.discordAccount?.isGuildMember === true ? 'yes' : 'no'}
+                value={membershipLabel(user.discordAccount?.guildMembershipState ?? 'UNKNOWN')}
               />
               <Row label="Pronouns" value={user.pronouns ?? '—'} />
               <Row label="Timezone" value={user.timezone ?? '—'} />
@@ -289,6 +289,23 @@ export default async function PlayerPage({
       </div>
     </ControlPage>
   );
+}
+
+function membershipLabel(state: string): string {
+  switch (state) {
+    case 'MEMBER':
+      return 'yes';
+    case 'PENDING_SCREENING':
+      return 'screening pending';
+    case 'NOT_MEMBER':
+      return 'not joined';
+    case 'MISCONFIGURED':
+      return 'setup issue';
+    case 'UNAVAILABLE':
+      return 'unknown';
+    default:
+      return 'not checked';
+  }
 }
 
 function Section({

@@ -38,7 +38,7 @@ export default async function PortalHome(): Promise<React.ReactElement> {
           displayName: true,
           whitelistState: true,
           createdAt: true,
-          discordAccount: { select: { username: true, isGuildMember: true } },
+          discordAccount: { select: { username: true, guildMembershipState: true } },
           gameIdentities: {
             where: { unlinkedAt: null },
             select: { kind: true, value: true, label: true },
@@ -252,7 +252,7 @@ export default async function PortalHome(): Promise<React.ReactElement> {
               <div className="flex justify-between gap-4">
                 <dt className="text-ink-muted">Discord</dt>
                 <dd className="text-ink-secondary">
-                  {user.discordAccount?.isGuildMember === true ? 'Member' : 'Not in the guild'}
+                  {membershipLabel(user.discordAccount?.guildMembershipState ?? 'UNKNOWN')}
                 </dd>
               </div>
             </dl>
@@ -265,6 +265,23 @@ export default async function PortalHome(): Promise<React.ReactElement> {
       </div>
     </PortalPage>
   );
+}
+
+function membershipLabel(state: string): string {
+  switch (state) {
+    case 'MEMBER':
+      return 'Member';
+    case 'PENDING_SCREENING':
+      return 'Finish Discord screening';
+    case 'NOT_MEMBER':
+      return 'Not in the guild';
+    case 'MISCONFIGURED':
+      return 'Discord setup needs attention';
+    case 'UNAVAILABLE':
+      return 'Membership could not be checked';
+    default:
+      return 'Membership not checked';
+  }
 }
 
 function StatCard({

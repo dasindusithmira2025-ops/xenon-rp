@@ -136,11 +136,21 @@ export async function requestChangesAction(
 
 export async function requestInterviewAction(
   reference: string,
+  publicNote: string,
   staffNote: string,
 ): Promise<ActionResult> {
   return runAction(async () => {
+    const input = parseInput(reviewDecisionInput, {
+      submissionId: reference,
+      publicNote,
+      staffNote,
+    });
     const actor = await currentActor();
-    await requestInterview(prisma, actor, { reference, staffNote });
+    await requestInterview(prisma, actor, {
+      reference,
+      publicNote: input.publicNote ?? null,
+      staffNote: input.staffNote ?? null,
+    });
     refresh(reference);
   });
 }

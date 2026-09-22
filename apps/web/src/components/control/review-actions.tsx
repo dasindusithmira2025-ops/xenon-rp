@@ -179,7 +179,7 @@ export function ReviewActions({
           <Field
             label="Message to the applicant"
             htmlFor="public-note"
-            hint="Shown to them, and included in the notification. Required for a rejection or a change request."
+            hint="Shown to them, and included in the notification. Required for a rejection or a change request; optional interview instructions."
           >
             <Textarea
               id="public-note"
@@ -244,7 +244,7 @@ export function ReviewActions({
               disabled={pending}
               onClick={() => {
                 run(
-                  () => requestInterviewAction(reference, staffNote),
+                  () => requestInterviewAction(reference, publicNote, staffNote),
                   'Moved to the interview stage',
                 );
               }}

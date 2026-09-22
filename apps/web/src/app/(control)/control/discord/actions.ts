@@ -2,6 +2,8 @@
 
 import { revalidatePath } from 'next/cache';
 
+import { serverEnv } from '@xenon/config/server';
+import { ConflictError } from '@xenon/core';
 import { prisma } from '@xenon/database';
 import { recordAudit } from '@xenon/domain';
 import { enqueueBestEffort } from '@xenon/jobs';
@@ -24,6 +26,13 @@ export async function saveGuildAction(raw: unknown): Promise<ActionResult> {
     const input = parseInput(guildSettingsInput, raw);
     const actor = await currentActor();
     requirePermission(actor, 'discord.manage');
+
+    if (serverEnv.DISCORD_GUILD_ID !== undefined && input.guildId !== serverEnv.DISCORD_GUILD_ID) {
+      throw new ConflictError(
+        'Configured Discord guild does not match the runtime guild',
+        'Use the server ID configured in DISCORD_GUILD_ID, then try again.',
+      );
+    }
 
     const guild = await prisma.discordGuild.upsert({
       where: { guildId: input.guildId },
@@ -68,6 +77,21 @@ export async function saveRoleMappingAction(raw: unknown): Promise<ActionResult>
     const actor = await currentActor();
     requirePermission(actor, 'discord.manage');
 
+    const guild = await prisma.discordGuild.findUnique({
+      where: { id: input.guildId },
+      select: { guildId: true, isPrimary: true },
+    });
+    if (
+      guild === null ||
+      !guild.isPrimary ||
+      (serverEnv.DISCORD_GUILD_ID !== undefined && guild.guildId !== serverEnv.DISCORD_GUILD_ID)
+    ) {
+      throw new ConflictError(
+        'Discord role mapping targets a non-primary guild',
+        'Role mappings can only target the configured Xenon guild.',
+      );
+    }
+
     const mapping = await prisma.discordRoleMapping.upsert({
       where: { guildId_roleId: { guildId: input.guildId, roleId: input.roleId } },
       create: {
@@ -105,6 +129,22 @@ export async function deleteRoleMappingAction(mappingId: string): Promise<Action
     const id = parseInput(cuid, mappingId);
     const actor = await currentActor();
     requirePermission(actor, 'discord.manage');
+
+    const mapping = await prisma.discordRoleMapping.findUnique({
+      where: { id },
+      select: { guild: { select: { guildId: true, isPrimary: true } } },
+    });
+    if (
+      mapping === null ||
+      !mapping.guild.isPrimary ||
+      (serverEnv.DISCORD_GUILD_ID !== undefined &&
+        mapping.guild.guildId !== serverEnv.DISCORD_GUILD_ID)
+    ) {
+      throw new ConflictError(
+        'Discord role mapping targets a non-primary guild',
+        'That mapping does not belong to the configured Xenon guild.',
+      );
+    }
 
     await prisma.discordRoleMapping.delete({ where: { id } });
     await recordAudit(prisma, actor, {

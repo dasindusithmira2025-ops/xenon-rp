@@ -118,8 +118,10 @@ export default async function ReviewPage({
               />
               <Row
                 label="In guild"
-                value={applicant.discordAccount?.isGuildMember === true ? 'yes' : 'no'}
-                tone={applicant.discordAccount?.isGuildMember === true ? 'normal' : 'warn'}
+                value={membershipLabel(applicant.discordAccount?.guildMembershipState ?? 'UNKNOWN')}
+                tone={
+                  applicant.discordAccount?.guildMembershipState === 'MEMBER' ? 'normal' : 'warn'
+                }
               />
               <Row
                 label="FiveM"
@@ -340,6 +342,23 @@ export default async function ReviewPage({
       </div>
     </ControlPage>
   );
+}
+
+function membershipLabel(state: string): string {
+  switch (state) {
+    case 'MEMBER':
+      return 'yes';
+    case 'PENDING_SCREENING':
+      return 'screening pending';
+    case 'NOT_MEMBER':
+      return 'not joined';
+    case 'MISCONFIGURED':
+      return 'setup issue';
+    case 'UNAVAILABLE':
+      return 'unknown';
+    default:
+      return 'not checked';
+  }
 }
 
 function Row({
