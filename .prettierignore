@@ -4,3 +4,4 @@ dist/
 coverage/
 .turbo/
 packages/database/generated/
+.paralith/
