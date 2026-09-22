@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { jobIdFor } from './contracts';
+import { jobIdFor, retryPolicy } from './contracts';
 
 describe('jobIdFor', () => {
   it('collapses a duplicate review card creation for one submitted application', () => {
@@ -23,5 +23,10 @@ describe('jobIdFor', () => {
     expect(jobIdFor('discord.dm', { notificationId: 'notification-1' })).toBe(
       'discord.dm~notification-1',
     );
+  });
+
+  it('bounds transient Discord delivery retries with exponential backoff', () => {
+    expect(retryPolicy['discord.dm']).toEqual({ attempts: 5, backoffMs: 10_000 });
+    expect(retryPolicy['discord.review.post']).toEqual({ attempts: 8, backoffMs: 5_000 });
   });
 });
