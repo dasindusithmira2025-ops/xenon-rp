@@ -23,7 +23,7 @@ describe('Xenon Auth.js adapter', () => {
       userId: 'xenon-user',
       type: 'oauth',
       provider: 'discord',
-      providerAccountId: '90000000000000000001',
+      providerAccountId: 'test-discord-user-1',
       access_token: 'access-token-test-value',
       refresh_token: 'refresh-token-test-value',
       id_token: 'id-token-test-value',
@@ -36,7 +36,7 @@ describe('Xenon Auth.js adapter', () => {
     expect(create).toMatchObject({
       userId: 'xenon-user',
       provider: 'discord',
-      providerAccountId: '90000000000000000001',
+      providerAccountId: 'test-discord-user-1',
       access_token: null,
       refresh_token: null,
       id_token: null,
@@ -66,7 +66,7 @@ describe('Xenon Auth.js adapter', () => {
         userId: 'xenon-user',
         type: 'oauth',
         provider: 'discord',
-        providerAccountId: '90000000000000000001',
+        providerAccountId: 'test-discord-user-1',
       } satisfies AdapterAccount),
     ).rejects.toThrow(/ownership does not match/);
   });

@@ -106,13 +106,14 @@ test.describe('signed in as staff', () => {
   });
 });
 
-test('the development sign-in route refuses a non-fixture account', async ({ request }) => {
-  // A real Discord snowflake shape, outside the fixture range.
-  const response = await request.get('/api/dev/session?discordId=123456789012345678', {
-    maxRedirects: 0,
-  });
+test('the development sign-in route refuses non-fixture Discord IDs', async ({ request }) => {
+  for (const discordId of ['123456789012345678', '900000000000000001']) {
+    const response = await request.get(`/api/dev/session?discordId=${discordId}`, {
+      maxRedirects: 0,
+    });
 
-  expect(response.status()).toBe(400);
+    expect(response.status()).toBe(400);
+  }
 });
 
 test('the FiveM bridge refuses an unsigned request', async ({ request }) => {

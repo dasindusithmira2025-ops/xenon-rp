@@ -82,20 +82,29 @@ export function Badge({ className, tone, ...props }: BadgeProps): React.ReactEle
 
 // --- Status dot --------------------------------------------------------------
 
-export type StatusTone = 'online' | 'offline' | 'degraded' | 'unknown';
+export type StatusTone = 'online' | 'offline' | 'degraded' | 'checking' | 'unknown';
 
 const dotColour: Record<StatusTone, string> = {
   online: 'bg-xenon',
   offline: 'bg-danger',
   degraded: 'bg-warning',
+  checking: 'bg-chrome-300',
   unknown: 'bg-chrome-400',
 };
 
 /**
  * Live-state dot.
  *
- * Only the online state pulses. A pulsing red would read as an emergency, and
- * an unknown state should look inert because that is exactly what it is.
+ * Only `online` gets the expanding ring, and `.x-status-ring` is deliberately
+ * slower and fainter than Tailwind's `animate-ping`, which at its default
+ * cadence reads as a hazard light. A pulsing red would read as an emergency,
+ * `checking` should read as busy rather than as an alarm, and `unknown` should
+ * look inert because that is exactly what it is.
+ *
+ * The colour is transitioned rather than swapped, so a poll that flips UNKNOWN
+ * to ONLINE reads as the city coming up rather than as a repaint. CSS only -
+ * this appears on server-rendered status pages and should not drag an
+ * animation runtime into them.
  */
 export function StatusDot({
   state,
@@ -105,11 +114,19 @@ export function StatusDot({
   className?: string;
 }): React.ReactElement {
   return (
-    <span className={cn('relative flex size-2', className)} aria-hidden>
+    <span className={cn('relative flex size-2 shrink-0', className)} aria-hidden>
       {state === 'online' ? (
-        <span className="absolute inline-flex size-full animate-ping rounded-full bg-xenon opacity-60 motion-reduce:hidden" />
+        <span className="x-status-ring absolute inset-0 rounded-full bg-xenon" />
       ) : null}
-      <span className={cn('relative inline-flex size-2 rounded-full', dotColour[state])} />
+      {state === 'checking' ? (
+        <span className="absolute inset-0 animate-pulse rounded-full bg-chrome-300/50" />
+      ) : null}
+      <span
+        className={cn(
+          'relative inline-flex size-full rounded-full transition-colors duration-(--duration-base) ease-standard',
+          dotColour[state],
+        )}
+      />
     </span>
   );
 }
@@ -165,18 +182,95 @@ export function Separator({
  * Sized by the caller to match the content it stands in for, so the layout
  * does not shift when real data arrives - a skeleton that is the wrong height
  * is worse than no skeleton at all.
+ *
+ * The shimmer is a low-contrast highlight crossing a dark surface, not the
+ * bright white sweep every component library ships: on this palette that reads
+ * as a strobe. See `.x-skeleton` in theme.css.
  */
 export function Skeleton({ className }: { className?: string }): React.ReactElement {
+  return <div className={cn('x-skeleton rounded-sm', className)} aria-hidden />;
+}
+
+/**
+ * Lines of placeholder text.
+ *
+ * The last line is short, because real paragraphs end mid-measure and a block
+ * of equal-length bars reads as a barcode rather than as prose.
+ */
+export function SkeletonText({
+  lines = 3,
+  className,
+}: {
+  lines?: number;
+  className?: string;
+}): React.ReactElement {
   return (
-    <div
-      className={cn('animate-pulse rounded-sm bg-elevated motion-reduce:animate-none', className)}
-      aria-hidden
-    />
+    <div className={cn('flex flex-col gap-2', className)} aria-hidden>
+      {Array.from({ length: lines }, (_, index) => (
+        <Skeleton
+          key={index}
+          className={cn(
+            'h-3',
+            index === lines - 1 ? 'w-2/5' : index % 3 === 1 ? 'w-full' : 'w-11/12',
+          )}
+        />
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Placeholder rows that keep a table's shape.
+ *
+ * A centred spinner over an empty region throws the layout away and then
+ * throws it back, which is the flicker skeletons exist to prevent. These
+ * render inside the real `<tbody>` with the real column count, so the header
+ * stays put and the rows arrive in place.
+ *
+ * Column widths vary deliberately: identical bars in every cell look like a
+ * rendering fault, and a first column that is wider reads as a name field.
+ */
+export function SkeletonRows({
+  rows = 6,
+  columns = 4,
+  className,
+}: {
+  rows?: number;
+  columns?: number;
+  className?: string;
+}): React.ReactElement {
+  const widths = ['w-32', 'w-20', 'w-24', 'w-16', 'w-28'];
+
+  return (
+    <>
+      {Array.from({ length: rows }, (_, row) => (
+        <tr key={row} className={cn('border-b border-line', className)}>
+          {Array.from({ length: columns }, (_, column) => (
+            // Same padding as `TD`, so the placeholder rows are exactly the
+            // height the real ones will be and nothing shifts on arrival.
+            <td key={column} className="px-3 py-2.5">
+              <Skeleton className={cn('h-3.5', widths[(row + column) % widths.length] ?? 'w-24')} />
+            </td>
+          ))}
+        </tr>
+      ))}
+    </>
   );
 }
 
 // --- Empty state -------------------------------------------------------------
 
+/**
+ * Nothing to show, said deliberately.
+ *
+ * Fades and lifts on mount rather than appearing, which matters most where an
+ * empty state is the *result* of something - a filter that matched nothing, a
+ * search with no hits. Snapping a "nothing here" panel into the space a list
+ * occupied a moment ago reads as the page breaking; arriving reads as an
+ * answer.
+ *
+ * CSS rather than Motion: it plays once, on mount, and has no exit.
+ */
 export function EmptyState({
   icon,
   title,
@@ -193,7 +287,7 @@ export function EmptyState({
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-line-strong px-6 py-16 text-center',
+        'flex animate-slide-up flex-col items-center justify-center gap-3 rounded-lg border border-dashed border-line-strong px-6 py-16 text-center',
         className,
       )}
     >
@@ -203,38 +297,6 @@ export function EmptyState({
         <p className="max-w-sm text-sm text-ink-muted">{description}</p>
       )}
       {action === undefined ? null : <div className="mt-2">{action}</div>}
-    </div>
-  );
-}
-
-// --- Progress ----------------------------------------------------------------
-
-export function Progress({
-  value,
-  max = 100,
-  className,
-  label,
-}: {
-  value: number;
-  max?: number;
-  className?: string;
-  label?: string;
-}): React.ReactElement {
-  const percent = max === 0 ? 0 : Math.min(100, Math.max(0, (value / max) * 100));
-
-  return (
-    <div
-      role="progressbar"
-      aria-valuenow={Math.round(percent)}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-label={label}
-      className={cn('h-1 w-full overflow-hidden rounded-pill bg-elevated', className)}
-    >
-      <div
-        className="h-full rounded-pill bg-xenon transition-[width] duration-(--duration-base) ease-standard"
-        style={{ width: `${String(percent)}%` }}
-      />
     </div>
   );
 }

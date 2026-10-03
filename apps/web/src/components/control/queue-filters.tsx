@@ -1,10 +1,13 @@
 'use client';
 
 import { Search, X } from 'lucide-react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import * as React from 'react';
 
 import { Button, Input, Select } from '@xenon/ui';
+import { LoadingRail } from '@xenon/ui/motion';
+
+import { useFilterNavigation } from './use-filter-navigation';
 
 /**
  * Queue filters.
@@ -13,15 +16,19 @@ import { Button, Input, Select } from '@xenon/ui';
  * shareable ("look at XN-WL applications waiting over a week"), survivable
  * across a refresh, and back-button correct - none of which a `useState` filter
  * gives you.
+ *
+ * The cost of putting it in the URL is that every filter change is a
+ * navigation, and a navigation would otherwise replace the queue with a
+ * skeleton. `useFilterNavigation` holds the rows on screen and reports the wait
+ * as a rail instead.
  */
 export function QueueFilters({
   templates,
 }: {
   templates: readonly { id: string; name: string }[];
 }): React.ReactElement {
-  const router = useRouter();
-  const pathname = usePathname();
   const params = useSearchParams();
+  const { navigate, pending } = useFilterNavigation();
 
   const [query, setQuery] = React.useState(params.get('q') ?? '');
 
@@ -31,7 +38,7 @@ export function QueueFilters({
     else next.set(key, value);
     // Any filter change invalidates the page cursor.
     next.delete('page');
-    router.push(`${pathname}?${next.toString()}`);
+    navigate(next);
   };
 
   const active =
@@ -41,7 +48,12 @@ export function QueueFilters({
     params.get('mine') !== null;
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="relative flex flex-wrap items-center gap-2 pb-1">
+      {/* Only while a request is actually outstanding. A rail that is always
+          there is furniture, and furniture is ignored. */}
+      {pending ? (
+        <LoadingRail className="absolute inset-x-0 bottom-0" label="Updating the queue" />
+      ) : null}
       <form
         className="relative min-w-56 flex-1"
         action={() => {
@@ -114,7 +126,7 @@ export function QueueFilters({
           size="sm"
           onClick={() => {
             setQuery('');
-            router.push(pathname);
+            navigate(null);
           }}
         >
           <X /> Clear

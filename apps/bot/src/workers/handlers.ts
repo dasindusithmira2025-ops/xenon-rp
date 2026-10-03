@@ -5,6 +5,10 @@ import { IntegrationError } from '@xenon/core';
 import { prisma } from '@xenon/database';
 import {
   buildNotificationEmbed,
+  loadSupportSettings,
+  xenonIds,
+  XenonAnnouncementPanel,
+  XenonTicketPanel,
   syncGuildMembership,
   syncUserRoles,
   updateGuildMembership,
@@ -13,6 +17,7 @@ import {
   expireRoleAssignments,
   liftExpiredSuspensions,
   pruneStatusSnapshots,
+  publishScheduledAnnouncement,
   recordStatusSnapshot,
 } from '@xenon/domain';
 import { pollServerStatus, pruneLinkTokens, syncWhitelistForUser } from '@xenon/fivem';
@@ -22,6 +27,8 @@ import { systemActor } from '@xenon/permissions';
 
 import { discordClient, isDiscordReady, primaryGuild } from '../discord/client';
 import { guildMembershipPort } from '../discord/membership-port';
+import { linksAllowed } from '../discord/provisioning/context';
+import { executeProvisionRun } from '../discord/provisioning/runner';
 import { postOrUpdateReviewCard } from '../discord/review-card';
 import { guildRolePort } from '../discord/role-port';
 import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
@@ -71,6 +78,116 @@ type Handlers = {
 };
 
 export const handlers: Handlers = {
+  'discord.setup.run': async ({ runId }) => {
+    // Provisioning is never retried by the queue, so a run that cannot start
+    // is closed with a reason instead of sitting QUEUED in the Control Center.
+    const client = hasRealDiscordCredentials() && isDiscordReady() ? discordClient() : null;
+    if (client === null) {
+      await prisma.discordProvisionRun.updateMany({
+        where: { id: runId, status: 'QUEUED' },
+        data: {
+          status: 'FAILED',
+          completedAt: new Date(),
+          failure: hasRealDiscordCredentials()
+            ? 'The bot is not connected to Discord. Start it and try again.'
+            : 'Discord is disabled in this environment.',
+        },
+      });
+      return;
+    }
+
+    await executeProvisionRun(client, runId);
+  },
+
+  'discord.ticket.created': async ({ ticketId }) => {
+    if (!requireDiscord('discord.ticket.created')) return;
+    const supportSettings = await loadSupportSettings(prisma);
+    if (!supportSettings.dmNotifications) return;
+    const client = discordClient();
+    if (client === null) return;
+
+    const ticket = await prisma.ticket.findUnique({
+      where: { id: ticketId },
+      select: {
+        id: true,
+        publicId: true,
+        category: true,
+        status: true,
+        createdAt: true,
+        author: { select: { discordAccount: { select: { discordId: true } } } },
+      },
+    });
+    const discordId = ticket?.author.discordAccount?.discordId;
+    if (ticket === null || discordId === undefined) return;
+
+    const user = await client.users.fetch(discordId);
+    const dm = await user.createDM();
+    const previous = await prisma.discordMessageReference.findFirst({
+      where: { ticketId, kind: 'TICKET_DM', deletedAt: null },
+      orderBy: { createdAt: 'asc' },
+    });
+    const panel = XenonTicketPanel({
+      ticketId: ticket.publicId,
+      category: ticket.category.toLowerCase().replaceAll('_', ' '),
+      createdBy: 'You',
+      createdAt: ticket.createdAt,
+      portalUrl: new URL(
+        `/portal/tickets/${ticket.publicId}`,
+        botEnv.NEXT_PUBLIC_SITE_URL,
+      ).toString(),
+      ...(ticket.status === 'CLOSED'
+        ? { closed: true }
+        : supportSettings.allowDiscordClose
+          ? { closeCustomId: xenonIds.ticketClose(ticket.publicId) }
+          : { canClose: false }),
+    });
+
+    if (previous !== null) {
+      const existing = await dm.messages.fetch(previous.messageId).catch(() => null);
+      if (existing !== null) {
+        await existing.edit({ embeds: panel.embeds, components: panel.components });
+        return;
+      }
+    }
+
+    let message;
+    try {
+      message = await user.send({ embeds: panel.embeds, components: panel.components });
+    } catch (error) {
+      if (error instanceof DiscordAPIError && error.code === 50007) {
+        logger.info({ ticketId }, 'Ticket DM was not delivered because the player has DMs closed');
+        return;
+      }
+      throw error;
+    }
+    await prisma.discordMessageReference.create({
+      data: {
+        kind: 'TICKET_DM',
+        channelId: dm.id,
+        messageId: message.id,
+        ticketId,
+        entityType: 'ticket_notification',
+        entityId: ticketId,
+      },
+    });
+  },
+
+  'discord.welcome.delete': async ({ channelId, messageId }) => {
+    if (!requireDiscord('discord.welcome.delete')) return;
+    const client = discordClient();
+    if (client === null) return;
+    const channel = await client.channels.fetch(channelId).catch(() => null);
+    if (channel === null || !channel.isTextBased() || !('messages' in channel)) return;
+    await channel.messages.delete(messageId).catch((error: unknown) => {
+      if (error instanceof DiscordAPIError && error.code === 10008) return;
+      throw error;
+    });
+  },
+
+  'announcement.publish': async ({ articleId }) => {
+    await publishScheduledAnnouncement(prisma, articleId);
+  },
+
   'discord.review.post': async ({ submissionId }) => {
     if (!requireDiscord('discord.review.post')) return;
     const client = discordClient();
@@ -165,6 +282,8 @@ export const handlers: Handlers = {
       return;
     }
 
+    if (article.announcedAt !== null) return;
+
     const channel = await client.channels.fetch(channelId);
     if (channel === null || !channel.isTextBased() || !('send' in channel)) {
       throw new IntegrationError('discord', `Channel ${channelId} is not postable`, {
@@ -172,17 +291,39 @@ export const handlers: Handlers = {
       });
     }
 
-    const message = await channel.send({
-      embeds: [
-        buildNotificationEmbed({
-          title: article.title,
-          body: article.excerpt ?? '',
-          href: `/news/${article.slug}`,
-          siteUrl: botEnv.NEXT_PUBLIC_SITE_URL,
-          tone: 'info',
-        }),
-      ],
+    const existingReference = await prisma.discordMessageReference.findFirst({
+      where: { entityType: 'announcement', entityId, channelId, deletedAt: null },
     });
+    const embed = XenonAnnouncementPanel({
+      type: article.announcementType,
+      title: article.title,
+      message: article.excerpt ?? '',
+      readMoreUrl:
+        article.publishToWebsite && article.status === 'PUBLISHED' && linksAllowed()
+          ? new URL(`/news/${article.slug}`, botEnv.NEXT_PUBLIC_SITE_URL).toString()
+          : null,
+      effectiveAt: article.scheduledAt,
+    });
+    const payload = {
+      ...(article.discordNotifyRoleId === null
+        ? {}
+        : { content: `<@&${article.discordNotifyRoleId}>` }),
+      embeds: [embed],
+      allowedMentions: {
+        parse: [] as const,
+        roles: article.discordNotifyRoleId === null ? [] : [article.discordNotifyRoleId],
+      },
+    };
+    if (existingReference !== null) {
+      const existing = await channel.messages.fetch(existingReference.messageId).catch(() => null);
+      if (existing !== null) {
+        await existing.edit(payload);
+        await prisma.article.update({ where: { id: entityId }, data: { announcedAt: new Date() } });
+        return;
+      }
+    }
+
+    const message = await channel.send(payload);
 
     await prisma.$transaction([
       prisma.discordMessageReference.create({
@@ -236,6 +377,11 @@ export const handlers: Handlers = {
         { userId, reason, issues: outcome.permanentErrors },
         'Role synchronization needs an operator fix; the failed job will not retry',
       );
+      if (outcome.permanentErrors.includes('Xenon user no longer exists')) {
+        throw new IntegrationError('discord', 'Role sync target no longer exists', {
+          retryable: false,
+        });
+      }
       return;
     }
 

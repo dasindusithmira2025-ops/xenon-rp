@@ -21,7 +21,7 @@ export async function inspectDiscordInstallation(client: Client): Promise<Discor
     botUsername: client.user?.username ?? 'missing',
     guildId: botEnv.DISCORD_GUILD_ID ?? 'missing',
     gatewayLatencyMs: client.ws.ping,
-    intents: 'Guilds',
+    intents: 'Guilds, GuildVoiceStates',
   };
 
   if (botEnv.DISCORD_GUILD_ID === undefined) {

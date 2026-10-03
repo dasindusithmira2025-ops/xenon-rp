@@ -102,15 +102,27 @@
   --shadow-accent: 0 0 0 1px #2afd2340, 0 0 24px -6px #2afd2359;
 
   /* --- Motion ------------------------------------------------------------
-     Three speeds and two curves. More than that and nothing feels like one
-     system. `--ease-out-expo` is the cinematic one; `--ease-standard` is for
-     interface feedback that must not feel slow. */
-  --duration-fast: 140ms;
-  --duration-base: 280ms;
+     Six speeds and four curves, and no seventh. These are the CSS half of the
+     motion system; the JavaScript half lives in `src/motion/tokens.ts` and
+     holds the same numbers in seconds. Change one, change the other, or the
+     thing that transitions in CSS stops feeling like the thing next to it that
+     transitions in Motion.
+
+     `--ease-standard` is interface feedback that must not feel slow.
+     `--ease-emphasized` is the cinematic curve: most of the distance is covered
+     immediately, which is what makes a masked headline read as type being set
+     rather than as a box sliding. */
+  --duration-instant: 120ms;
+  --duration-fast: 200ms;
+  --duration-base: 320ms;
+  --duration-moderate: 450ms;
   --duration-slow: 620ms;
-  --duration-cinematic: 1100ms;
+  --duration-cinematic: 1000ms;
   --ease-standard: cubic-bezier(0.32, 0.72, 0, 1);
   --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-emphasized: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-enter: cubic-bezier(0, 0, 0.2, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
 
   /* --- Layout ------------------------------------------------------------ */
   --spacing-gutter: 1.25rem;
@@ -118,14 +130,103 @@
   --container-wide: 90rem;
 
   /* --- Named animations --------------------------------------------------
-     Defined here rather than pulled in from a plugin: four keyframes is less
-     code than the dependency that would supply forty. */
+     Defined here rather than pulled in from a plugin: a dozen keyframes is
+     less code than the dependency that would supply forty.
+
+     Everything in this block animates `transform`, `opacity` or `clip-path` -
+     properties the compositor can handle without the main thread. Nothing here
+     animates width, height, `filter` or a box shadow in a loop, because those
+     are the four that turn a nice idea into a dropped frame on a mid-range
+     phone. */
   --animate-fade-in: fade-in var(--duration-base) var(--ease-standard);
+  --animate-fade-out: fade-out var(--duration-fast) var(--ease-exit);
   --animate-scale-in: scale-in var(--duration-fast) var(--ease-standard);
+  --animate-scale-out: scale-out var(--duration-instant) var(--ease-exit);
   --animate-slide-up: slide-up var(--duration-base) var(--ease-out-expo);
   --animate-accordion-down: accordion-down var(--duration-base) var(--ease-standard);
   --animate-accordion-up: accordion-up var(--duration-fast) var(--ease-standard);
   --animate-marquee: marquee 38s linear infinite;
+
+  /* Dialogs and drawers. Exits are deliberately about half the entrance: a
+     dismissal that takes as long as an arrival feels reluctant. */
+  --animate-dialog-in: dialog-in var(--duration-base) var(--ease-emphasized);
+  --animate-dialog-out: dialog-out var(--duration-fast) var(--ease-exit);
+  --animate-sheet-in: sheet-in var(--duration-moderate) var(--ease-emphasized);
+  --animate-sheet-out: sheet-out var(--duration-fast) var(--ease-exit);
+  /* Tab panels: small and quick. Content someone is about to read or type into
+     must not make them wait for an entrance. */
+  --animate-tab-in: tab-in var(--duration-fast) var(--ease-enter);
+
+  @keyframes tab-in {
+    from {
+      opacity: 0;
+      transform: translateY(4px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes fade-out {
+    from {
+      opacity: 1;
+    }
+    to {
+      opacity: 0;
+    }
+  }
+
+  @keyframes scale-out {
+    from {
+      opacity: 1;
+      transform: scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: scale(0.97);
+    }
+  }
+
+  @keyframes dialog-in {
+    from {
+      opacity: 0;
+      transform: translate(-50%, calc(-50% + 0.75rem)) scale(0.97);
+    }
+    to {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+  }
+
+  @keyframes dialog-out {
+    from {
+      opacity: 1;
+      transform: translate(-50%, -50%) scale(1);
+    }
+    to {
+      opacity: 0;
+      transform: translate(-50%, -50%) scale(0.98);
+    }
+  }
+
+  @keyframes sheet-in {
+    from {
+      transform: translateX(100%);
+    }
+    to {
+      transform: translateX(0);
+    }
+  }
+
+  @keyframes sheet-out {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(100%);
+    }
+  }
 
   @keyframes fade-in {
     from {
@@ -381,6 +482,299 @@
   .x-rule {
     height: 1px;
     background: linear-gradient(90deg, var(--color-line-strong), transparent);
+  }
+
+  /* =========================================================================
+     Motion motifs.
+
+     Five gestures that recur across the product and are worth naming, so that
+     a loading rail on the control centre and a media reveal on the homepage
+     are recognisably the same hand. Each is a single composited transform on a
+     single element; none of them costs a layout.
+     ====================================================================== */
+
+  /*
+   * The travelling segment.
+   *
+   * Xenon's indeterminate loader. It crosses the rail, pauses fractionally at
+   * the far edge and returns, which reads as a machine working rather than as
+   * a bar sliding on a belt. `alternate` rather than a wrap-around loop
+   * because a segment that teleports back to the start reads as a stutter.
+   */
+  .x-rail-travel {
+    animation: rail-travel 1.25s var(--ease-standard) infinite alternate;
+    will-change: transform;
+  }
+
+  @keyframes rail-travel {
+    from {
+      transform: translateX(-10%);
+    }
+    to {
+      transform: translateX(260%);
+    }
+  }
+
+  /*
+   * Completion.
+   *
+   * A single brief bloom when a measured bar reaches its end - the one moment
+   * a progress indicator is allowed to glow, because it is the one moment it
+   * has something to say. Runs once and stops.
+   */
+  .x-progress-complete {
+    animation: progress-complete var(--duration-slow) var(--ease-standard);
+  }
+
+  @keyframes progress-complete {
+    0% {
+      box-shadow: 0 0 0 0 #2afd2300;
+    }
+    45% {
+      box-shadow: 0 0 12px 1px #2afd2399;
+    }
+    100% {
+      box-shadow: 0 0 0 0 #2afd2300;
+    }
+  }
+
+  /*
+   * The live ring.
+   *
+   * Slower and far gentler than Tailwind's `animate-ping`, which at its default
+   * cadence reads as a hazard light. Two seconds and a 2.6x expansion is the
+   * difference between "this is live" and "something is wrong".
+   */
+  .x-status-ring {
+    animation: status-ring 2.4s var(--ease-out-expo) infinite;
+  }
+
+  @keyframes status-ring {
+    0% {
+      opacity: 0.55;
+      transform: scale(1);
+    }
+    70%,
+    100% {
+      opacity: 0;
+      transform: scale(2.6);
+    }
+  }
+
+  /*
+   * Held shot.
+   *
+   * A still hero that is perfectly static reads as a screenshot. Six percent
+   * over thirty seconds is below the threshold at which anyone consciously
+   * notices movement, which is exactly the point. Runs once - a loop that
+   * snaps back to 1.06 would be visible in a way the drift is not.
+   */
+  .x-ken-burns {
+    animation: ken-burns 32s var(--ease-standard) forwards;
+    will-change: transform;
+  }
+
+  @keyframes ken-burns {
+    from {
+      transform: scale(1.06);
+    }
+    to {
+      transform: scale(1);
+    }
+  }
+
+  /*
+   * Skeleton shimmer.
+   *
+   * A low-contrast highlight crossing a dark surface. Deliberately not the
+   * bright white sweep every component library ships: on a near-black palette
+   * that reads as a strobe. `background-position` is cheap here because the
+   * gradient is on a small, isolated box.
+   */
+  .x-skeleton {
+    background: linear-gradient(
+      100deg,
+      var(--color-elevated) 40%,
+      var(--color-raised) 50%,
+      var(--color-elevated) 60%
+    );
+    background-size: 220% 100%;
+    animation: skeleton-shimmer 1.6s linear infinite;
+  }
+
+  @keyframes skeleton-shimmer {
+    from {
+      background-position: 180% 0;
+    }
+    to {
+      background-position: -80% 0;
+    }
+  }
+
+  /*
+   * The primary action, catching the light.
+   *
+   * A single highlight crossing the accent button on hover. Not a loop, not a
+   * glow, not a pulse: it happens because the pointer arrived, which is the
+   * only thing a hover state should ever say.
+   *
+   * It travels on `transform` and is driven by a transition rather than an
+   * animation, so it reverses cleanly when the pointer leaves halfway across
+   * instead of finishing a cycle nobody asked for.
+   */
+  .x-accent-sheen {
+    overflow: hidden;
+  }
+  .x-accent-sheen::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 36%, #ffffff5c 50%, transparent 64%);
+    transform: translateX(-130%);
+    transition: transform var(--duration-slow) var(--ease-standard);
+    pointer-events: none;
+  }
+  .x-accent-sheen:hover::after {
+    transform: translateX(130%);
+  }
+  /* A disabled or in-flight button is not offering anything, so it does not
+     respond to being pointed at. */
+  .x-accent-sheen:disabled::after {
+    display: none;
+  }
+
+  /*
+   * Deep-link arrival.
+   *
+   * One pulse of the accent behind whatever the URL fragment pointed at, so a
+   * reader who followed a link to a specific rule can see which of several
+   * near-identical blocks was meant. Runs once and leaves nothing behind: a
+   * permanent highlight would still be there, meaning nothing, ten minutes
+   * later.
+   */
+  .x-deeplink-pulse {
+    animation: deeplink-pulse 1.8s var(--ease-standard);
+  }
+
+  @keyframes deeplink-pulse {
+    0% {
+      background-color: #2afd2300;
+      box-shadow: inset 2px 0 0 0 #2afd2300;
+    }
+    18% {
+      background-color: #2afd231f;
+      box-shadow: inset 2px 0 0 0 var(--color-xenon);
+    }
+    100% {
+      background-color: #2afd2300;
+      box-shadow: inset 2px 0 0 0 #2afd2300;
+    }
+  }
+
+  /*
+   * Toast countdown.
+   *
+   * Drains along the bottom edge for exactly as long as the toast will live.
+   * `animation-duration` and `animation-play-state` are set inline by the
+   * component so the bar and the real dismissal timer stay in lockstep,
+   * including while the pointer holds it.
+   */
+  .x-toast-timer {
+    animation: toast-timer linear forwards;
+  }
+
+  @keyframes toast-timer {
+    from {
+      transform: scaleX(1);
+    }
+    to {
+      transform: scaleX(0);
+    }
+  }
+
+  /*
+   * The scroll cue.
+   *
+   * A point of light running down a hairline rail. Replaces the bouncing
+   * chevron, which every site has and which reads as a button that cannot be
+   * pressed. The rail is the affordance; the dot is the direction.
+   */
+  .x-scroll-cue {
+    animation: scroll-cue 2.2s var(--ease-standard) infinite;
+  }
+
+  @keyframes scroll-cue {
+    0% {
+      opacity: 0;
+      transform: translateY(-100%);
+    }
+    35%,
+    65% {
+      opacity: 1;
+    }
+    100% {
+      opacity: 0;
+      transform: translateY(340%);
+    }
+  }
+
+  /*
+   * Chrome sweep.
+   *
+   * A light source passing across a metal surface - the same gesture the logo's
+   * own gradient implies. Reserved for the mark on first entry and for a
+   * completed milestone; used on a third thing it stops being special.
+   */
+  .x-chrome-sweep {
+    position: relative;
+    overflow: hidden;
+  }
+  .x-chrome-sweep::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(105deg, transparent 38%, #ffffff40 48%, transparent 58%);
+    transform: translateX(-120%);
+    animation: chrome-sweep 1.5s var(--ease-standard) 0.2s;
+    pointer-events: none;
+  }
+
+  @keyframes chrome-sweep {
+    to {
+      transform: translateX(120%);
+    }
+  }
+
+  /*
+   * Reduced motion.
+   *
+   * The blanket rule in the base layer already stops every animation above
+   * with `!important`, so none of these need repeating. What it cannot do is
+   * decide what the frozen frame should look like, and a stopped animation
+   * lands on its starting keyframe - which for the shimmer is a gradient
+   * mid-sweep and for the rail is a segment off the left edge.
+   *
+   * Reduced motion is a request to stop things moving, not a request to stop
+   * being told that something is loading. So both get a deliberate resting
+   * state: a flat surface, and a segment parked where it can be seen.
+   */
+  @media (prefers-reduced-motion: reduce) {
+    .x-skeleton {
+      background: var(--color-elevated);
+    }
+    .x-rail-travel {
+      transform: translateX(75%);
+    }
+    /*
+     * The toast countdown is the one motif with no static equivalent: a
+     * draining bar frozen at full width says nothing, and frozen at zero looks
+     * broken. The toast's dismissal is driven by a real timer rather than by
+     * this animation, so removing the bar costs the countdown's picture and
+     * none of its behaviour.
+     */
+    .x-toast-timer {
+      display: none;
+    }
   }
 }
 

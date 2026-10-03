@@ -351,9 +351,24 @@ export type ArticleInput = z.infer<typeof articleInput>;
 export const announcementInput = z.object({
   title: plainText(4, 140),
   body: plainText(10, 4000),
+  type: z
+    .enum([
+      'SERVER',
+      'MAINTENANCE',
+      'RESTART',
+      'UPDATE',
+      'PATCH_NOTES',
+      'EVENT',
+      'RECRUITMENT',
+      'EMERGENCY',
+      'COMMUNITY',
+    ])
+    .default('COMMUNITY'),
   toWebsite: z.boolean().default(true),
   toDiscord: z.boolean().default(false),
   discordChannelId: discordSnowflake.nullish(),
+  discordNotifyRoleId: discordSnowflake.nullish(),
+  scheduledAt: z.coerce.date().nullish(),
 });
 export type AnnouncementInput = z.infer<typeof announcementInput>;
 

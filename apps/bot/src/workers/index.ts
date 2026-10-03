@@ -1,5 +1,6 @@
-import { Worker } from 'bullmq';
+import { UnrecoverableError, Worker } from 'bullmq';
 
+import { IntegrationError } from '@xenon/core';
 import { type JobName, type JobPayloads, QUEUE_NAME, queueRedis } from '@xenon/jobs';
 
 import { logger } from '../runtime';
@@ -35,7 +36,14 @@ export function startWorker(): Worker {
       }
 
       const started = Date.now();
-      await handler(job.data as JobPayloads[JobName]);
+      try {
+        await handler(job.data as JobPayloads[JobName]);
+      } catch (error) {
+        if (error instanceof IntegrationError && !error.retryable) {
+          throw new UnrecoverableError(error.message);
+        }
+        throw error;
+      }
       logger.debug({ job: job.name, id: job.id, ms: Date.now() - started }, 'Job done');
     },
     { connection: queueRedis(), concurrency: CONCURRENCY },
@@ -44,6 +52,14 @@ export function startWorker(): Worker {
   worker.on('failed', (job, error) => {
     const attempts = job?.attemptsMade ?? 0;
     const max = job?.opts.attempts ?? 1;
+
+    if (error instanceof UnrecoverableError) {
+      logger.error(
+        { job: job?.name, id: job?.id, attempts, err: error },
+        'Job failed permanently and will not retry. The canonical state in Postgres is unaffected.',
+      );
+      return;
+    }
 
     // The distinction matters to whoever is reading the logs: a retry is
     // expected operational noise, a final failure is owed work that will not

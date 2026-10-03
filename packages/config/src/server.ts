@@ -2,6 +2,7 @@ import { lazyEnv, parseEnv } from './parse';
 import {
   authSchema,
   datastoreSchema,
+  discordInviteUrl,
   discordSnowflake,
   fivemSchema,
   integrationsSchema,
@@ -34,6 +35,7 @@ const webServerSchema = validateDiscordMode(
         DISCORD_MODE: discordMode,
         DISCORD_GUILD_ID: optional(discordSnowflake),
         DISCORD_APPLICATION_ID: optional(discordSnowflake),
+        DISCORD_INVITE_URL: discordInviteUrl,
       })
       .extend(storageSchema.shape)
       .extend(integrationsSchema.shape)

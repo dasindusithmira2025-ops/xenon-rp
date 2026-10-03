@@ -1,0 +1,1 @@
+ALTER TYPE "DiscordMessageKind" ADD VALUE 'TICKET_DM';

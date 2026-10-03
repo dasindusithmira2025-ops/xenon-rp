@@ -2,8 +2,8 @@ import { ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 
 import type { PublicArticleSummary, PublicDepartment } from '@xenon/domain';
-import { Badge, Button, cn, EmptyState, Panel } from '@xenon/ui';
-import { Reveal, Stagger, StaggerItem } from '@xenon/ui/motion';
+import { Badge, Button, EmptyState } from '@xenon/ui';
+import { MediaReveal, Reveal, Stagger, StaggerItem } from '@xenon/ui/motion';
 
 import { MediaSlot } from '~/components/media/media-slot';
 import { Section, SectionHeading } from '~/components/site/section';
@@ -62,21 +62,39 @@ export function DepartmentsStrip({
         <Stagger className="mt-14 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
           {departments.slice(0, 6).map((department, index) => (
             <StaggerItem key={department.slug}>
+              {/*
+                Editorial card hover: the image pushes in slightly, an accent
+                hairline draws across the top of the caption, and the title
+                takes the accent. Three small things moving together read as one
+                object responding - which is the difference between a card that
+                lifts off the page on a shadow and a card that feels like a
+                surface being pressed.
+              */}
               <Link
                 href={`/departments/${department.slug}`}
-                className="group block h-full overflow-hidden rounded-lg border border-line bg-surface transition-colors duration-(--duration-base) hover:border-chrome-500"
+                className="group relative block h-full overflow-hidden rounded-lg border border-line bg-surface transition-colors duration-(--duration-base) hover:border-chrome-500"
               >
-                <MediaSlot
-                  src={department.heroImageUrl}
-                  alt=""
-                  slot={`department.${department.slug}`}
-                  seed={index}
-                  className="aspect-16/10"
-                  sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
-                />
+                <div className="relative overflow-hidden">
+                  <MediaSlot
+                    src={department.heroImageUrl}
+                    alt=""
+                    slot={`department.${department.slug}`}
+                    seed={index}
+                    className="aspect-16/10 transition-transform duration-(--duration-slow) ease-standard group-hover:scale-[1.04] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+                    sizes="(max-width: 640px) 100vw, (max-width: 1024px) 50vw, 33vw"
+                  />
+                  {/* Anchored to the foot of the image rather than to a
+                      percentage of the card: the caption below it grows with
+                      the tagline, and a hairline positioned by fraction would
+                      drift across the photograph as the text wrapped. */}
+                  <span
+                    aria-hidden
+                    className="absolute inset-x-0 bottom-0 h-px origin-left scale-x-0 bg-xenon transition-transform duration-(--duration-base) ease-standard group-hover:scale-x-100"
+                  />
+                </div>
                 <div className="flex flex-col gap-3 p-6">
                   <div className="flex items-start justify-between gap-3">
-                    <h3 className="font-display text-lg font-bold text-ink transition-colors group-hover:text-xenon">
+                    <h3 className="font-display text-lg font-bold text-ink transition-colors duration-(--duration-fast) group-hover:text-xenon">
                       {department.name}
                     </h3>
                     <Badge tone={recruitmentTone[department.recruitmentState]}>
@@ -138,14 +156,16 @@ export function LatestNews({
         {lead === undefined ? null : (
           <Reveal>
             <Link href={`/news/${lead.slug}`} className="group block">
-              <MediaSlot
-                src={lead.heroImageUrl}
-                alt=""
-                slot="news.lead"
-                seed={0}
-                className="aspect-16/9 rounded-lg border border-line"
-                sizes="(max-width: 1024px) 100vw, 56vw"
-              />
+              <MediaReveal className="aspect-16/9 rounded-lg border border-line">
+                <MediaSlot
+                  src={lead.heroImageUrl}
+                  alt=""
+                  slot="news.lead"
+                  seed={0}
+                  className="size-full transition-transform duration-(--duration-slow) ease-standard group-hover:scale-[1.03] motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+                  sizes="(max-width: 1024px) 100vw, 56vw"
+                />
+              </MediaReveal>
               <div className="mt-6 flex flex-col gap-3">
                 <div className="flex items-center gap-3">
                   {lead.category === null ? null : <Badge>{lead.category}</Badge>}
@@ -156,7 +176,7 @@ export function LatestNews({
                     {formatDate(lead.publishedAt)}
                   </time>
                 </div>
-                <h3 className="font-display text-title font-bold text-ink transition-colors group-hover:text-xenon">
+                <h3 className="font-display text-title font-bold text-ink transition-colors duration-(--duration-fast) group-hover:text-xenon">
                   {lead.title}
                 </h3>
                 {lead.excerpt === null ? null : (
@@ -177,8 +197,12 @@ export function LatestNews({
                 >
                   {formatDate(article.publishedAt)}
                 </time>
-                <h3 className="font-display text-lg leading-snug font-bold text-ink transition-colors group-hover:text-xenon">
+                <h3 className="font-display flex items-start gap-2 text-lg leading-snug font-bold text-ink transition-colors duration-(--duration-fast) group-hover:text-xenon">
                   {article.title}
+                  {/* The arrow travels 3px on hover. Small enough that it reads
+                      as the row acknowledging the pointer rather than as a
+                      separate thing sliding about. */}
+                  <ArrowRight className="mt-1 size-4 shrink-0 -translate-x-1 opacity-0 transition-[transform,opacity] duration-(--duration-fast) ease-standard group-hover:translate-x-0 group-hover:opacity-100" />
                 </h3>
                 {article.excerpt === null ? null : (
                   <p className="line-clamp-2 text-sm text-ink-muted">{article.excerpt}</p>
@@ -199,61 +223,4 @@ function formatDate(value: string | null): string {
     month: 'short',
     year: 'numeric',
   });
-}
-
-// --- Statistics --------------------------------------------------------------
-
-export interface CityStatistic {
-  readonly label: string;
-  readonly value: number;
-  readonly caption: string;
-}
-
-/**
- * Real statistics.
- *
- * Every figure is a `count()` against this database. There are no testimonials,
- * no "10,000+ members", and no rounded-up numbers - if the community is small,
- * the page says the true small number, and that is worth more than a claim a
- * visitor can disprove by joining the Discord.
- */
-export function RealStatistics({
-  statistics,
-}: {
-  statistics: readonly CityStatistic[];
-}): React.ReactElement | null {
-  const meaningful = statistics.filter((statistic) => statistic.value > 0);
-  // A wall of zeros on a fresh install says nothing; the section simply does
-  // not exist until there is something true to put in it.
-  if (meaningful.length === 0) return null;
-
-  // The column count follows the number of figures. A four-column grid holding
-  // one statistic stretches it across the width of the page and reads as a
-  // layout bug rather than as a young community.
-  const columns =
-    meaningful.length === 1
-      ? 'grid-cols-1'
-      : meaningful.length === 2
-        ? 'sm:grid-cols-2'
-        : meaningful.length === 3
-          ? 'sm:grid-cols-3'
-          : 'sm:grid-cols-2 lg:grid-cols-4';
-
-  return (
-    <Section width="wide" size="md">
-      <Panel tone="raised" pad="none" edgeLight className="overflow-hidden">
-        <dl className={cn('grid gap-px bg-line', columns)}>
-          {meaningful.map((statistic) => (
-            <div key={statistic.label} className="flex flex-col gap-1.5 bg-elevated p-8">
-              <dt className="x-eyebrow">{statistic.label}</dt>
-              <dd className="x-tabular font-display text-5xl leading-none font-black text-ink">
-                {statistic.value.toLocaleString('en-GB')}
-              </dd>
-              <p className="text-xs text-ink-muted">{statistic.caption}</p>
-            </div>
-          ))}
-        </dl>
-      </Panel>
-    </Section>
-  );
 }

@@ -8,6 +8,8 @@ import './globals.css';
 
 import type { Metadata, Viewport } from 'next';
 
+import { NavigationProgress } from '~/components/motion/navigation-progress';
+
 /**
  * Typography.
  *
@@ -82,8 +84,28 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>): React.ReactElement {
   return (
-    <html lang="en" className={`${archivo.variable} ${geist.variable} ${geistMono.variable}`}>
+    <html
+      lang="en"
+      /*
+       * Tells Next that the smooth scrolling on `html` is deliberate.
+       *
+       * Without it the router has to assume smooth scrolling is unintended and
+       * warns; with it, the router restores scroll position instantly on a
+       * route change while in-page anchors - a rule deep link, a section jump -
+       * keep gliding. That is exactly the split we want: navigation should be
+       * instant, and moving within a document you are already reading should
+       * not be.
+       */
+      data-scroll-behavior="smooth"
+      className={`${archivo.variable} ${geist.variable} ${geistMono.variable}`}
+    >
       <body className="min-h-dvh bg-void text-ink antialiased">
+        {/*
+          Outside the providers and above everything: the rail has to be able to
+          report a navigation away from whatever is currently mounted, including
+          one that unmounts a provider's subtree.
+        */}
+        <NavigationProgress />
         <a
           href="#main"
           className="sr-only rounded-md focus:not-sr-only focus:fixed focus:top-4 focus:left-4 focus:z-[90] focus:bg-xenon focus:px-4 focus:py-2 focus:font-semibold focus:text-ink-inverse"

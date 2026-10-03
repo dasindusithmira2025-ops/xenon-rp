@@ -1,5 +1,15 @@
 {
-  "extends": "@xenon/config/tsconfig/next-app",
+  // A path rather than the `@xenon/config/tsconfig/next-app` package specifier,
+  // matching the seventeen other tsconfigs in the repo.
+  //
+  // The specifier form resolves through pnpm's symlink into node_modules, and
+  // the preset's own `extends: "../../../tsconfig.base.json"` is then walked
+  // relative to the *link* rather than the real file - landing on
+  // `apps/web/node_modules/tsconfig.base.json`, which does not exist. TypeScript
+  // hides this by resolving real paths first; Vite's transform does not, so the
+  // first unit test placed in this app fails to compile with a tsconfig error
+  // that has nothing to do with the test.
+  "extends": "../../packages/config/tsconfig/next-app.json",
   "compilerOptions": {
     "types": ["node"],
     "paths": {

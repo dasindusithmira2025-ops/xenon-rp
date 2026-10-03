@@ -1,15 +1,24 @@
 'use client';
 
-import { AlertTriangle, Check, CloudOff, Loader2, RefreshCw } from 'lucide-react';
+import { AlertTriangle, Check, CloudOff, RefreshCw } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
 import type { RenderableSection } from '@xenon/applications';
-import { Button, cn, ConfirmDialog, Panel, Progress, useToast } from '@xenon/ui';
+import { Button, cn, ConfirmDialog, Panel, useToast } from '@xenon/ui';
+import {
+  AnimatePresence,
+  LoadingRail,
+  motion,
+  ProgressBar,
+  SegmentedProgress,
+  Spinner,
+  SuccessCheck,
+} from '@xenon/ui/motion';
 import { submissionProgress, validateSubmission, visibleQuestions } from '@xenon/validation';
 
 import { QuestionField } from './question-field';
-import { type AnswerValues, useAutosave } from './use-autosave';
+import { type AnswerValues, type SaveStatus, useAutosave } from './use-autosave';
 
 import { submitApplicationAction } from '~/app/(portal)/portal/applications/actions';
 
@@ -63,6 +72,16 @@ export function ApplicationForm({
   const [showErrors, setShowErrors] = React.useState(false);
   const [confirmOpen, setConfirmOpen] = React.useState(false);
   const [submitting, startSubmitting] = React.useTransition();
+  /*
+   * Held from the moment the server confirms the submission until the refreshed
+   * server view replaces this component.
+   *
+   * That window is real work, not a pause invented to show an animation:
+   * `router.refresh()` has to round-trip and re-render the page as read-only.
+   * Without this the form simply blinks into a different layout, which is a
+   * poor ending for forty minutes of writing.
+   */
+  const [submitted, setSubmitted] = React.useState(false);
 
   const allQuestions = React.useMemo(
     () => sections.flatMap((section) => section.questions),
@@ -84,6 +103,22 @@ export function ApplicationForm({
     [allQuestions, values],
   );
 
+  /*
+   * Completion per section, from the same function as the overall figure.
+   *
+   * A section with no required questions counts as complete: it cannot be
+   * finished any further, and leaving it grey forever would mean the segmented
+   * rail could never fill even on a perfect application.
+   */
+  const sectionProgress = React.useMemo(
+    () =>
+      sections.map((section) => {
+        const measured = submissionProgress(section.questions, values);
+        return { id: section.id, complete: measured.answered >= measured.total };
+      }),
+    [sections, values],
+  );
+
   const complete = Object.keys(errors).length === 0;
 
   const submit = (): void => {
@@ -101,8 +136,8 @@ export function ApplicationForm({
 
       const result = await submitApplicationAction(submissionId);
       if (result.ok) {
-        toast.success('Application submitted', `${publicId} is now with the review team.`);
         setConfirmOpen(false);
+        setSubmitted(true);
         router.refresh();
         return;
       }
@@ -119,6 +154,10 @@ export function ApplicationForm({
     });
   };
 
+  if (submitted) {
+    return <SubmittedPanel publicId={publicId} />;
+  }
+
   return (
     <div className="flex flex-col gap-8">
       {editable ? <SaveIndicator state={autosaveState} onRetry={retry} /> : null}
@@ -132,31 +171,80 @@ export function ApplicationForm({
         </Panel>
       )}
 
-      <Panel tone="flat" pad="lg" className="sticky top-4 z-[20] backdrop-blur-sm">
+      {/*
+        The progress rail.
+
+        Sticky, because on a form this long the answer to "how much is left" has
+        to be available without scrolling back up. Every figure on it is derived
+        from `submissionProgress`, which counts the required questions that are
+        actually visible to this applicant - so a conditional branch not taken
+        lowers the denominator rather than leaving an unreachable question
+        holding the bar at 94%.
+      */}
+      <Panel tone="flat" pad="lg" className="sticky top-4 z-20 backdrop-blur-sm">
         <div className="flex items-baseline justify-between gap-4">
           <p className="text-sm font-medium text-ink">{templateName}</p>
-          <p className="x-tabular font-mono text-xs text-ink-muted">
-            {progress.answered} / {progress.total} required
+          <p className="x-tabular font-mono text-xs text-ink-secondary">
+            <span className="text-ink">{Math.round(progress.ratio * 100)}%</span> complete
           </p>
         </div>
-        <Progress
+
+        <ProgressBar
           value={progress.answered}
           max={Math.max(progress.total, 1)}
           className="mt-3"
           label="Application progress"
         />
+
+        <div className="mt-3 flex items-center justify-between gap-4">
+          {/* Sections as segments. A bar says "most of the way"; segments say
+              "three done, this one open, two to go", which is what someone
+              deciding whether to finish tonight actually wants to know. */}
+          <SegmentedProgress
+            value={sectionProgress.filter((section) => section.complete).length}
+            total={Math.max(sectionProgress.length, 1)}
+            size="thin"
+            className="max-w-48"
+            label="Sections completed"
+          />
+          <p className="x-tabular shrink-0 font-mono text-[0.625rem] tracking-[0.12em] text-ink-muted uppercase">
+            {progress.answered} / {progress.total} required
+          </p>
+        </div>
       </Panel>
 
       {sections.map((section, sectionIndex) => {
         const sectionQuestions = section.questions.filter((question) => visible.has(question.key));
         if (sectionQuestions.length === 0) return null;
 
+        const complete = sectionProgress[sectionIndex]?.complete ?? false;
+
         return (
           <section key={section.id} className="flex flex-col gap-6">
             <div className="flex flex-col gap-2 border-b border-line pb-4">
-              <p className="x-eyebrow">
-                Section {String(sectionIndex + 1)} of {String(sections.length)}
-              </p>
+              <div className="flex items-center gap-2.5">
+                <p className="x-eyebrow">
+                  Section {String(sectionIndex + 1)} of {String(sections.length)}
+                </p>
+                {/*
+                  A section that has just been finished says so, once, where the
+                  applicant is already looking. Not a badge that sits there from
+                  the start - the transition from nothing to this is the signal.
+                */}
+                <AnimatePresence>
+                  {complete ? (
+                    <motion.span
+                      className="inline-flex items-center gap-1 font-mono text-[0.625rem] tracking-[0.16em] text-xenon uppercase"
+                      initial={{ opacity: 0, x: -4 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      exit={{ opacity: 0 }}
+                      transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+                    >
+                      <Check className="size-3" strokeWidth={3} /> Complete
+                    </motion.span>
+                  ) : null}
+                </AnimatePresence>
+              </div>
               <h2 className="font-display text-xl font-bold text-ink">{section.title}</h2>
               {section.description === null ? null : (
                 <p className="text-sm leading-relaxed text-ink-muted">{section.description}</p>
@@ -263,80 +351,174 @@ export function ApplicationForm({
 }
 
 /**
+ * The moment after submitting.
+ *
+ * One of the three or four things in this product that genuinely deserve
+ * marking: a check drawing itself, a rail at its completion state, and the
+ * reference the applicant will quote when they ask about it.
+ *
+ * No confetti. This is an administrative outcome with a real chance of being
+ * rejected, and a burst of particles over it would cheapen both the moment and
+ * the decision that follows.
+ */
+function SubmittedPanel({ publicId }: { publicId: string }): React.ReactElement {
+  return (
+    <Panel
+      tone="raised"
+      pad="lg"
+      edgeLight
+      className="flex flex-col items-center gap-5 py-14 text-center"
+    >
+      <SuccessCheck size={56} />
+
+      <div className="flex flex-col gap-2">
+        <h2 className="font-display text-title font-black text-ink uppercase">
+          Application submitted
+        </h2>
+        <p className="text-sm text-ink-secondary">
+          <span className="font-mono text-ink">{publicId}</span> is with the review team. You will
+          be notified here and on Discord.
+        </p>
+      </div>
+
+      {/* A completed rail rather than a decorative flourish: the form's progress
+          indicator, at its end state, which is the last thing it has to say. */}
+      <ProgressBar value={1} max={1} className="max-w-xs" label="Application complete" />
+    </Panel>
+  );
+}
+
+/** "just now" for the first half minute, then a clock time. */
+function savedLabel(savedAt: Date, now: number): string {
+  const seconds = Math.floor((now - savedAt.getTime()) / 1000);
+  if (seconds < 5) return 'Saved';
+  if (seconds < 60) return `Saved ${String(seconds)}s ago`;
+  return `Saved at ${savedAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}`;
+}
+
+/**
  * The save indicator.
  *
  * Visible at all times while editing, because the promise the form makes -
  * "your work is safe" - is only credible if the player can see it being kept.
  * A failure states what happened and offers a retry rather than quietly
  * flipping back to "saved".
+ *
+ * The states cross-fade rather than swap, and the icon changes with them: a
+ * travelling rail while a request is in flight, a check that draws itself when
+ * it lands. That sequence - working, then done - is the whole message, and it
+ * is worth two hundred milliseconds of animation to make it legible at a
+ * glance instead of a word that silently changes.
  */
 function SaveIndicator({
   state,
   onRetry,
 }: {
-  state: { status: string; savedAt: Date | null; errorMessage: string | null };
+  state: { status: SaveStatus; savedAt: Date | null; errorMessage: string | null };
   onRetry: () => void;
 }): React.ReactElement {
-  const tone =
-    state.status === 'error' || state.status === 'conflict'
-      ? 'border-danger/40 bg-danger/5 text-danger'
-      : state.status === 'saving' || state.status === 'dirty'
-        ? 'border-line-strong bg-elevated text-ink-secondary'
-        : 'border-xenon/25 bg-xenon-deep/10 text-xenon';
+  /*
+   * Queued and in-flight are shown as one state.
+   *
+   * The autosave marks itself dirty on the first keystroke and sends 1.2
+   * seconds after typing stops, so the raw status flickers dirty → saving →
+   * saved → dirty on every burst of typing. Rendering each of those is visual
+   * noise attached to the one component whose job is to be quietly reassuring.
+   *
+   * Collapsing them leaves exactly one transition to look at - working, then
+   * done - and "Saving…" is true in both: the answer is queued and going to the
+   * server either way. An earlier attempt at this held "Unsaved changes" back
+   * behind a timer instead, which was more code and could starve the display
+   * indefinitely under a fast enough typist.
+   */
+  const phase: SaveStatus = state.status === 'dirty' ? 'saving' : state.status;
+  const [now, setNow] = React.useState(() => Date.now());
+
+  // The relative timestamp only moves while there is one to show.
+  React.useEffect(() => {
+    if (phase !== 'saved' || state.savedAt === null) return;
+    const timer = setInterval(() => {
+      setNow(Date.now());
+    }, 5_000);
+    return () => {
+      clearInterval(timer);
+    };
+  }, [phase, state.savedAt]);
+
+  const failed = phase === 'error' || phase === 'conflict';
+  const working = phase === 'saving';
 
   return (
     <div
       role="status"
       aria-live="polite"
       className={cn(
-        'flex flex-wrap items-center gap-3 rounded-md border px-4 py-2.5 text-xs',
-        tone,
+        'relative flex flex-wrap items-center gap-3 overflow-hidden rounded-md border px-4 py-2.5 text-xs',
+        'transition-colors duration-(--duration-base) ease-standard',
+        failed
+          ? 'border-danger/40 bg-danger/5 text-danger'
+          : working
+            ? 'border-line-strong bg-elevated text-ink-secondary'
+            : 'border-xenon/25 bg-xenon-deep/10 text-xenon',
       )}
     >
-      {state.status === 'saving' ? (
-        <>
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-          Saving…
-        </>
-      ) : state.status === 'dirty' ? (
-        <>
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-          Unsaved changes
-        </>
-      ) : state.status === 'conflict' ? (
-        <>
-          <AlertTriangle className="size-3.5" aria-hidden />
-          <span className="flex-1">{state.errorMessage}</span>
-          <Button
-            variant="danger"
-            size="sm"
-            onClick={() => {
-              window.location.reload();
-            }}
-          >
-            Reload
-          </Button>
-        </>
-      ) : state.status === 'error' ? (
-        <>
-          <CloudOff className="size-3.5" aria-hidden />
-          <span className="flex-1">{state.errorMessage}</span>
-          <Button variant="outline" size="sm" onClick={onRetry}>
-            <RefreshCw /> Retry now
-          </Button>
-        </>
-      ) : state.savedAt !== null ? (
-        <>
-          <Check className="size-3.5" aria-hidden />
-          Saved at{' '}
-          {state.savedAt.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}
-        </>
-      ) : (
-        <>
-          <Check className="size-3.5" aria-hidden />
-          Your progress saves automatically
-        </>
-      )}
+      {/* A real request is in flight: an indeterminate rail across the top of
+          the strip, because nobody can know how long a round trip will take. */}
+      {working ? (
+        <LoadingRail className="absolute inset-x-0 top-0 rounded-none" label="Saving" />
+      ) : null}
+
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.span
+          key={phase}
+          className="flex flex-1 flex-wrap items-center gap-3"
+          initial={{ opacity: 0, y: 4 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0, y: -4 }}
+          transition={{ duration: 0.16, ease: [0.32, 0.72, 0, 1] }}
+        >
+          {working ? (
+            <>
+              <Spinner className="size-3.5" label="Saving" />
+              Saving…
+            </>
+          ) : phase === 'conflict' ? (
+            <>
+              <AlertTriangle className="size-3.5" aria-hidden />
+              <span className="flex-1">{state.errorMessage}</span>
+              <Button
+                variant="danger"
+                size="sm"
+                onClick={() => {
+                  window.location.reload();
+                }}
+              >
+                Reload
+              </Button>
+            </>
+          ) : phase === 'error' ? (
+            <>
+              <CloudOff className="size-3.5" aria-hidden />
+              <span className="flex-1">{state.errorMessage}</span>
+              <Button variant="outline" size="sm" onClick={onRetry}>
+                <RefreshCw /> Retry now
+              </Button>
+            </>
+          ) : state.savedAt !== null ? (
+            <>
+              {/* A drawn check needs room for the stroke to read; at 14px it is
+                  mush. The state change plus the colour is the signal here. */}
+              <Check className="size-3.5" strokeWidth={3} aria-hidden />
+              {savedLabel(state.savedAt, now)}
+            </>
+          ) : (
+            <>
+              <Check className="size-3.5" aria-hidden />
+              Your progress saves automatically
+            </>
+          )}
+        </motion.span>
+      </AnimatePresence>
     </div>
   );
 }

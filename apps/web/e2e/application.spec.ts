@@ -14,9 +14,34 @@ import { expectNoHorizontalOverflow, signIn, watchForErrors } from './helpers';
  * of writing, and losing it is the failure this platform most has to avoid -
  * so it is proved in a real browser with a real navigation, not by asserting
  * that a function was called.
+ *
+ * ---
+ *
+ * One project only, and the reason is structural rather than a preference.
+ *
+ * This journey ends with the fixture player whitelisted, and a whitelisted
+ * player cannot apply for the whitelist again - correctly, because that is the
+ * rule the product enforces. The database is seeded once for the whole run, so
+ * whichever browser project goes second arrives to find the application closed
+ * with "You already hold this" and no way to start. The suite cannot run this
+ * file twice against one database no matter which browser it uses.
+ *
+ * Splitting by viewport would not help either: a second project would need its
+ * own fixture account, and two accounts walking the same path proves nothing
+ * the first one did not. What is genuinely viewport-dependent - touch targets,
+ * hover-only affordances, the mobile navigation - is covered by
+ * `public-site.spec.ts`, which runs on both and is stateless.
  */
 
 test.describe.configure({ mode: 'serial' });
+
+// `test.info()` rather than a `testInfo` parameter: the skip predicate is
+// handed the test's fixtures, not its info, and reaching for the running test's
+// info is the supported way to ask which project is executing.
+test.skip(
+  () => test.info().project.name !== 'desktop',
+  'The journey approves the fixture player, so it can only run once per seeded database.',
+);
 
 const ANSWER =
   'I have played roleplay servers for about three years, mostly in long-form civilian ' +
@@ -40,14 +65,28 @@ test('a player can reach the portal and accept the rules', async ({ page }) => {
 });
 
 test('autosave survives a full page reload', async ({ page }) => {
-  // The index links to the application's own page; the button that actually
+  // The index links to the application's own page; the control that actually
   // opens a draft lives there, next to the requirements it is gated on.
   await signIn(page, 'player', '/applications/whitelist');
 
-  await page
-    .getByRole('button', { name: /start application/i })
-    .first()
-    .click();
+  /*
+   * Start a draft, or open the one that is already there.
+   *
+   * `globalSetup` reseeds before every run, so this normally finds "Start
+   * application". Accepting "Continue your application" too means the file can
+   * be re-run against a database that was not reset - which is what anyone
+   * debugging a single test actually does - without failing on a difference
+   * that has nothing to do with whether an answer survives a reload.
+   */
+  const start = page.getByRole('button', { name: /start application/i });
+  const resume = page.getByRole('link', { name: /continue your application/i });
+  // `or` rather than checking one and falling back to the other: `isVisible()`
+  // answers immediately and would report false while the dev server is still
+  // compiling the route, sending the test off to wait sixty seconds for a
+  // control that was never going to appear. A combined locator keeps
+  // Playwright's auto-waiting, which is the whole point of using it.
+  await start.or(resume).first().click();
+
   await page.waitForURL('**/portal/applications/**');
   const url = page.url();
 
@@ -59,7 +98,13 @@ test('autosave survives a full page reload', async ({ page }) => {
   // The indicator is the promise the form makes to the applicant. Waiting for
   // it - rather than for a fixed delay - is also what proves the server
   // confirmed the write before the reload.
-  await expect(page.getByRole('status').filter({ hasText: /saved at/i })).toBeVisible({
+  //
+  // Anchored to the start of the text, which is what separates the state that
+  // matters from the two that read similarly: "Unsaved changes" (queued, not
+  // yet sent) and "Your progress saves automatically" (nothing written yet).
+  // The confirmed state reads "Saved", then "Saved 12s ago", then "Saved at
+  // 14:32" once it is more than a minute old.
+  await expect(page.getByRole('status').filter({ hasText: /^saved\b/i })).toBeVisible({
     timeout: 20_000,
   });
 
@@ -147,7 +192,9 @@ test('a completed application can be submitted and then reviewed and approved', 
     await checkbox.check();
   }
 
-  await expect(page.getByRole('status').filter({ hasText: /saved at/i })).toBeVisible({
+  // Same anchored match as the reload test: the confirmed state reads "Saved",
+  // then "Saved 12s ago", and only becomes "Saved at 14:32" after a minute.
+  await expect(page.getByRole('status').filter({ hasText: /^saved\b/i })).toBeVisible({
     timeout: 20_000,
   });
 

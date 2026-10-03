@@ -75,9 +75,17 @@ function useSubmit(
   return { errors, pending, submit };
 }
 
-export function SupportForms(): React.ReactElement {
+export function SupportForms({
+  initialTab = 'ticket',
+  initialCategory = 'GENERAL',
+  initialReportKind = 'PLAYER',
+}: {
+  initialTab?: 'ticket' | 'report' | 'appeal';
+  initialCategory?: 'GENERAL' | 'ACCOUNT' | 'WHITELIST' | 'TECHNICAL' | 'OTHER';
+  initialReportKind?: 'PLAYER' | 'STAFF' | 'BUG';
+}): React.ReactElement {
   return (
-    <Tabs defaultValue="ticket" className="flex flex-col gap-8">
+    <Tabs defaultValue={initialTab} className="flex flex-col gap-8">
       <TabsList>
         <TabsTrigger value="ticket">Support ticket</TabsTrigger>
         <TabsTrigger value="report">Report a player</TabsTrigger>
@@ -85,10 +93,10 @@ export function SupportForms(): React.ReactElement {
       </TabsList>
 
       <TabsContent value="ticket">
-        <TicketForm />
+        <TicketForm initialCategory={initialCategory} />
       </TabsContent>
       <TabsContent value="report">
-        <ReportForm />
+        <ReportForm initialKind={initialReportKind} />
       </TabsContent>
       <TabsContent value="appeal">
         <AppealForm />
@@ -97,8 +105,12 @@ export function SupportForms(): React.ReactElement {
   );
 }
 
-function TicketForm(): React.ReactElement {
-  const [category, setCategory] = React.useState('GENERAL');
+function TicketForm({
+  initialCategory,
+}: {
+  initialCategory: 'GENERAL' | 'ACCOUNT' | 'WHITELIST' | 'TECHNICAL' | 'OTHER';
+}): React.ReactElement {
+  const [category, setCategory] = React.useState(initialCategory);
   const [subject, setSubject] = React.useState('');
   const [body, setBody] = React.useState('');
   const { errors, pending, submit } = useSubmit(createTicketAction, 'Ticket opened');
@@ -126,7 +138,7 @@ function TicketForm(): React.ReactElement {
             id="ticket-category"
             value={category}
             onChange={(event) => {
-              setCategory(event.target.value);
+              setCategory(event.target.value as typeof initialCategory);
             }}
           >
             <option value="GENERAL">General question</option>
@@ -184,8 +196,12 @@ function TicketForm(): React.ReactElement {
   );
 }
 
-function ReportForm(): React.ReactElement {
-  const [kind, setKind] = React.useState('PLAYER');
+function ReportForm({
+  initialKind,
+}: {
+  initialKind: 'PLAYER' | 'STAFF' | 'BUG';
+}): React.ReactElement {
+  const [kind, setKind] = React.useState(initialKind);
   const [subjectLabel, setSubjectLabel] = React.useState('');
   const [summary, setSummary] = React.useState('');
   const [details, setDetails] = React.useState('');
@@ -227,7 +243,7 @@ function ReportForm(): React.ReactElement {
             id="report-kind"
             value={kind}
             onChange={(event) => {
-              setKind(event.target.value);
+              setKind(event.target.value as typeof initialKind);
             }}
           >
             <option value="PLAYER">A player broke the rules</option>

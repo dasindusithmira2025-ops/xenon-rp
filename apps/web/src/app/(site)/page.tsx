@@ -1,21 +1,10 @@
 import { siteMeta } from '@xenon/config';
 import { prisma } from '@xenon/database';
-import {
-  allSettings,
-  publishedArticles,
-  publishedDepartments,
-  publishedRulebook,
-  statusBoard,
-} from '@xenon/domain';
+import { allSettings, publishedArticles, publishedDepartments, statusBoard } from '@xenon/domain';
 
 import type { Metadata } from 'next';
 
-import {
-  type CityStatistic,
-  DepartmentsStrip,
-  LatestNews,
-  RealStatistics,
-} from '~/components/home/data-sections';
+import { DepartmentsStrip, LatestNews } from '~/components/home/data-sections';
 import { Hero } from '~/components/home/hero';
 import {
   ChooseYourStory,
@@ -28,6 +17,7 @@ import {
   WhitelistCta,
 } from '~/components/home/sections';
 import { currentActor } from '~/server/context';
+import { resolveDiscordInviteUrl } from '~/server/site';
 
 export const metadata: Metadata = {
   title: siteMeta.title,
@@ -45,37 +35,18 @@ export const metadata: Metadata = {
  */
 export const revalidate = 60;
 
-async function cityStatistics(): Promise<readonly CityStatistic[]> {
-  const [whitelisted, characters, departments, approved, rulebook] = await Promise.all([
-    prisma.user.count({ where: { whitelistState: 'APPROVED', deletedAt: null } }),
-    prisma.character.count({ where: { status: 'ACTIVE' } }),
-    prisma.department.count({ where: { status: 'PUBLISHED' } }),
-    prisma.applicationSubmission.count({ where: { status: 'APPROVED' } }),
-    publishedRulebook(prisma),
-  ]);
-
-  return [
-    { label: 'Whitelisted', value: whitelisted, caption: 'players cleared to connect' },
-    { label: 'Characters', value: characters, caption: 'active lives in the city' },
-    { label: 'Departments', value: departments, caption: 'player-run organisations' },
-    { label: 'Applications', value: approved, caption: 'approved to date' },
-    { label: 'Rules', value: rulebook.ruleCount, caption: 'published and versioned' },
-  ].slice(0, 4);
-}
-
 export default async function HomePage(): Promise<React.ReactElement> {
-  const [actor, board, settings, departments, articles, statistics] = await Promise.all([
+  const [actor, board, settings, departments, articles] = await Promise.all([
     currentActor(),
     statusBoard(prisma),
     allSettings(prisma),
     publishedDepartments(prisma),
     publishedArticles(prisma, 5),
-    cityStatistics(),
   ]);
 
   const primary = board.servers[0];
   const signedIn = actor.userId !== null;
-  const discordInvite = settings['community.discordInvite'];
+  const discordInvite = resolveDiscordInviteUrl(settings['community.discordInvite']);
   const connectUrl = settings['community.connectUrl'];
 
   return (
@@ -102,9 +73,8 @@ export default async function HomePage(): Promise<React.ReactElement> {
       <DepartmentsStrip departments={departments} />
       <CitySystems />
       <Underworld />
-      <CommunitySection discordInvite={emptyToNull(discordInvite)} />
+      <CommunitySection discordInvite={discordInvite} />
       <LatestNews articles={articles} />
-      <RealStatistics statistics={statistics} />
       <WhitelistCta signedIn={signedIn} />
     </>
   );

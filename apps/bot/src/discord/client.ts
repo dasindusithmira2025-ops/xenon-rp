@@ -1,5 +1,8 @@
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
 
+import { prisma } from '@xenon/database';
+import { loadWelcomeSettings, welcomeNeedsMembersIntent } from '@xenon/discord';
+
 import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
 
 /**
@@ -15,8 +18,11 @@ import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
  *  - `GuildPresences` is never requested. Who is online is not something this
  *    platform models.
  *
- * `GuildMembers` is deliberately absent. Role and membership reconciliation
- * use one-member REST lookups and do not need the privileged Gateway intent.
+ * `GuildMembers` is added only while an automatic join feature is enabled.
+ * Membership and role reconciliation otherwise use targeted REST lookups.
+ *
+ * `GuildVoiceStates` (not privileged) powers temporary voice rooms: the bot
+ * must see someone join "Create Room" and see a room empty.
  */
 
 let client: Client | null = null;
@@ -49,10 +55,14 @@ export async function connectDiscord(
     return null;
   }
 
+  const welcome = await loadWelcomeSettings(prisma);
+  const intents = [GatewayIntentBits.Guilds, GatewayIntentBits.GuildVoiceStates];
+  if (welcomeNeedsMembersIntent(welcome)) intents.push(GatewayIntentBits.GuildMembers);
+
   const instance = new Client({
-    intents: [GatewayIntentBits.Guilds],
-    // Users and channels are partial until fetched; the bot never listens to
-    // guild member gateway events.
+    intents,
+    // Users and channels are partial until fetched; the member intent, when
+    // needed, is limited to the configured join-welcome feature.
     partials: [Partials.User, Partials.Channel],
   });
 

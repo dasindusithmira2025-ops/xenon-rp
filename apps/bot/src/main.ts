@@ -1,12 +1,24 @@
 import { Events } from 'discord.js';
 
 import { prisma } from '@xenon/database';
+import { parseXenonId } from '@xenon/discord';
 import { recordHeartbeat } from '@xenon/domain';
 import { closeQueue, closeRedis } from '@xenon/jobs';
 
 import { connectDiscord, disconnectDiscord } from './discord/client';
 import { handleCommand } from './discord/commands';
-import { handleButton, handleModal } from './discord/interactions';
+import {
+  handleButton,
+  handleModal,
+  handleStringSelect,
+  handleTicketClose,
+} from './discord/interactions';
+import { liveHealth, refreshStatusPanel, rotatePresence, sweepDrift } from './discord/live';
+import { failInterruptedRuns } from './discord/provisioning/runner';
+import { handleRoleToggle } from './discord/self-roles';
+import { handleSetupComponent } from './discord/setup-command';
+import { handleVoiceState, sweepRooms } from './discord/temp-voice';
+import { handleMemberJoin, welcomeEvent } from './discord/welcome';
 import { inspectDiscordInstallation } from './health/diagnostics';
 import { botEnv, logger } from './runtime';
 import { startWorker, stopWorker } from './workers';
@@ -35,6 +47,10 @@ const HEARTBEAT_MS = 30_000;
 const STATUS_POLL_MS = 60_000;
 /** Expiry and cleanup. Neither is time-critical. */
 const SWEEP_MS = 15 * 60_000;
+/** Presence rotation. Slow on purpose: a status that flickers reads as a bug. */
+const PRESENCE_MS = 5 * 60_000;
+/** Desired-versus-actual comparison of the managed server. */
+const DRIFT_MS = 30 * 60_000;
 
 const timers: ReturnType<typeof setInterval>[] = [];
 
@@ -77,9 +93,30 @@ async function main(): Promise<void> {
       const run = async (): Promise<void> => {
         if (interaction.isChatInputCommand()) {
           await handleCommand(interaction);
+          return;
+        }
+        if (interaction.isStringSelectMenu()) {
+          await handleStringSelect(interaction);
+          return;
+        }
+        if (!interaction.isButton() && !interaction.isModalSubmit()) return;
+
+        // Persistent Xenon components carry structured ids; review cards keep
+        // their original `app:` ids and handlers.
+        const xenonId = parseXenonId(interaction.customId);
+        if (xenonId?.namespace === 'role' && interaction.isButton()) {
+          await handleRoleToggle(interaction, xenonId);
+        } else if (xenonId?.namespace === 'setup') {
+          await handleSetupComponent(interaction, xenonId);
+        } else if (
+          xenonId?.namespace === 'ticket' &&
+          xenonId.action === 'close' &&
+          interaction.isButton()
+        ) {
+          await handleTicketClose(interaction, xenonId.argument ?? '');
         } else if (interaction.isButton()) {
           await handleButton(interaction);
-        } else if (interaction.isModalSubmit()) {
+        } else {
           await handleModal(interaction);
         }
       };
@@ -88,7 +125,24 @@ async function main(): Promise<void> {
         logger.error({ err: error }, 'Interaction handler failed');
       });
     });
+
+    instance.on(Events.VoiceStateUpdate, (before, after) => {
+      void handleVoiceState(before, after).catch((error: unknown) => {
+        logger.warn({ err: error }, 'Temporary voice handling failed');
+      });
+    });
+
+    instance.on(welcomeEvent, (member) => {
+      void handleMemberJoin(member).catch((error: unknown) => {
+        logger.warn({ err: error, guildId: member.guild.id }, 'Member welcome handling failed');
+      });
+    });
   });
+
+  // A run that was mid-flight when the process stopped will never finish.
+  const interrupted = await failInterruptedRuns();
+  if (interrupted > 0)
+    logger.warn({ interrupted }, 'Marked interrupted provisioning runs as failed');
 
   const installation = client === null ? null : await inspectDiscordInstallation(client);
   if (installation !== null) {
@@ -100,7 +154,11 @@ async function main(): Promise<void> {
 
   const currentBotStatus = (): 'HEALTHY' | 'DEGRADED' => {
     if (botEnv.DISCORD_MODE === 'disabled') return 'DEGRADED';
-    if (client?.isReady() !== true || installation?.status !== 'HEALTHY') return 'DEGRADED';
+    // Liveness reflects the connected bot and configured guild. Channel and
+    // role setup issues remain visible in installation diagnostics below.
+    if (client?.isReady() !== true || installation?.detail.guildReachable !== true) {
+      return 'DEGRADED';
+    }
     return 'HEALTHY';
   };
   const currentBotDetail = (): Record<string, string | number | boolean> => ({
@@ -108,6 +166,9 @@ async function main(): Promise<void> {
     gatewayReady: client?.isReady() ?? false,
     gatewayLatencyMs: client?.ws.ping ?? -1,
     ...(installation?.detail ?? {}),
+    managedDrift: liveHealth.drift,
+    managedCritical: liveHealth.critical,
+    ...(liveHealth.checkedAt === null ? {} : { driftCheckedAt: liveHealth.checkedAt }),
   });
 
   await beat(currentBotStatus(), currentBotDetail());
@@ -120,11 +181,32 @@ async function main(): Promise<void> {
 
   timers.push(
     setInterval(() => {
-      void pollAllServers().catch((error: unknown) => {
-        logger.warn({ err: error }, 'Status poll sweep failed');
-      });
+      void pollAllServers()
+        .then(() => (client === null ? undefined : refreshStatusPanel(client)))
+        .catch((error: unknown) => {
+          logger.warn({ err: error }, 'Status poll sweep failed');
+        });
     }, STATUS_POLL_MS),
   );
+
+  if (client !== null) {
+    void sweepRooms(client).catch((error: unknown) => {
+      logger.warn({ err: error }, 'Temporary room sweep failed');
+    });
+    void rotatePresence(client).catch(() => undefined);
+    timers.push(
+      setInterval(() => {
+        void rotatePresence(client).catch((error: unknown) => {
+          logger.debug({ err: error }, 'Presence rotation failed');
+        });
+      }, PRESENCE_MS),
+      setInterval(() => {
+        void sweepDrift(client).catch((error: unknown) => {
+          logger.warn({ err: error }, 'Drift sweep failed');
+        });
+      }, DRIFT_MS),
+    );
+  }
 
   timers.push(
     setInterval(() => {

@@ -4,7 +4,12 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./provisioning": "./src/provisioning/index.ts",
+    "./web": "./src/provisioning/web.ts",
+    "./assets": "./src/assets/index.ts",
+    "./testing": "./src/provisioning/testing.ts",
+    "./config": "./src/provisioning/config.ts"
   },
   "scripts": {
     "lint": "eslint .",
@@ -17,8 +22,12 @@
     "@xenon/config": "workspace:*",
     "@xenon/core": "workspace:*",
     "@xenon/database": "workspace:*",
+    "@xenon/domain": "workspace:*",
     "@xenon/logger": "workspace:*",
-    "discord.js": "14.27.0"
+    "@xenon/permissions": "workspace:*",
+    "discord.js": "14.27.0",
+    "sharp": "0.35.4",
+    "zod": "4.6.5"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

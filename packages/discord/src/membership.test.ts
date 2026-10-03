@@ -28,7 +28,7 @@ describe('syncGuildMembership', () => {
             pendingScreening: false,
           }),
       },
-      '90000000000000000001',
+      'test-discord-member',
     );
 
     expect(state).toBe('MEMBER');
@@ -56,7 +56,7 @@ describe('syncGuildMembership', () => {
             pendingScreening: true,
           }),
       },
-      '90000000000000000002',
+      'test-discord-screening',
     );
 
     expect(state).toBe('PENDING_SCREENING');
@@ -72,7 +72,7 @@ describe('syncGuildMembership', () => {
     const state = await syncGuildMembership(
       db,
       { member: () => Promise.resolve(null) },
-      '90000000000000000003',
+      'test-discord-non-member',
     );
 
     expect(state).toBe('NOT_MEMBER');
@@ -88,7 +88,11 @@ describe('syncGuildMembership', () => {
     const failure = new Error('Discord unavailable');
 
     await expect(
-      syncGuildMembership(db, { member: () => Promise.reject(failure) }, '90000000000000000004'),
+      syncGuildMembership(
+        db,
+        { member: () => Promise.reject(failure) },
+        'test-discord-unavailable',
+      ),
     ).rejects.toBe(failure);
 
     expect(updateMany.mock.calls[0]?.[0].data).toMatchObject({

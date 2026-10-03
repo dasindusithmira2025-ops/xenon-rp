@@ -13,6 +13,7 @@ import { XenonMark } from '~/components/brand/wordmark';
 import { MediaSlot } from '~/components/media/media-slot';
 import { DiscordSignIn } from '~/components/site/discord-sign-in';
 import { currentActor } from '~/server/context';
+import { resolveDiscordInviteUrl } from '~/server/site';
 
 export const metadata: Metadata = {
   title: 'Sign in',
@@ -68,7 +69,7 @@ export default async function SignInPage({
     error === null
       ? null
       : await prisma.systemSetting.findUnique({ where: { key: 'community.discordInvite' } });
-  const invite = typeof inviteSetting?.value === 'string' ? inviteSetting.value : null;
+  const invite = resolveDiscordInviteUrl(inviteSetting?.value);
 
   return (
     <div className="relative grid min-h-dvh lg:grid-cols-2">

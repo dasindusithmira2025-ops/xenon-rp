@@ -68,4 +68,15 @@ describe('role presets', () => {
       expect(granted.has('system.manage'), preset.key).toBe(false);
     }
   });
+
+  it('keeps Discord provisioning to Owner by default', () => {
+    // Provisioning rewrites channel permissions across the whole guild; it is
+    // granted deliberately, never inherited from a day-to-day staff preset.
+    for (const preset of rolePresets) {
+      if (preset.key === OWNER_ROLE_KEY) continue;
+      const granted = new Set(resolvePresetPermissions(preset));
+      expect(granted.has('system.discord.bootstrap'), preset.key).toBe(false);
+      expect(granted.has('system.discord.bootstrap.destructive'), preset.key).toBe(false);
+    }
+  });
 });

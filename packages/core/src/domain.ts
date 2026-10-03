@@ -8,5 +8,5 @@
  */
 
 /** Which interface an action arrived through. Recorded on every audit entry. */
-export const actionSources = ['WEB', 'DISCORD', 'SYSTEM', 'FIVEM'] as const;
+export const actionSources = ['WEB', 'DISCORD', 'SYSTEM', 'FIVEM', 'CLI'] as const;
 export type ActionSource = (typeof actionSources)[number];

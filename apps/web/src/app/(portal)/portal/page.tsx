@@ -11,6 +11,7 @@ import type { Metadata } from 'next';
 import { Onboarding } from '~/components/portal/onboarding';
 import { PortalPage, PortalSection } from '~/components/portal/portal-page';
 import { requireUserId } from '~/server/context';
+import { resolveDiscordInviteUrl } from '~/server/site';
 
 export const metadata: Metadata = {
   title: 'Portal',
@@ -70,7 +71,7 @@ export default async function PortalHome(): Promise<React.ReactElement> {
       }),
     ]);
 
-  const invite = settings['community.discordInvite'];
+  const invite = resolveDiscordInviteUrl(settings['community.discordInvite']);
   const primary = board.servers[0];
 
   return (
@@ -90,7 +91,7 @@ export default async function PortalHome(): Promise<React.ReactElement> {
     >
       <Onboarding
         state={onboarding}
-        discordInvite={invite !== undefined && invite.length > 0 ? invite : null}
+        discordInvite={invite}
         ruleVersion={ruleSet?.version ?? null}
       />
 

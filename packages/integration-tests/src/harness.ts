@@ -19,24 +19,23 @@ import { type Actor, resolveActor, systemActor } from '@xenon/permissions';
  * with the permissions it wants proves nothing about whether those permissions
  * are the ones the role actually grants.
  *
- * Every Discord snowflake below is fictional and starts `9000...`, which is
- * outside the range Discord issues, so fixture data can never collide with a
- * real account.
+ * Test identities use non-snowflake keys and live only in the dedicated
+ * `_test` database, so they cannot overlap a real OAuth identity.
  */
 
 export { prisma, systemActor };
 
-/** Fictional snowflakes, allocated in order so they are stable within a test. */
-let snowflakeCounter = 0;
-function nextSnowflake(): string {
-  snowflakeCounter += 1;
-  return `9000000000000${String(snowflakeCounter).padStart(5, '0')}`;
+/** Opaque fixture keys, allocated in order so they are stable within a test. */
+let discordFixtureCounter = 0;
+function nextDiscordFixtureId(): string {
+  discordFixtureCounter += 1;
+  return `test-discord-${String(discordFixtureCounter).padStart(5, '0')}`;
 }
 
 /** Empty every table and rebuild the baseline. */
 export async function resetDatabase(): Promise<void> {
   await truncateAll(prisma);
-  snowflakeCounter = 0;
+  discordFixtureCounter = 0;
   await seedBaseline(prisma);
 }
 
@@ -50,7 +49,7 @@ export interface TestUserOptions {
 
 /** Create an account the way a Discord sign-in would, then add what the test needs. */
 export async function createUser(options: TestUserOptions = {}): Promise<User> {
-  const discordId = nextSnowflake();
+  const discordId = nextDiscordFixtureId();
   const username = options.displayName ?? `fixture-${discordId.slice(-4)}`;
 
   const user = await ensureUserFromDiscord(prisma, {

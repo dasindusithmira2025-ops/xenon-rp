@@ -25,6 +25,8 @@ import { linkCodeInput } from '@xenon/validation';
 import { botEnv, logger } from '../runtime';
 
 import { actorFromDiscord } from './actor';
+import { handleXenonCommand, xenonCommand } from './setup-command';
+import { handleRoomCommand, roomCommand } from './temp-voice';
 
 /**
  * Slash commands.
@@ -91,6 +93,9 @@ export const commandDefinitions = [
         .setRequired(true),
     )
     .toJSON(),
+
+  xenonCommand,
+  roomCommand,
 ];
 
 type Handler = (interaction: ChatInputCommandInteraction) => Promise<void>;
@@ -101,6 +106,9 @@ function reply(interaction: ChatInputCommandInteraction, content: string): Promi
 }
 
 const handlers: Record<string, Handler> = {
+  xenon: handleXenonCommand,
+  room: handleRoomCommand,
+
   async status(interaction) {
     const [board, settings] = await Promise.all([
       statusBoard(prisma),

@@ -62,6 +62,7 @@ export default async function ControlRulesPage(): Promise<React.ReactElement> {
 
       <RuleEditor
         canPublish={actor.permissions.has('rules.publish')}
+        officialMode={ruleSet?.sourceRoot !== undefined && ruleSet.sourceRoot !== null}
         currentVersion={ruleSet?.version ?? null}
         draftCount={drafts}
         categories={categories.map((category) => ({
@@ -80,6 +81,9 @@ export default async function ControlRulesPage(): Promise<React.ReactElement> {
             aliases: rule.aliases,
             status: rule.status,
             sortOrder: rule.sortOrder,
+            sourcePath: rule.sourcePath,
+            sourceContentHash: rule.sourceContentHash,
+            isDevelopmentFixture: rule.isDevelopmentFixture,
           })),
         }))}
       />

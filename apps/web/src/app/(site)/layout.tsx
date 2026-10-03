@@ -1,3 +1,4 @@
+import { FirstEntry } from '~/components/motion/first-entry';
 import { SiteFooter } from '~/components/site/site-footer';
 import { SiteHeader } from '~/components/site/site-header';
 import { getSiteChrome } from '~/server/site';
@@ -19,6 +20,11 @@ export default async function SiteLayout({
 
   return (
     <div className="flex min-h-dvh flex-col">
+      {/* Public site only. The portal and the control centre are tools people
+          open to get something done; a title card in front of them is friction
+          dressed as polish. */}
+      <FirstEntry />
+
       <SiteHeader
         viewer={chrome.viewer}
         serverState={chrome.serverState}

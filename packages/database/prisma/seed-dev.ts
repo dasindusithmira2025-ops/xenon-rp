@@ -3,7 +3,7 @@ import '@xenon/config/load-env';
 import { isProduction } from '@xenon/config/datastore';
 
 import { prisma } from '../src/client';
-import { allocatePublicId } from '../src/public-id';
+import { seedDevFixtureUsers } from '../src/dev-fixtures';
 
 /**
  * Development fixtures.
@@ -297,6 +297,7 @@ async function seedRules(): Promise<number> {
           examples: rule.examples ?? null,
           severity: rule.severity,
           aliases: rule.aliases ?? [],
+          isDevelopmentFixture: true,
           status: 'PUBLISHED',
           sortOrder: ruleIndex,
           publishedAt: new Date(),
@@ -308,6 +309,7 @@ async function seedRules(): Promise<number> {
           examples: rule.examples ?? null,
           severity: rule.severity,
           aliases: rule.aliases ?? [],
+          isDevelopmentFixture: true,
           status: 'PUBLISHED',
           sortOrder: ruleIndex,
         },
@@ -389,45 +391,6 @@ const departments = [
     accentColour: '#FF5A5A',
     sortOrder: 1,
   },
-  {
-    slug: 'doj',
-    name: 'Department of Justice',
-    shortName: 'DOJ',
-    tagline: 'What happens after the chase is the interesting part.',
-    description:
-      'Judges, prosecutors and defence. The DOJ is where consequence becomes a story rather than a timer, and where a shortcut taken on the street gets found.',
-    recruitmentState: 'INVITE_ONLY' as const,
-    requirements: [
-      'Substantial roleplay history in the city',
-      'Willing to prepare and argue a case properly',
-    ],
-    accentColour: '#C8CFC8',
-    sortOrder: 2,
-  },
-  {
-    slug: 'mechanics',
-    name: 'City Mechanics',
-    shortName: 'MECH',
-    tagline: 'Everybody needs you eventually.',
-    description:
-      'Recovery, repair, custom work and the garage that half the city’s stories start or end in.',
-    recruitmentState: 'WAITLIST' as const,
-    requirements: ['Whitelisted', 'Available during peak hours'],
-    accentColour: '#FFB020',
-    sortOrder: 3,
-  },
-  {
-    slug: 'business',
-    name: 'Business Owners',
-    shortName: 'BIZ',
-    tagline: 'Build something the city needs.',
-    description:
-      'Bars, studios, delivery outfits and shopfronts. Player-run businesses that hire, pay and occasionally fail.',
-    recruitmentState: 'OPEN' as const,
-    requirements: ['Whitelisted', 'A concept you can describe in two sentences'],
-    accentColour: '#2AFD23',
-    sortOrder: 4,
-  },
 ];
 
 async function seedDepartments(): Promise<number> {
@@ -443,6 +406,11 @@ async function seedDepartments(): Promise<number> {
       update: { ...department, status: 'PUBLISHED' },
     });
   }
+  // Archive departments dropped from the fixture list; rows may still be referenced.
+  await prisma.department.updateMany({
+    where: { slug: { notIn: departments.map((department) => department.slug) } },
+    data: { status: 'ARCHIVED' },
+  });
   return departments.length;
 }
 
@@ -862,72 +830,6 @@ async function seedArticles(): Promise<number> {
   return articles.length;
 }
 
-// --- Fixture accounts --------------------------------------------------------
-
-/**
- * Two accounts the E2E suite signs in as.
- *
- * The snowflakes are obviously fake and in a range Discord does not issue, so
- * these can never collide with a real Discord account.
- */
-const fixtureUsers = [
-  {
-    discordId: '900000000000000001',
-    username: 'dev_player',
-    displayName: 'Dev Player',
-    roleKeys: ['member'],
-  },
-  {
-    discordId: '900000000000000002',
-    username: 'dev_staff',
-    displayName: 'Dev Staff',
-    roleKeys: ['member', 'owner'],
-  },
-];
-
-async function seedUsers(): Promise<number> {
-  for (const fixture of fixtureUsers) {
-    const existing = await prisma.discordAccount.findUnique({
-      where: { discordId: fixture.discordId },
-      select: { userId: true },
-    });
-
-    const userId =
-      existing?.userId ??
-      (
-        await prisma.user.create({
-          data: {
-            publicId: await allocatePublicId(prisma, 'user'),
-            displayName: fixture.displayName,
-            onboardingStep: 'DISCORD_CONNECTED',
-            discordAccount: {
-              create: {
-                discordId: fixture.discordId,
-                username: fixture.username,
-                globalName: fixture.displayName,
-                isGuildMember: true,
-                guildMembershipState: 'MEMBER',
-                guildJoinedAt: new Date(),
-              },
-            },
-          },
-        })
-      ).id;
-
-    for (const key of fixture.roleKeys) {
-      const role = await prisma.role.findUnique({ where: { key } });
-      if (role === null) continue;
-      await prisma.userRole.upsert({
-        where: { userId_roleId: { userId, roleId: role.id } },
-        create: { userId, roleId: role.id },
-        update: {},
-      });
-    }
-  }
-
-  return fixtureUsers.length;
-}
-
 // --- Entry point -------------------------------------------------------------
 
 async function main(): Promise<void> {
@@ -955,7 +857,7 @@ async function main(): Promise<void> {
   });
 
   const articleCount = await seedArticles();
-  const userCount = await seedUsers();
+  const userCount = await seedDevFixtureUsers(prisma);
 
   /* eslint-disable no-console -- a seed script's output is its result */
   console.log(

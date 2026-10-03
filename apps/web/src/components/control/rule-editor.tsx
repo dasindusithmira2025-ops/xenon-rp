@@ -30,10 +30,13 @@ export interface RuleRecord {
   readonly title: string;
   readonly description: string;
   readonly examples: string | null;
-  readonly severity: string;
+  readonly severity: string | null;
   readonly aliases: readonly string[];
   readonly status: string;
   readonly sortOrder: number;
+  readonly sourcePath: string | null;
+  readonly sourceContentHash: string | null;
+  readonly isDevelopmentFixture: boolean;
 }
 
 export interface RuleCategoryRecord {
@@ -54,11 +57,13 @@ const severityTone: Record<string, 'neutral' | 'info' | 'warning' | 'danger'> = 
 export function RuleEditor({
   categories,
   canPublish,
+  officialMode,
   currentVersion,
   draftCount,
 }: {
   categories: readonly RuleCategoryRecord[];
   canPublish: boolean;
+  officialMode: boolean;
   currentVersion: number | null;
   draftCount: number;
 }): React.ReactElement {
@@ -75,26 +80,30 @@ export function RuleEditor({
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h2 className="x-eyebrow">Rules</h2>
           <div className="flex gap-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => {
-                setCreating((current) => !current);
-              }}
-            >
-              <Plus /> New rule
-            </Button>
-            {canPublish ? (
-              <Button
-                variant="accent"
-                size="sm"
-                onClick={() => {
-                  setPublishing(true);
-                }}
-              >
-                <Upload /> Publish a ruleset
-              </Button>
-            ) : null}
+            {officialMode ? null : (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => {
+                    setCreating((current) => !current);
+                  }}
+                >
+                  <Plus /> New rule
+                </Button>
+                {canPublish ? (
+                  <Button
+                    variant="accent"
+                    size="sm"
+                    onClick={() => {
+                      setPublishing(true);
+                    }}
+                  >
+                    <Upload /> Publish a ruleset
+                  </Button>
+                ) : null}
+              </>
+            )}
           </div>
         </div>
 
@@ -116,47 +125,69 @@ export function RuleEditor({
               {category.rules.length === 0 ? (
                 <p className="p-4 text-xs text-ink-muted">No rules in this category yet.</p>
               ) : (
-                category.rules.map((rule) => (
-                  <div key={rule.id}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setExpanded((current) => (current === rule.id ? null : rule.id));
-                      }}
-                      aria-expanded={expanded === rule.id}
-                      className="flex w-full items-center gap-4 p-4 text-left transition-colors hover:bg-elevated"
-                    >
-                      <code className="w-16 shrink-0 font-mono text-[0.6875rem] text-xenon">
-                        {rule.code}
+                category.rules.map((rule) =>
+                  officialMode ? (
+                    <div key={rule.id} className="flex flex-wrap items-center gap-3 p-4">
+                      <code className="font-mono text-xs text-ink-muted">
+                        {rule.sourcePath ?? ''}
                       </code>
-                      <span className="min-w-0 flex-1 truncate text-sm text-ink">{rule.title}</span>
-
-                      {rule.aliases.length === 0 ? null : (
-                        <span className="hidden font-mono text-[0.625rem] text-ink-muted sm:inline">
-                          {rule.aliases.slice(0, 2).join(', ')}
+                      <span className="min-w-0 flex-1 break-words text-sm text-ink">
+                        {rule.title}
+                      </span>
+                      <Badge tone="success">official source</Badge>
+                      <a
+                        href={`/rules#${rule.slug}`}
+                        className="font-mono text-[0.625rem] text-xenon underline underline-offset-4"
+                      >
+                        View public page
+                      </a>
+                    </div>
+                  ) : (
+                    <div key={rule.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setExpanded((current) => (current === rule.id ? null : rule.id));
+                        }}
+                        aria-expanded={expanded === rule.id}
+                        className="flex w-full items-center gap-4 p-4 text-left transition-colors hover:bg-elevated"
+                      >
+                        <code className="w-16 shrink-0 font-mono text-[0.6875rem] text-xenon">
+                          {rule.code}
+                        </code>
+                        <span className="min-w-0 flex-1 truncate text-sm text-ink">
+                          {rule.title}
                         </span>
-                      )}
-                      <Badge tone={severityTone[rule.severity] ?? 'neutral'}>
-                        {rule.severity.toLowerCase().replace(/_/g, ' ')}
-                      </Badge>
-                      <Badge tone={rule.status === 'PUBLISHED' ? 'success' : 'warning'}>
-                        {rule.status.toLowerCase()}
-                      </Badge>
-                      <ChevronDown
-                        className={`size-4 shrink-0 text-ink-muted transition-transform ${
-                          expanded === rule.id ? 'rotate-180' : ''
-                        }`}
-                        aria-hidden
-                      />
-                    </button>
 
-                    {expanded === rule.id ? (
-                      <div className="border-t border-line p-5">
-                        <RuleForm rule={rule} categoryId={category.id} categories={categories} />
-                      </div>
-                    ) : null}
-                  </div>
-                ))
+                        {rule.aliases.length === 0 ? null : (
+                          <span className="hidden font-mono text-[0.625rem] text-ink-muted sm:inline">
+                            {rule.aliases.slice(0, 2).join(', ')}
+                          </span>
+                        )}
+                        {rule.severity === null ? null : (
+                          <Badge tone={severityTone[rule.severity] ?? 'neutral'}>
+                            {rule.severity.toLowerCase().replace(/_/g, ' ')}
+                          </Badge>
+                        )}
+                        <Badge tone={rule.status === 'PUBLISHED' ? 'success' : 'warning'}>
+                          {rule.status.toLowerCase()}
+                        </Badge>
+                        <ChevronDown
+                          className={`size-4 shrink-0 text-ink-muted transition-transform ${
+                            expanded === rule.id ? 'rotate-180' : ''
+                          }`}
+                          aria-hidden
+                        />
+                      </button>
+
+                      {expanded === rule.id ? (
+                        <div className="border-t border-line p-5">
+                          <RuleForm rule={rule} categoryId={category.id} categories={categories} />
+                        </div>
+                      ) : null}
+                    </div>
+                  ),
+                )
               )}
             </Panel>
           </section>

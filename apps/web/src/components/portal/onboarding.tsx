@@ -1,12 +1,19 @@
 'use client';
 
-import { Check, Circle, Loader2 } from 'lucide-react';
+import { Check, Circle } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
 import type { OnboardingState } from '@xenon/domain';
-import { Button, Panel, Progress, useToast } from '@xenon/ui';
+import { Button, Panel, useToast } from '@xenon/ui';
+import {
+  AnimatedCounter,
+  type JourneyStep,
+  ProgressBar,
+  Spinner,
+  StepProgress,
+} from '@xenon/ui/motion';
 
 import { acceptRulesAction } from '~/app/(portal)/portal/actions';
 
@@ -30,6 +37,8 @@ export interface OnboardingProps {
 interface Step {
   readonly key: string;
   readonly title: string;
+  /** Two words at most: this is the label under a node on the journey rail. */
+  readonly short: string;
   readonly body: string;
   readonly met: boolean;
   readonly action: React.ReactNode;
@@ -59,6 +68,7 @@ export function Onboarding({
   const steps: Step[] = [
     {
       key: 'discord',
+      short: 'Discord',
       title: 'Discord connected',
       body: 'Your Discord account is your Xenon identity.',
       met: state.checks.discordLinked,
@@ -66,6 +76,7 @@ export function Onboarding({
     },
     {
       key: 'guild',
+      short: 'Server',
       title: 'Join the Discord',
       body: 'Most applications require membership, and it is where staff reach you.',
       met: state.checks.guildMember,
@@ -82,6 +93,7 @@ export function Onboarding({
     },
     {
       key: 'profile',
+      short: 'Profile',
       title: 'Set a display name',
       body: 'How staff and other players see you on the site.',
       met: state.checks.profileComplete,
@@ -93,6 +105,7 @@ export function Onboarding({
     },
     {
       key: 'rules',
+      short: 'Rules',
       title:
         ruleVersion === null ? 'Accept the rules' : `Accept the rules (v${String(ruleVersion)})`,
       body: 'Read the rulebook and confirm you accept the current version.',
@@ -116,6 +129,7 @@ export function Onboarding({
     },
     {
       key: 'fivem',
+      short: 'FiveM',
       title: 'Link your FiveM account',
       body: 'Generate a code here and type it in game. This is how the server knows you.',
       met: state.checks.fivemLinked,
@@ -127,6 +141,7 @@ export function Onboarding({
     },
     {
       key: 'whitelist',
+      short: 'Whitelist',
       title: 'Get whitelisted',
       body: 'Apply, and a member of staff will read it properly.',
       met: state.checks.whitelisted,
@@ -142,16 +157,41 @@ export function Onboarding({
   // Nothing to nag about once everything is done; the panel simply disappears.
   if (done === steps.length) return null;
 
+  /*
+   * The same six steps, told twice.
+   *
+   * The journey rail is the shape of the thing - where you are, what is behind
+   * you, what is still ahead - and the list below it is the detail. Neither
+   * invents a state: every node comes from `state.checks`, which is derived
+   * from facts rather than from a stored cursor, so a player who linked FiveM
+   * in game without ever opening this page finds that node already lit.
+   */
+  const journey: JourneyStep[] = steps.map((step, index) => ({
+    key: step.key,
+    label: step.short,
+    state: step.met
+      ? 'complete'
+      : steps.slice(0, index).every((earlier) => earlier.met)
+        ? 'active'
+        : 'pending',
+  }));
+
   return (
     <Panel tone="raised" pad="none" edgeLight className="overflow-hidden">
-      <div className="flex flex-col gap-3 border-b border-line p-6">
+      <div className="flex flex-col gap-5 border-b border-line p-6">
         <div className="flex items-baseline justify-between gap-4">
           <h2 className="font-display text-lg font-bold text-ink">Getting into the city</h2>
           <span className="x-tabular font-mono text-xs text-ink-muted">
-            {done} / {steps.length}
+            <AnimatedCounter value={done} countOnReveal={false} className="text-ink" /> of{' '}
+            {steps.length}
           </span>
         </div>
-        <Progress value={done} max={steps.length} label="Onboarding progress" />
+
+        <ProgressBar value={done} max={steps.length} label="Onboarding progress" />
+
+        {/* Hidden on the narrowest screens: six labelled nodes across 375px is
+            six unreadable labels, and the list underneath already says it. */}
+        <StepProgress steps={journey} className="hidden pt-2 sm:flex" label="Onboarding journey" />
       </div>
 
       <ol className="flex flex-col divide-y divide-line">
@@ -175,7 +215,7 @@ export function Onboarding({
                 {step.met ? (
                   <Check className="size-4 text-xenon" aria-label="Complete" />
                 ) : accepting && step.key === 'rules' ? (
-                  <Loader2 className="size-4 animate-spin text-ink-muted" aria-hidden />
+                  <Spinner className="size-4 text-ink-muted" label="Recording" />
                 ) : (
                   <Circle className="size-4 text-ink-muted" aria-label="Not done" />
                 )}

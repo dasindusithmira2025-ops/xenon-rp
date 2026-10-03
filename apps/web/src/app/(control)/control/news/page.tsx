@@ -28,6 +28,62 @@ export default async function ControlNewsPage(): Promise<React.ReactElement> {
     prisma.discordGuild.findFirst({ where: { isPrimary: true } }),
   ]);
 
+  const discordResources =
+    guild === null
+      ? []
+      : await prisma.discordManagedResource.findMany({
+          where: {
+            guildId: guild.guildId,
+            managed: true,
+            discordResourceId: { not: null },
+            OR: [
+              {
+                resourceType: 'CHANNEL',
+                logicalKey: {
+                  in: [
+                    'channel.announcements',
+                    'channel.patch-notes',
+                    'channel.events',
+                    'channel.recruitment',
+                    'channel.general',
+                  ],
+                },
+              },
+              { resourceType: 'ROLE', logicalKey: { startsWith: 'role.notify.' } },
+            ],
+          },
+          select: { logicalKey: true, resourceType: true, discordResourceId: true },
+          orderBy: { logicalKey: 'asc' },
+        });
+
+  const announcementChannels = discordResources.flatMap((resource) =>
+    resource.resourceType !== 'CHANNEL' || resource.discordResourceId === null
+      ? []
+      : [
+          {
+            id: resource.discordResourceId,
+            label: `#${resource.logicalKey.replace(/^channel\./, '').replaceAll('.', ' / ')}`,
+          },
+        ],
+  );
+  if (
+    guild?.announcementChannelId !== null &&
+    guild?.announcementChannelId !== undefined &&
+    !announcementChannels.some((channel) => channel.id === guild.announcementChannelId)
+  ) {
+    announcementChannels.unshift({ id: guild.announcementChannelId, label: '#announcements' });
+  }
+  const notificationRoles = discordResources.flatMap((resource) =>
+    resource.resourceType !== 'ROLE' || resource.discordResourceId === null
+      ? []
+      : [
+          {
+            id: resource.discordResourceId,
+            label: resource.logicalKey.replace(/^role\.notify\./, '').replaceAll('-', ' '),
+          },
+        ],
+  );
+
   const canPublish = actor.permissions.has('content.publish');
 
   return (
@@ -40,6 +96,8 @@ export default async function ControlNewsPage(): Promise<React.ReactElement> {
         <AnnouncementForm
           defaultChannelId={guild?.announcementChannelId ?? null}
           discordConfigured={guild !== null}
+          channels={announcementChannels}
+          notificationRoles={notificationRoles}
         />
       ) : null}
 

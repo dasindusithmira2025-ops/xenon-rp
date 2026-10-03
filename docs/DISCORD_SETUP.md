@@ -7,10 +7,10 @@ permissions remain authoritative.
 
 ## 1. Prepare the Xenon application
 
-In the Discord Developer Portal, select or create the official XenonRP
-application. Rotate any Client Secret or Bot Token that has previously been
-shared. The Client ID and Bot Token are different values and are never
-interchangeable.
+In the Discord Developer Portal, open the client's existing XenonRP
+application, ID `1550168431163084921`. Do not create or select a test
+application. Use the OAuth Client Secret and Bot Token already supplied in the
+local `.env`; never print or commit either value.
 
 Under **OAuth2 → Redirects**, register the exact callback for every environment
 that will use OAuth:
@@ -20,12 +20,19 @@ that will use OAuth:
 | Development | `http://localhost:3200/api/auth/callback/discord`             |
 | Production  | `https://<XENON_PRODUCTION_DOMAIN>/api/auth/callback/discord` |
 
-The URI must match exactly, including scheme, host, port, path, and trailing
-slash. Do not register a callback on port 3000 for the local Xenon web server.
-For production behind a proxy, set `AUTH_URL` to the externally reachable
-origin plus `/api/auth`; do not set it to an internal container address. Keep
-`NEXT_PUBLIC_SITE_URL` on the same public origin. Preview deployments need their
-own explicitly registered callback before Discord login can be used there.
+Required operator action: open application `1550168431163084921`, go to
+**OAuth2 → Redirects**, add exactly
+`http://localhost:3200/api/auth/callback/discord`, then select **Save Changes**.
+Source code cannot register a redirect on the Discord Developer Portal.
+
+The URI must be registered on application `1550168431163084921` and match
+exactly, including scheme, host, port, path, and trailing slash. Do not register
+it only on a test application or on port 3000. For local development, set
+`AUTH_URL` to the origin `http://localhost:3200`; Auth.js generates the callback
+path `/api/auth/callback/discord`. For production, register
+`https://<XENON_PRODUCTION_DOMAIN>/api/auth/callback/discord` on the same
+application and set `AUTH_URL` to the production origin. Keep
+`NEXT_PUBLIC_SITE_URL` on the same origin.
 
 Xenon player login requests only the `identify` scope. Bot installation scopes
 are configured separately below; do not add `email`, `guilds`, `bot`, or
@@ -39,18 +46,20 @@ into source files, or put secrets in support messages.
 
 ```dotenv
 DISCORD_MODE=enabled
-AUTH_DISCORD_ID=<Xenon application ID>
-AUTH_DISCORD_SECRET=<rotated OAuth client secret>
-DISCORD_APPLICATION_ID=<same Xenon application ID>
-DISCORD_BOT_TOKEN=<rotated bot token>
-DISCORD_GUILD_ID=<Xenon guild ID>
-AUTH_URL=http://localhost:3200/api/auth
+AUTH_DISCORD_ID=1550168431163084921
+AUTH_DISCORD_SECRET=<OAuth client secret for application 1550168431163084921>
+DISCORD_APPLICATION_ID=1550168431163084921
+DISCORD_BOT_TOKEN=<bot token for application 1550168431163084921>
+DISCORD_GUILD_ID=1371209014372991137
+DISCORD_INVITE_URL=https://discord.gg/ybev9tk87f
+AUTH_URL=http://localhost:3200
 NEXT_PUBLIC_SITE_URL=http://localhost:3200
 ```
 
 The application ID in `AUTH_DISCORD_ID` and `DISCORD_APPLICATION_ID` must be
-identical. The web process receives the OAuth client secret but not the bot
-token; the bot process receives the bot token but not the OAuth client secret.
+identical and must remain `1550168431163084921`. The web process receives the
+OAuth client secret but not the bot token; the bot process receives the bot
+token but not the OAuth client secret.
 Neither process stores Discord OAuth access or refresh tokens. `DISCORD_MODE`
 must be explicitly enabled for real integration; disabled local mode never
 pretends Discord is connected. Production refuses to start with Discord
@@ -61,17 +70,18 @@ the values already present in `.env.example` unless you intentionally run the
 services elsewhere.
 
 The Discord invite and channel IDs are ordinary Xenon settings, not secrets.
-Set the invite under **Control → Settings → Discord invite URL**
-(`community.discordInvite`). Set the primary review, announcement, and log
-channel IDs under **Control → Discord**; a template can override the review
-channel for a specific application type. This repository reads the invite from
-the existing database setting rather than a `DISCORD_INVITE_URL` environment
-variable, and keeps channel IDs with their guild/template configuration.
+`DISCORD_INVITE_URL` supplies the permanent invite when **Control → Settings →
+Discord invite URL** (`community.discordInvite`) is unset; a saved Control
+Center setting remains the override. Set the primary review, announcement, and
+log channel IDs under **Control → Discord**; a template can override the review
+channel for a specific application type. Channel IDs stay with their
+guild/template configuration.
 
-## 3. Create and install the bot
+## 3. Install the existing bot
 
-In the Developer Portal, open **Bot**, create/configure the bot user, and use
-the rotated token in `DISCORD_BOT_TOKEN`. Under **Installation**, enable guild
+In the same application, use the existing bot user and the token already
+configured in `DISCORD_BOT_TOKEN`. Do not create a replacement bot or reset the
+token. Under **Installation**, enable guild
 installation and the `bot` and `applications.commands` scopes.
 
 The implemented bot needs these guild permissions:
@@ -82,12 +92,19 @@ The implemented bot needs these guild permissions:
 - Read Message History
 - Manage Roles, when Xenon role mappings are enabled
 
-Do not grant Administrator. Xenon uses the `Guilds` Gateway intent only. It
-does not enable Message Content, Guild Presences, or the privileged Guild
-Members intent: membership checks use a targeted server-side REST lookup for a
-known Discord user ID. Install the bot to the Xenon guild and move the Xenon bot
-role above every Discord role that Xenon is configured to manage. Discord
-cannot grant or remove roles at or above the bot’s highest role.
+Do not grant Administrator. Xenon uses the `Guilds` and `GuildVoiceStates`
+(temporary voice rooms, not privileged) Gateway intents. `GuildMembers` is
+added only when a Xenon welcome setting that needs join events is enabled.
+Message Content and Guild Presences are never enabled. Membership checks use a
+targeted server-side REST lookup for a known Discord user ID. Install the bot to
+the Xenon guild and move the Xenon bot role above every Discord role that Xenon
+is configured to manage. Discord cannot grant or remove roles at or above the
+bot’s highest role.
+
+When enabling public or DM join welcomes, open the same application in the
+Discord Developer Portal and enable **Bot → Privileged Gateway Intents → Server
+Members Intent**. This portal switch is required in addition to the conditional
+`GuildMembers` intent in bot code. Do not enable Message Content Intent.
 
 ## 4. Configure Xenon guild, channels, and roles
 
@@ -125,6 +142,11 @@ pnpm --filter @xenon/bot dev
 
 The web app is at `http://localhost:3200`. The bot is a persistent Node.js
 process; it must not be deployed as a Next.js route or serverless function.
+The repository requires Node.js `>=24.17.0`; upgrade local Node before live
+commissioning. Node `24.12.0` is below the supported minimum.
+Run `pnpm discord:diagnose` to print the safe resolved application, guild,
+invite, credential-presence, Auth URL, site URL, and callback values. It never
+prints either Discord secret.
 Register or refresh development guild commands explicitly after configuring
 the application and guild:
 
@@ -141,13 +163,17 @@ in diagnostics.
 ## 6. Verify OAuth and community membership
 
 1. Open `http://localhost:3200/signin` and choose **Continue with Discord**.
-2. Authorize the Xenon application. Discord may offer to continue in its app;
+2. Confirm the authorization request uses client ID `1550168431163084921` and
+   its decoded `redirect_uri` is exactly
+   `http://localhost:3200/api/auth/callback/discord`.
+3. After that callback is registered on this same application, authorize the
+   Xenon application. Discord may offer to continue in its app;
    that handoff is controlled by Discord.
-3. Confirm the browser returns through
+4. Confirm the browser returns through
    `http://localhost:3200/api/auth/callback/discord` and reaches Xenon portal.
-4. In **Portal → Account**, confirm the connected Discord profile and
+5. In **Portal → Account**, confirm the connected Discord profile and
    community state.
-5. If the account is not in the guild, use **Join Discord**. After joining,
+6. If the account is not in the guild, use **Join Discord**. After joining,
    choose **Check again**; this performs a fresh bot-backed lookup without
    signing out.
 
@@ -209,3 +235,14 @@ application decision.
 | Role not synchronized      | Check the mapping is Xenon-owned, the role still exists, Manage Roles is granted, and the bot role is above the mapped role.              |
 | Membership unavailable     | Check bot/guild reachability and retry from Portal → Account. An unavailable lookup is not proof the user is absent.                      |
 | Preview OAuth fails        | Register that exact preview callback in the Developer Portal and configure the matching public `AUTH_URL` and `NEXT_PUBLIC_SITE_URL`.     |
+
+## Provisioning the server
+
+Xenon can build and maintain the whole server layout from its blueprint. Plan
+first, against a development guild. See
+[DISCORD_PROVISIONING.md](DISCORD_PROVISIONING.md),
+[DISCORD_SERVER_BLUEPRINT.md](DISCORD_SERVER_BLUEPRINT.md),
+[DISCORD_PERMISSIONS.md](DISCORD_PERMISSIONS.md),
+[DISCORD_ASSETS.md](DISCORD_ASSETS.md) and
+[DISCORD_RECOVERY.md](DISCORD_RECOVERY.md). After pulling this change, run
+`pnpm db:deploy` and `pnpm discord:register` so `/xenon` and `/room` exist.

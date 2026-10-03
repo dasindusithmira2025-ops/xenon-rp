@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "assets": [
+    {
+      "key": "emoji.xenon_alert",
+      "type": "EMOJI",
+      "name": "xenon_alert",
+      "file": "generated/emoji/xenon_alert.png",
+      "hash": "39b1831743f64592fa5669034b27ac61894c46caf17ec2127e37b2a3f1658a1e",
+      "animated": false,
+      "priority": 13,
+      "required": false,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_arrow",
+      "type": "EMOJI",
+      "name": "xenon_arrow",
+      "file": "generated/emoji/xenon_arrow.png",
+      "hash": "b251260fc1f16929419817c6fb9d0ed1cdfe77de83de8ba85397571ff45c0d93",
+      "animated": false,
+      "priority": 14,
+      "required": false,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_check",
+      "type": "EMOJI",
+      "name": "xenon_check",
+      "file": "generated/emoji/xenon_check.png",
+      "hash": "4932e5f3149cd14c92fe67388045afbc8005e52ca3f4848d02c66a050b2839d8",
+      "animated": false,
+      "priority": 10,
+      "required": false,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_cross",
+      "type": "EMOJI",
+      "name": "xenon_cross",
+      "file": "generated/emoji/xenon_cross.png",
+      "hash": "f59cef0795c27480ae61273dcf9a1aca88545172e9957b1de0b54e3dea955cfc",
+      "animated": false,
+      "priority": 11,
+      "required": false,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_degraded",
+      "type": "EMOJI",
+      "name": "xenon_degraded",
+      "file": "generated/emoji/xenon_degraded.png",
+      "hash": "ba32f5b6eb1c6d9aafe4cc20b25a0676d28420c983dd5210d967178cf2ec9109",
+      "animated": false,
+      "priority": 1,
+      "required": true,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_idle",
+      "type": "EMOJI",
+      "name": "xenon_idle",
+      "file": "generated/emoji/xenon_idle.png",
+      "hash": "d340562dc6e6db357bf578ee9a4b951c2d1f891e3f456d4ef1c9fe753433ed7e",
+      "animated": false,
+      "priority": 3,
+      "required": true,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_mark",
+      "type": "EMOJI",
+      "name": "xenon_mark",
+      "file": "generated/emoji/xenon_mark.png",
+      "hash": "80e9c2e05be3e47d3bc03b82ce7cefacf16ba4d44bd4661343b50c3c923261b9",
+      "animated": false,
+      "priority": 4,
+      "required": true,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_offline",
+      "type": "EMOJI",
+      "name": "xenon_offline",
+      "file": "generated/emoji/xenon_offline.png",
+      "hash": "da680046eed43ff025a1b760d276e3dff15252ac0ba30d27bb8758bd145eea02",
+      "animated": false,
+      "priority": 2,
+      "required": true,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_online",
+      "type": "EMOJI",
+      "name": "xenon_online",
+      "file": "generated/emoji/xenon_online.png",
+      "hash": "80993b8672ce24e7e077a90530f228618bb1164b7c7283655709e32d58dbdc67",
+      "animated": false,
+      "priority": 0,
+      "required": true,
+      "enabled": true,
+      "source": "xenon:generated"
+    },
+    {
+      "key": "emoji.xenon_pending",
+      "type": "EMOJI",
+      "name": "xenon_pending",
+      "file": "generated/emoji/xenon_pending.png",
+      "hash": "994f80c3728388cba520b22de24b05d211990883d0562436d45f218d77bbda67",
+      "animated": false,
+      "priority": 12,
+      "required": false,
+      "enabled": true,
+      "source": "xenon:generated"
+    }
+  ]
+}

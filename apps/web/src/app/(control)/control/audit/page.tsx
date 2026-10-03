@@ -19,6 +19,7 @@ const sourceTone = {
   DISCORD: 'info',
   FIVEM: 'warning',
   SYSTEM: 'chrome',
+  CLI: 'progress',
 } as const;
 
 /**

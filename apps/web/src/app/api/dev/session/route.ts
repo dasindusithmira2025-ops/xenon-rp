@@ -4,7 +4,7 @@ import { cookies } from 'next/headers';
 import { NextResponse } from 'next/server';
 
 import { hasDevLogin } from '@xenon/config/server';
-import { prisma } from '@xenon/database';
+import { DEV_DISCORD_FIXTURES, isDevFixtureDiscordId, prisma } from '@xenon/database';
 
 /**
  * Development sign-in.
@@ -19,15 +19,11 @@ import { prisma } from '@xenon/database';
  *
  *  1. `hasDevLogin()` requires AUTH_DEV_LOGIN *and* a non-production NODE_ENV,
  *     so a leaked flag in a production environment does nothing.
- *  2. Only accounts whose Discord snowflake is in the fixture range are
- *     accepted, so it cannot be pointed at a real staff account even in
- *     development.
+ *  2. Only the exact non-snowflake fixture keys are accepted, so it cannot be
+ *     pointed at a real Discord account even in development.
  *  3. A 404 rather than a 403 when disabled: the route should not advertise
  *     that it exists.
  */
-
-/** The snowflake range `seed-dev.ts` uses. Discord does not issue these. */
-const FIXTURE_PREFIX = '9000000000000000';
 
 export async function GET(request: Request): Promise<NextResponse> {
   if (!hasDevLogin()) {
@@ -35,10 +31,10 @@ export async function GET(request: Request): Promise<NextResponse> {
   }
 
   const url = new URL(request.url);
-  const discordId = url.searchParams.get('discordId') ?? `${FIXTURE_PREFIX}01`;
+  const discordId = url.searchParams.get('discordId') ?? DEV_DISCORD_FIXTURES.player.discordId;
   const redirectTo = url.searchParams.get('redirectTo') ?? '/portal';
 
-  if (!discordId.startsWith(FIXTURE_PREFIX)) {
+  if (!isDevFixtureDiscordId(discordId)) {
     return NextResponse.json(
       { error: 'Only seeded fixture accounts can be used here. Run `pnpm db:seed:dev`.' },
       { status: 400 },

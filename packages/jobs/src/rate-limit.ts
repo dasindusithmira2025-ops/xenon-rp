@@ -51,6 +51,9 @@ export const rateLimits = {
   appealCreate: { name: 'appeal:create', limit: 3, windowSeconds: 86_400 },
   search: { name: 'search', limit: 120, windowSeconds: 60 },
   upload: { name: 'upload', limit: 40, windowSeconds: 3600 },
+  discordSelfRole: { name: 'discord:self-role', limit: 10, windowSeconds: 60 },
+  discordTempRoom: { name: 'discord:temp-room', limit: 3, windowSeconds: 300 },
+  discordRoomEdit: { name: 'discord:room-edit', limit: 6, windowSeconds: 600 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type RateLimitName = keyof typeof rateLimits;

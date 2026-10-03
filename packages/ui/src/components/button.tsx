@@ -34,6 +34,10 @@ const buttonVariants = cva(
           'bg-xenon text-ink-inverse font-semibold',
           'hover:bg-xenon-bright',
           'shadow-[0_0_0_1px_var(--color-xenon-dim),0_8px_24px_-12px_#2afd2399]',
+          // A light crossing the face on hover. The one button in the system
+          // that gets it, because it is the one button on a screen that is the
+          // primary action - see `.x-accent-sheen`.
+          'x-accent-sheen',
         ],
         solid: ['bg-chrome-100 text-ink-inverse font-semibold', 'hover:bg-white'],
         outline: [
@@ -93,8 +97,25 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(function 
         children
       ) : (
         <>
-          {loading ? <Loader2 className="animate-spin" aria-hidden /> : null}
-          {children}
+          {/*
+            The label keeps its space while loading rather than making room for
+            a spinner beside it.
+
+            A button that changes width mid-action moves everything next to it,
+            and on a form footer that means the thing the user was about to
+            click next has already shifted by the time they look at it. Hiding
+            the label in place and floating the spinner over it keeps the
+            geometry identical from press to result.
+
+            `invisible` rather than `opacity-0`: the label must not be
+            announced or hit-tested while the action is in flight.
+          */}
+          <span className={cn('contents', loading && 'invisible')}>{children}</span>
+          {loading ? (
+            <span className="absolute inset-0 flex items-center justify-center">
+              <Loader2 className="animate-spin" aria-hidden />
+            </span>
+          ) : null}
         </>
       )}
     </Component>

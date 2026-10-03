@@ -1,16 +1,16 @@
 import { expect, type Page } from '@playwright/test';
+import { DEV_DISCORD_FIXTURES } from '@xenon/database';
 
 /**
  * Shared helpers for the E2E suite.
  *
- * The two fixture accounts come from `seed-dev.ts`. Their snowflakes are in a
- * range Discord does not issue, which is also the range the dev sign-in route
- * is the only thing that will accept.
+ * The two fixture accounts come from `seed-dev.ts`. Their identity keys are
+ * deliberately not numeric Discord snowflakes.
  */
 
 export const FIXTURES = {
-  player: { discordId: '900000000000000001', name: 'Dev Player' },
-  staff: { discordId: '900000000000000002', name: 'Dev Staff' },
+  player: { discordId: DEV_DISCORD_FIXTURES.player.discordId, name: 'Dev Player' },
+  staff: { discordId: DEV_DISCORD_FIXTURES.staff.discordId, name: 'Dev Staff' },
 } as const;
 
 /** Sign in as a fixture account and land on `redirectTo`. */

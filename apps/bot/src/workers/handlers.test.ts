@@ -8,6 +8,12 @@ const mocks = vi.hoisted(() => ({
   sendDm: vi.fn(),
   isReady: vi.fn(),
   hasCredentials: vi.fn(),
+  findArticle: vi.fn(),
+  updateArticle: vi.fn(),
+  findMessageReference: vi.fn(),
+  createMessageReference: vi.fn(),
+  channelFetch: vi.fn(),
+  sendAnnouncement: vi.fn(),
   logger: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
@@ -26,10 +32,22 @@ vi.mock('@xenon/core', () => ({
 vi.mock('@xenon/database', () => ({
   prisma: {
     notification: { findUnique: mocks.findNotification },
+    article: { findUnique: mocks.findArticle, update: mocks.updateArticle },
+    discordMessageReference: {
+      findFirst: mocks.findMessageReference,
+      create: mocks.createMessageReference,
+    },
+    $transaction: (operations: Promise<unknown>[]) => Promise.all(operations),
   },
 }));
 vi.mock('@xenon/discord', () => ({
   buildNotificationEmbed: vi.fn(() => ({})),
+  loadSupportSettings: vi
+    .fn()
+    .mockResolvedValue({ dmNotifications: true, allowDiscordClose: true }),
+  XenonAnnouncementPanel: vi.fn(() => ({ title: 'XENON ANNOUNCEMENT' })),
+  XenonTicketPanel: vi.fn(() => ({ embeds: [], components: [] })),
+  xenonIds: { ticketClose: vi.fn(() => 'xn:ticket:close:XN-TK-1') },
   syncGuildMembership: vi.fn(),
   syncUserRoles: vi.fn(),
   updateGuildMembership: vi.fn(),
@@ -48,10 +66,14 @@ vi.mock('@xenon/fivem', () => ({
 vi.mock('@xenon/notifications', () => ({ recordDiscordDelivery: mocks.recordDelivery }));
 vi.mock('@xenon/permissions', () => ({ systemActor: {} }));
 vi.mock('../discord/client', () => ({
-  discordClient: () => ({ users: { fetch: mocks.fetchUser } }),
+  discordClient: () => ({
+    users: { fetch: mocks.fetchUser },
+    channels: { fetch: mocks.channelFetch },
+  }),
   isDiscordReady: mocks.isReady,
   primaryGuild: vi.fn(),
 }));
+vi.mock('../discord/provisioning/context', () => ({ linksAllowed: () => true }));
 vi.mock('../discord/membership-port', () => ({ guildMembershipPort: vi.fn() }));
 vi.mock('../discord/review-card', () => ({ postOrUpdateReviewCard: vi.fn() }));
 vi.mock('../discord/role-port', () => ({ guildRolePort: vi.fn() }));
@@ -90,6 +112,16 @@ describe('Discord notification delivery failures', () => {
     mocks.sendDm.mockResolvedValue(undefined);
     mocks.isReady.mockReturnValue(true);
     mocks.hasCredentials.mockReturnValue(true);
+    mocks.findArticle.mockResolvedValue(null);
+    mocks.updateArticle.mockResolvedValue(undefined);
+    mocks.findMessageReference.mockResolvedValue(null);
+    mocks.createMessageReference.mockResolvedValue(undefined);
+    mocks.channelFetch.mockResolvedValue({
+      isTextBased: () => true,
+      send: mocks.sendAnnouncement,
+      messages: { fetch: vi.fn() },
+    });
+    mocks.sendAnnouncement.mockResolvedValue({ id: 'announcement-message' });
   });
 
   it('records that DMs are unavailable when a player has closed them', async () => {
@@ -123,5 +155,54 @@ describe('Discord notification delivery failures', () => {
       rateLimit,
     );
     expect(mocks.recordDelivery).not.toHaveBeenCalled();
+  });
+});
+
+describe('Discord announcement delivery', () => {
+  it('posts one text-first announcement and records the message for retry safety', async () => {
+    const article = {
+      id: 'article-1',
+      slug: 'city-update',
+      title: 'City update',
+      excerpt: 'The new update is live.',
+      status: 'PUBLISHED',
+      announcementType: 'UPDATE',
+      publishToWebsite: true,
+      discordChannelId: 'channel-id',
+      discordNotifyRoleId: 'role-id',
+      announcedAt: null,
+      scheduledAt: null,
+    };
+    mocks.findArticle.mockResolvedValue(article);
+
+    await handlers['discord.channel.post']({
+      channelId: 'channel-id',
+      kind: 'ANNOUNCEMENT',
+      entityType: 'announcement',
+      entityId: 'article-1',
+    });
+
+    expect(mocks.sendAnnouncement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        content: '<@&role-id>',
+        embeds: [{ title: 'XENON ANNOUNCEMENT' }],
+        allowedMentions: { parse: [], roles: ['role-id'] },
+      }),
+    );
+    const messageReferenceCall = mocks.createMessageReference.mock.calls[0]?.[0] as unknown as {
+      data: Record<string, unknown>;
+    };
+    expect(messageReferenceCall.data).toMatchObject({
+      kind: 'ANNOUNCEMENT',
+      channelId: 'channel-id',
+      messageId: 'announcement-message',
+      entityId: 'article-1',
+    });
+    const updateCall = mocks.updateArticle.mock.calls[0]?.[0] as unknown as {
+      where: { id: string };
+      data: { announcedAt: unknown };
+    };
+    expect(updateCall.where.id).toBe('article-1');
+    expect(updateCall.data.announcedAt).toBeInstanceOf(Date);
   });
 });

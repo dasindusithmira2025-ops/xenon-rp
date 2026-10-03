@@ -11,7 +11,7 @@ describe('Discord application review presentation', () => {
       applicant: {
         publicId: 'XN-10042',
         displayName: 'Fixture Player',
-        discordId: '900000000000000001',
+        discordId: 'test-discord-player',
         accountAgeDays: 25,
         guildMembershipState: 'UNAVAILABLE',
         whitelistState: 'NONE',
@@ -26,7 +26,13 @@ describe('Discord application review presentation', () => {
       highlights: [],
     });
 
-    expect(embed.toJSON().fields?.find((field) => field.name === 'Account')?.value).toContain(
+    const payload = embed.toJSON();
+    expect(payload.author?.name).toBe('XENON STAFF REVIEW');
+    expect(payload.title).toBe('GENERAL WHITELIST');
+    expect(payload.description).toContain('XN-WL-1842');
+    expect(payload.fields?.find((field) => field.name === 'Xenon ID')?.value).toBe('XN-10042');
+    expect(payload.fields?.find((field) => field.name === 'Status')?.value).toBe('Awaiting review');
+    expect(payload.fields?.find((field) => field.name === 'Account')?.value).toContain(
       'Guild: unknown',
     );
   });
@@ -38,7 +44,7 @@ describe('Discord application review presentation', () => {
     const terminalRows = terminal.map((row) => row.toJSON());
 
     expect(activeRows[0]?.components[0]).toMatchObject({
-      label: 'Open in Xenon',
+      label: 'OPEN APPLICATION',
       style: 5,
       url: 'https://xenon.example.test/control/applications/XN-WL-1842',
     });

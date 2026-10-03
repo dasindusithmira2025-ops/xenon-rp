@@ -122,6 +122,14 @@ export class DiscordIdentityConflictError extends ConflictError {
   }
 }
 
+// Auth.js 0.41 creates a temporary UUID for a new OAuth profile and invokes
+// its signIn callback before calling the adapter's createUser method. The
+// callback passes that UUID here; it becomes the Xenon user id for the first
+// sign-in, while later callbacks resolve the persisted account through the
+// adapter.
+const AUTHJS_PROVISIONAL_USER_ID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 /**
  * Refresh the safe profile projection and verify both sides of the one-to-one
  * link. This never merges users or reassigns an existing Discord identity.
@@ -149,8 +157,52 @@ export async function syncDiscordIdentity(
       }),
     ]);
 
+    if (user === null) {
+      // A first OAuth callback reaches this service before Auth.js calls
+      // adapter.createUser. Persist its provisional UUID as the canonical
+      // Xenon id so the callback and the subsequent session/queue writes all
+      // refer to the same account. Existing Discord ownership still wins:
+      // never move an identity to an unverified or missing user.
+      if (
+        !AUTHJS_PROVISIONAL_USER_ID.test(userId) ||
+        byDiscordId !== null ||
+        byUserId !== null
+      ) {
+        throw new DiscordIdentityConflictError();
+      }
+
+      const created = await tx.user.create({
+        data: {
+          id: userId,
+          publicId: await allocatePublicId(tx, 'user'),
+          displayName: profile.globalName ?? profile.username,
+          email: profile.email ?? null,
+          avatarUrl: avatarUrlFor(profile),
+          lastSeenAt: new Date(),
+          onboardingStep: 'DISCORD_CONNECTED',
+          discordAccount: {
+            create: { discordId: profile.discordId, ...profileFields(profile) },
+          },
+          roles: { create: [{ role: { connect: { key: 'member' } } }] },
+        },
+      });
+      const account = await tx.discordAccount.findUniqueOrThrow({
+        where: { discordId: profile.discordId },
+        select: { id: true },
+      });
+      await recordAudit(tx, systemActor, {
+        action: 'discord.account_linked',
+        entityType: 'discord_account',
+        entityId: account.id,
+        entityLabel: created.publicId,
+        after: { discordUserId: profile.discordId },
+      });
+      linkCreated = true;
+      return;
+    }
+
     if (
-      user?.deletedAt !== null ||
+      user.deletedAt !== null ||
       (byDiscordId !== null && byDiscordId.userId !== userId) ||
       (byUserId !== null && byUserId.discordId !== profile.discordId)
     ) {

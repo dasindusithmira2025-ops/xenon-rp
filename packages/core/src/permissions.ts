@@ -100,6 +100,10 @@ export const permissionCatalogue = {
     permissions: {
       'audit.view': 'Read the audit log.',
       'system.manage': 'Change system settings and feature flags.',
+      'system.discord.bootstrap':
+        'Plan, apply, repair and validate provisioning of the Xenon Discord server.',
+      'system.discord.bootstrap.destructive':
+        'Delete Xenon-managed Discord resources created by a failed provisioning run.',
     },
   },
 } as const satisfies Record<string, { label: string; permissions: Record<string, string> }>;

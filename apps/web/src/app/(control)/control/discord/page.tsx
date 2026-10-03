@@ -1,9 +1,14 @@
+import Link from 'next/link';
+
 import { discordCallbackUrl, serverEnv } from '@xenon/config/server';
 import { prisma } from '@xenon/database';
-import { Badge, Panel } from '@xenon/ui';
+import { loadSupportSettings, loadWelcomeSettings } from '@xenon/discord';
+import { Badge, Button, Panel } from '@xenon/ui';
 
 import { ControlPage } from '~/components/control/control-page';
 import { DiscordConfig } from '~/components/control/discord-config';
+import { DiscordSupportSettings } from '~/components/control/discord-support-settings';
+import { DiscordWelcomeSettings } from '~/components/control/discord-welcome-settings';
 import { requireCapability } from '~/server/context';
 
 export const dynamic = 'force-dynamic';
@@ -19,14 +24,33 @@ export const metadata = { title: 'Discord' };
 export default async function DiscordPage(): Promise<React.ReactElement> {
   await requireCapability('discord.manage');
 
-  const [guild, roles, heartbeat] = await Promise.all([
+  const [guild, roles, heartbeat, welcomeSettings, supportSettings] = await Promise.all([
     prisma.discordGuild.findFirst({
       where: { isPrimary: true },
       include: { roleMappings: { include: { role: true } } },
     }),
     prisma.role.findMany({ orderBy: { priority: 'desc' } }),
     prisma.serviceHeartbeat.findUnique({ where: { service: 'bot' } }),
+    loadWelcomeSettings(prisma),
+    loadSupportSettings(prisma),
   ]);
+
+  const managedPanels =
+    guild === null
+      ? []
+      : await prisma.discordManagedResource.findMany({
+          where: {
+            guildId: guild.guildId,
+            logicalKey: { in: ['channel.welcome', 'channel.support'] },
+          },
+          select: { logicalKey: true, discordResourceId: true },
+        });
+  const welcomeChannelId =
+    managedPanels.find((entry) => entry.logicalKey === 'channel.welcome')?.discordResourceId ??
+    null;
+  const supportChannelId =
+    managedPanels.find((entry) => entry.logicalKey === 'channel.support')?.discordResourceId ??
+    null;
 
   const heartbeatFresh = heartbeat !== null && Date.now() - heartbeat.beatAt.getTime() < 90_000;
   const discordDisabled = serverEnv.DISCORD_MODE === 'disabled';
@@ -49,15 +73,20 @@ export default async function DiscordPage(): Promise<React.ReactElement> {
       title="Discord"
       lead="Xenon owns role membership; Discord mirrors it. Nothing here grants a permission - it decides which Discord role reflects a Xenon role."
       actions={
-        <Badge tone={botOnline ? 'success' : 'warning'}>
-          {discordDisabled
-            ? 'Discord disabled'
-            : botOnline
-              ? 'Bot ready'
-              : heartbeatFresh
-                ? 'Bot degraded'
-                : 'Bot offline'}
-        </Badge>
+        <>
+          <Button asChild size="sm" variant="outline">
+            <Link href="/control/discord/setup">Server setup</Link>
+          </Button>
+          <Badge tone={botOnline ? 'success' : 'warning'}>
+            {discordDisabled
+              ? 'Discord disabled'
+              : botOnline
+                ? 'Bot ready'
+                : heartbeatFresh
+                  ? 'Bot degraded'
+                  : 'Bot offline'}
+          </Badge>
+        </>
       }
     >
       {discordDisabled ? (
@@ -205,6 +234,9 @@ export default async function DiscordPage(): Promise<React.ReactElement> {
           lastSyncedAt: mapping.lastSyncedAt?.toISOString() ?? null,
         }))}
       />
+
+      <DiscordWelcomeSettings settings={welcomeSettings} defaultChannelId={welcomeChannelId} />
+      <DiscordSupportSettings settings={supportSettings} supportChannelId={supportChannelId} />
 
       <Panel tone="ghost" pad="lg">
         <p className="x-eyebrow">Bot permissions</p>

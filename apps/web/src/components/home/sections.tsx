@@ -2,7 +2,15 @@ import { ArrowRight, ArrowUpRight } from 'lucide-react';
 import Link from 'next/link';
 
 import { Badge, Button, Eyebrow, Panel, StatusDot } from '@xenon/ui';
-import { Parallax, Reveal, Stagger, StaggerItem } from '@xenon/ui/motion';
+import {
+  AnimatedCounter,
+  MaskReveal,
+  MediaReveal,
+  Parallax,
+  Reveal,
+  Stagger,
+  StaggerItem,
+} from '@xenon/ui/motion';
 
 import { MediaSlot } from '~/components/media/media-slot';
 import { Section, SectionHeading } from '~/components/site/section';
@@ -58,14 +66,19 @@ export function LiveCity({
   nextRestart,
   connectUrl,
 }: LiveCityProps): React.ReactElement {
-  const figures = [
+  const live = state === 'ONLINE' && playerCount !== null;
+
+  const figures: { label: string; value: React.ReactNode; hint: string }[] = [
     {
       label: 'In the city',
-      value: state === 'ONLINE' && playerCount !== null ? String(playerCount) : '—',
-      hint:
-        state === 'ONLINE' && playerCount !== null && maxPlayers !== null
-          ? `of ${String(maxPlayers)} slots`
-          : 'no live reading',
+      /*
+       * The only figure on the page that changes while someone is looking at
+       * it, so the only one that animates between values. `countOnReveal` is
+       * off: running up from zero on every poll would describe the city
+       * emptying and refilling every thirty seconds.
+       */
+      value: live ? <AnimatedCounter value={playerCount} countOnReveal={false} /> : '—',
+      hint: live && maxPlayers !== null ? `of ${String(maxPlayers)} slots` : 'no live reading',
     },
     {
       label: 'Server',
@@ -97,14 +110,19 @@ export function LiveCity({
     <Section tone="black" size="sm" width="wide" className="border-y border-line">
       <div className="flex flex-col gap-8 lg:flex-row lg:items-center lg:justify-between">
         <div className="grid flex-1 grid-cols-2 gap-x-6 gap-y-8 sm:grid-cols-3">
-          {figures.map((figure) => (
-            <div key={figure.label} className="flex flex-col gap-1.5">
+          {figures.map((figure, index) => (
+            <Reveal
+              key={figure.label}
+              delay={index * 0.06}
+              distance={14}
+              className="flex flex-col gap-1.5"
+            >
               <p className="x-eyebrow">{figure.label}</p>
               <p className="x-tabular font-display text-4xl leading-none font-black text-ink">
                 {figure.value}
               </p>
               <p className="text-xs text-ink-muted">{figure.hint}</p>
-            </div>
+            </Reveal>
           ))}
         </div>
 
@@ -139,14 +157,18 @@ export function ThisIsXenon(): React.ReactElement {
     <Section size="lg" width="wide">
       <div className="grid gap-12 lg:grid-cols-[1.05fr_1fr] lg:items-center lg:gap-20">
         <div className="flex flex-col gap-7">
-          <Eyebrow accent>This is Xenon</Eyebrow>
-          <h2 className="font-display text-headline font-black text-ink uppercase">
-            Not a server.
-            <br />
-            <span className="x-chrome-text">A place people</span>
-            <br />
-            keep coming back to.
-          </h2>
+          <Reveal distance={10}>
+            <Eyebrow accent>This is Xenon</Eyebrow>
+          </Reveal>
+          <MaskReveal delay={0.09} amount={0.35}>
+            <h2 className="font-display text-headline font-black text-ink uppercase">
+              Not a server.
+              <br />
+              <span className="x-chrome-text">A place people</span>
+              <br />
+              keep coming back to.
+            </h2>
+          </MaskReveal>
           <div className="flex max-w-xl flex-col gap-5 text-lead text-ink-secondary">
             <p>
               Xenon is a Sri Lankan FiveM city built on one idea: that what you did yesterday should
@@ -256,49 +278,64 @@ export function CityShowcase(): React.ReactElement {
       />
 
       <div className="mt-14 grid gap-4 sm:grid-cols-12 sm:gap-5">
-        <Reveal className="sm:col-span-7">
+        {/*
+          The gallery moment on the homepage, so this is where the media reveal
+          earns its keep: each frame uncovers from under a retracting black
+          panel with the Xenon hairline travelling on its edge. Staggered by
+          80ms so the composition assembles rather than flashing on at once.
+        */}
+        <MediaReveal className="aspect-16/10 rounded-lg border border-line sm:col-span-7">
           <MediaSlot
             src={null}
             alt="Downtown Xenon at night"
             slot="home.showcase.1"
             seed={0}
-            className="aspect-16/10 rounded-lg border border-line"
+            className="size-full"
             sizes="(max-width: 640px) 100vw, 58vw"
           />
-        </Reveal>
+        </MediaReveal>
 
-        <Reveal delay={0.1} className="sm:col-span-5 sm:mt-10">
+        <MediaReveal
+          delay={0.08}
+          className="aspect-4/5 rounded-lg border border-line sm:col-span-5 sm:mt-10"
+        >
           <MediaSlot
             src={null}
             alt="A Xenon traffic stop"
             slot="home.showcase.2"
             seed={1}
-            className="aspect-4/5 rounded-lg border border-line"
+            className="size-full"
             sizes="(max-width: 640px) 100vw, 40vw"
           />
-        </Reveal>
+        </MediaReveal>
 
-        <Reveal delay={0.15} className="sm:col-span-5">
+        <MediaReveal
+          delay={0.16}
+          className="aspect-square rounded-lg border border-line sm:col-span-5"
+        >
           <MediaSlot
             src={null}
             alt="A Xenon garage"
             slot="home.showcase.3"
             seed={2}
-            className="aspect-square rounded-lg border border-line"
+            className="size-full"
             sizes="(max-width: 640px) 100vw, 40vw"
           />
-        </Reveal>
+        </MediaReveal>
 
-        <Reveal delay={0.2} className="sm:col-span-7 sm:-mt-6">
+        <MediaReveal
+          delay={0.24}
+          className="aspect-16/9 rounded-lg border border-line sm:col-span-7 sm:-mt-6"
+        >
           <MediaSlot
             src={null}
             alt="The Xenon waterfront"
             slot="home.showcase.4"
             seed={1}
-            className="aspect-16/9 rounded-lg border border-line"
+            className="size-full"
             sizes="(max-width: 640px) 100vw, 58vw"
           />
-        </Reveal>
+        </MediaReveal>
       </div>
     </Section>
   );
@@ -336,17 +373,32 @@ export function CitySystems(): React.ReactElement {
 
 // --- Underworld --------------------------------------------------------------
 
+/**
+ * The underworld.
+ *
+ * The one section on the homepage with a different motion temperature. Where
+ * every other block arrives briskly, this one comes out of the black slowly -
+ * the media reveal runs at nearly twice the length and the copy trails it
+ * rather than accompanying it, so the section reads as something surfacing.
+ *
+ * What it deliberately is not: a hacker effect. No glitch, no scanline
+ * overlay, no monospace rain. The atmosphere comes from pace and from
+ * withholding light, which is what makes the difference between menacing and
+ * embarrassing.
+ */
 export function Underworld(): React.ReactElement {
   return (
     <section className="relative overflow-hidden">
-      <MediaSlot
-        src={null}
-        alt=""
-        slot="home.underworld"
-        seed={2}
-        className="absolute inset-0 size-full"
-        sizes="100vw"
-      />
+      <MediaReveal className="absolute inset-0 size-full" scanLine={false} seconds={1.8}>
+        <MediaSlot
+          src={null}
+          alt=""
+          slot="home.underworld"
+          seed={2}
+          className="size-full"
+          sizes="100vw"
+        />
+      </MediaReveal>
       <div
         aria-hidden
         className="absolute inset-0"
@@ -357,30 +409,40 @@ export function Underworld(): React.ReactElement {
       />
 
       <div className="relative mx-auto max-w-wide px-5 py-32 lg:px-8 lg:py-48">
-        <Reveal className="max-w-xl">
-          <Eyebrow accent>The other side</Eyebrow>
-          <h2 className="font-display text-display mt-6 font-black text-ink uppercase">
-            Own
-            <br />
-            the night.
-          </h2>
-          <p className="text-lead mt-7 text-ink-secondary">
-            Build alliances. Control markets. Create enemies.
-          </p>
-          <p className="mt-5 max-w-lg leading-relaxed text-ink-muted">
-            The underworld in Xenon is structured before it is violent. Crews have identity,
-            territory is held socially as much as physically, and every move you make attaches your
-            name to something. Reputation is the only currency, and it is spent the moment it is
-            used.
-          </p>
-          <div className="mt-9">
-            <Button variant="outline" size="lg" asChild>
-              <Link href="/city">
-                See how the city works <ArrowRight />
-              </Link>
-            </Button>
-          </div>
-        </Reveal>
+        <div className="max-w-xl">
+          <Reveal distance={10} delay={0.25}>
+            <Eyebrow accent>The other side</Eyebrow>
+          </Reveal>
+          <MaskReveal delay={0.4} amount={0.3}>
+            <h2 className="font-display text-display mt-6 font-black text-ink uppercase">
+              Own
+              <br />
+              the night.
+            </h2>
+          </MaskReveal>
+          <Reveal delay={0.62} distance={14}>
+            <p className="text-lead mt-7 text-ink-secondary">
+              Build alliances. Control markets. Create enemies.
+            </p>
+          </Reveal>
+          <Reveal delay={0.74} distance={14}>
+            <p className="mt-5 max-w-lg leading-relaxed text-ink-muted">
+              The underworld in Xenon is structured before it is violent. Crews have identity,
+              territory is held socially as much as physically, and every move you make attaches
+              your name to something. Reputation is the only currency, and it is spent the moment it
+              is used.
+            </p>
+          </Reveal>
+          <Reveal delay={0.88} distance={12}>
+            <div className="mt-9">
+              <Button variant="outline" size="lg" asChild>
+                <Link href="/city">
+                  See how the city works <ArrowRight />
+                </Link>
+              </Button>
+            </div>
+          </Reveal>
+        </div>
       </div>
     </section>
   );

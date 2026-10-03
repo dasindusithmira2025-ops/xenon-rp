@@ -4,6 +4,10 @@ import {
   MessageFlags,
   ModalBuilder,
   type ModalSubmitInteraction,
+  type StringSelectMenuInteraction,
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   TextInputBuilder,
   TextInputStyle,
 } from 'discord.js';
@@ -17,8 +21,11 @@ import {
 } from '@xenon/applications';
 import { toSafeMessage } from '@xenon/core';
 import { prisma } from '@xenon/database';
+import { loadSupportSettings, xenonEmbed, XenonTicketPanel } from '@xenon/discord';
+import { closeOwnTicket } from '@xenon/domain';
+import { can } from '@xenon/permissions';
 
-import { logger } from '../runtime';
+import { botEnv, logger } from '../runtime';
 
 import { actorFromDiscord } from './actor';
 import { postOrUpdateReviewCard } from './review-card';
@@ -184,6 +191,154 @@ export async function handleModal(interaction: ModalSubmitInteraction): Promise<
     await refreshCard(interaction, reference);
   } catch (error) {
     logger.warn({ err: error, action, reference }, 'Review modal failed');
+    await interaction.editReply(toSafeMessage(error));
+  }
+}
+
+function siteLink(path: string): string {
+  return new URL(path, botEnv.NEXT_PUBLIC_SITE_URL).toString();
+}
+
+/** Public support/application menus only link to canonical Xenon workflows. */
+export async function handleStringSelect(interaction: StringSelectMenuInteraction): Promise<void> {
+  const selected = interaction.values[0];
+  if (selected === undefined) {
+    await interaction.reply({
+      content: 'That selection is no longer available.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.customId === 'xn:support:category') {
+    if (selected === 'DEVELOPER') {
+      const actor = await actorFromDiscord(interaction.user.id);
+      if (!can(actor, 'tickets.view') && !can(actor, 'system.discord.bootstrap')) {
+        await interaction.reply({
+          content: 'Developer support is available to Xenon staff only.',
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      await sendWorkflowLink(
+        interaction,
+        'Open Xenon Control to review the developer support queue.',
+        '/control/tickets',
+      );
+      return;
+    }
+
+    const paths: Record<string, string> = {
+      GENERAL: '/support?category=GENERAL',
+      TECHNICAL: '/support?category=TECHNICAL',
+      CHARACTER: '/support?category=ACCOUNT',
+      WHITELIST: '/support?category=WHITELIST',
+      BUSINESS: '/support?category=GENERAL',
+      PLAYER_REPORT: '/support?tab=report&kind=PLAYER',
+      STAFF_REPORT: '/support?tab=report&kind=STAFF',
+    };
+    const path = paths[selected];
+    if (path === undefined) {
+      await interaction.reply({
+        content: 'That support category is no longer available.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await sendWorkflowLink(
+      interaction,
+      'Your ticket and replies stay in your Xenon player portal.',
+      path,
+    );
+    return;
+  }
+
+  if (interaction.customId === 'xn:application:open') {
+    const template = await prisma.applicationTemplate.findUnique({
+      where: { slug: selected },
+      select: { slug: true, status: true, archivedAt: true, opensAt: true, closesAt: true },
+    });
+    if (template === null) {
+      await interaction.reply({
+        content: 'That application is no longer open. Refresh the panel for current openings.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+
+    const now = Date.now();
+    const opensAt = template.opensAt?.getTime();
+    const closesAt = template.closesAt?.getTime();
+    if (
+      template.status !== 'OPEN' ||
+      template.archivedAt !== null ||
+      (opensAt !== undefined && opensAt > now) ||
+      (closesAt !== undefined && closesAt <= now)
+    ) {
+      await interaction.reply({
+        content: 'That application is no longer open. Refresh the panel for current openings.',
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    await sendWorkflowLink(
+      interaction,
+      'Continue your application on the Xenon website.',
+      `/applications/${template.slug}`,
+    );
+    return;
+  }
+
+  await interaction.reply({
+    content: 'This Xenon selection is no longer available.',
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+async function sendWorkflowLink(
+  interaction: StringSelectMenuInteraction,
+  copy: string,
+  path: string,
+): Promise<void> {
+  const button = new ButtonBuilder()
+    .setLabel('CONTINUE IN XENON')
+    .setStyle(ButtonStyle.Link)
+    .setURL(siteLink(path));
+  await interaction.reply({
+    embeds: [xenonEmbed().setTitle('XENON').setDescription(copy).toJSON()],
+    components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button).toJSON()],
+    flags: MessageFlags.Ephemeral,
+  });
+}
+
+/** Ticket close is authorized by the canonical Xenon ticket service. */
+export async function handleTicketClose(
+  interaction: ButtonInteraction,
+  publicId: string,
+): Promise<void> {
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  try {
+    const settings = await loadSupportSettings(prisma);
+    if (!settings.allowDiscordClose) {
+      await interaction.editReply(
+        'Ticket closing from Discord is disabled. Use the Xenon player portal.',
+      );
+      return;
+    }
+    const actor = await actorFromDiscord(interaction.user.id);
+    const ticket = await closeOwnTicket(prisma, actor, publicId);
+    const result = XenonTicketPanel({
+      ticketId: ticket.publicId,
+      category: ticket.category.toLowerCase().replaceAll('_', ' '),
+      createdBy: 'You',
+      createdAt: ticket.createdAt,
+      portalUrl: siteLink(`/portal/tickets/${ticket.publicId}`),
+      closed: true,
+    });
+    await interaction.message.edit({ embeds: result.embeds, components: result.components });
+    await interaction.editReply(`Ticket ${ticket.publicId} is closed.`);
+  } catch (error) {
+    logger.warn({ err: error, publicId }, 'Discord ticket close failed');
     await interaction.editReply(toSafeMessage(error));
   }
 }

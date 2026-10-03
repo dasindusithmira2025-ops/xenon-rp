@@ -1,4 +1,7 @@
+'use client';
+
 import { cn } from '@xenon/ui';
+import { instant, motion, useReducedMotion } from '@xenon/ui/motion';
 
 /**
  * Application timeline.
@@ -67,6 +70,8 @@ export function ApplicationTimeline({
   /** Staff see internal notes; applicants do not. */
   showInternal?: boolean;
 }): React.ReactElement {
+  const reduced = useReducedMotion();
+
   const visible = entries.filter(
     (entry) => showInternal || (entry.type !== 'NOTE_ADDED' && entry.type !== 'SAVED'),
   );
@@ -76,18 +81,58 @@ export function ApplicationTimeline({
   }
 
   return (
-    <ol className="relative flex flex-col gap-5 border-l border-line pl-6">
-      {visible.map((entry) => {
+    <ol className="relative flex flex-col gap-5 pl-6">
+      {/*
+        The connecting rail, drawn once as the timeline comes into view.
+
+        A static line between dots is a list with decoration; a line that draws
+        itself from the first event to the most recent one is the story of the
+        application, which is what a timeline is for. It fills the whole rail
+        because every event on it has already happened - the line is never
+        extended past the last thing that actually occurred.
+      */}
+      <span aria-hidden className="absolute inset-y-0 left-0 w-px bg-line">
+        <motion.span
+          className="block size-full origin-top bg-xenon/45"
+          initial={{ scaleY: 0 }}
+          whileInView={{ scaleY: 1 }}
+          viewport={{ once: true, amount: 0.2 }}
+          transition={instant(reduced, { duration: 0.9, ease: [0.16, 1, 0.3, 1] })}
+        />
+      </span>
+
+      {visible.map((entry, index) => {
         const detail = copy[entry.type];
+        // The head of the timeline is the application's current state, so it is
+        // the one node that is allowed to look live.
+        const latest = index === visible.length - 1;
+
         return (
-          <li key={entry.id} className="relative">
+          <motion.li
+            key={entry.id}
+            className="relative"
+            initial={{ opacity: 0, x: -6 }}
+            whileInView={{ opacity: 1, x: 0 }}
+            viewport={{ once: true, amount: 0.6 }}
+            // Trails the rail as it draws, so each event appears as the line
+            // reaches it rather than all six arriving at once.
+            transition={instant(reduced, {
+              duration: 0.4,
+              delay: 0.12 + index * 0.08,
+              ease: [0.16, 1, 0.3, 1],
+            })}
+          >
             <span
               className={cn(
                 'absolute top-1.5 -left-[1.8125rem] size-2 rounded-full ring-4 ring-void',
                 dotTone[detail.tone],
               )}
               aria-hidden
-            />
+            >
+              {latest && detail.tone === 'accent' ? (
+                <span className="x-status-ring absolute inset-0 rounded-full bg-xenon" />
+              ) : null}
+            </span>
             <p className="text-sm text-ink">{detail.label}</p>
             <p className="mt-0.5 font-mono text-[0.625rem] tracking-[0.12em] text-ink-muted uppercase">
               <time dateTime={entry.createdAt.toISOString()}>
@@ -101,7 +146,7 @@ export function ApplicationTimeline({
               {entry.actorLabel === null ? null : <> · {entry.actorLabel}</>}
               {entry.source !== 'WEB' ? <> · via {entry.source.toLowerCase()}</> : null}
             </p>
-          </li>
+          </motion.li>
         );
       })}
     </ol>

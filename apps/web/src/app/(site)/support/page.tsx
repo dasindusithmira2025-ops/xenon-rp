@@ -10,6 +10,7 @@ import type { Metadata } from 'next';
 import { PageHeader, Section } from '~/components/site/section';
 import { SupportForms } from '~/components/support/support-forms';
 import { currentActor } from '~/server/context';
+import { resolveDiscordInviteUrl } from '~/server/site';
 
 export const metadata: Metadata = {
   title: 'Support',
@@ -38,11 +39,28 @@ const routes = [
   },
 ] as const;
 
-export default async function SupportPage(): Promise<React.ReactElement> {
-  const [actor, settings] = await Promise.all([currentActor(), allSettings(prisma)]);
+export default async function SupportPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}): Promise<React.ReactElement> {
+  const [actor, settings, params] = await Promise.all([
+    currentActor(),
+    allSettings(prisma),
+    searchParams,
+  ]);
 
-  const invite = settings['community.discordInvite'];
-  const discordInvite = invite !== undefined && invite.length > 0 ? invite : null;
+  const categoryValue = typeof params.category === 'string' ? params.category : 'GENERAL';
+  const initialCategory = ['GENERAL', 'ACCOUNT', 'WHITELIST', 'TECHNICAL', 'OTHER'].includes(
+    categoryValue,
+  )
+    ? (categoryValue as 'GENERAL' | 'ACCOUNT' | 'WHITELIST' | 'TECHNICAL' | 'OTHER')
+    : 'GENERAL';
+  const initialTab =
+    params.tab === 'report' ? 'report' : params.tab === 'appeal' ? 'appeal' : 'ticket';
+  const initialReportKind = params.kind === 'STAFF' ? 'STAFF' : 'PLAYER';
+
+  const discordInvite = resolveDiscordInviteUrl(settings['community.discordInvite']);
 
   const openTickets =
     actor.userId === null
@@ -93,7 +111,11 @@ export default async function SupportPage(): Promise<React.ReactElement> {
                 </Button>
               </Panel>
             ) : (
-              <SupportForms />
+              <SupportForms
+                initialTab={initialTab}
+                initialCategory={initialCategory}
+                initialReportKind={initialReportKind}
+              />
             )}
           </div>
 

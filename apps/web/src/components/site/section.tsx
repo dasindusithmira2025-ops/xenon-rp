@@ -1,5 +1,5 @@
 import { cn, Eyebrow } from '@xenon/ui';
-import { Reveal } from '@xenon/ui/motion';
+import { AnimatedDivider, MaskReveal, Reveal } from '@xenon/ui/motion';
 
 /**
  * Page section scaffolding.
@@ -51,6 +51,20 @@ export function Section({
   );
 }
 
+/**
+ * The section entrance, defined once.
+ *
+ * Every public page is built from these, so the arrival order set here is the
+ * site's rhythm rather than one section's idea:
+ *
+ *   label → headline (masked) → standfirst → action
+ *
+ * The steps are 90-120ms apart, which is enough for the eye to follow the
+ * order and short enough that the whole block has landed inside half a second.
+ * The headline is masked rather than faded because it is the one element in the
+ * group that should feel *set* rather than shown, and the contrast between the
+ * mask and the fades either side is what gives a section a focal point.
+ */
 export function SectionHeading({
   eyebrow,
   title,
@@ -67,14 +81,18 @@ export function SectionHeading({
   action?: React.ReactNode;
 }): React.ReactElement {
   return (
-    <Reveal
+    <div
       className={cn(
         'flex flex-col gap-5',
         align === 'center' && 'items-center text-center',
         className,
       )}
     >
-      {eyebrow === undefined ? null : <Eyebrow accent>{eyebrow}</Eyebrow>}
+      {eyebrow === undefined ? null : (
+        <Reveal distance={10}>
+          <Eyebrow accent>{eyebrow}</Eyebrow>
+        </Reveal>
+      )}
 
       <div
         className={cn(
@@ -82,25 +100,36 @@ export function SectionHeading({
           action === undefined ? '' : 'lg:flex-row lg:items-end lg:justify-between lg:gap-10',
         )}
       >
-        <h2
-          className={cn(
-            'font-display text-headline font-black text-ink uppercase',
-            align === 'center' ? 'max-w-3xl' : 'max-w-[18ch]',
-          )}
-        >
-          {title}
-        </h2>
-        {action === undefined ? null : <div className="shrink-0">{action}</div>}
+        <MaskReveal delay={0.09} amount={0.4}>
+          <h2
+            className={cn(
+              'font-display text-headline font-black text-ink uppercase',
+              align === 'center' ? 'max-w-3xl' : 'max-w-[18ch]',
+            )}
+          >
+            {title}
+          </h2>
+        </MaskReveal>
+        {action === undefined ? null : (
+          <Reveal delay={0.3} distance={10} className="shrink-0">
+            {action}
+          </Reveal>
+        )}
       </div>
 
       {lead === undefined ? null : (
-        <p
-          className={cn('text-lead max-w-2xl text-ink-secondary', align === 'center' && 'mx-auto')}
-        >
-          {lead}
-        </p>
+        <Reveal delay={0.2} distance={14}>
+          <p
+            className={cn(
+              'text-lead max-w-2xl text-ink-secondary',
+              align === 'center' && 'mx-auto',
+            )}
+          >
+            {lead}
+          </p>
+        </Reveal>
       )}
-    </Reveal>
+    </div>
   );
 }
 
@@ -140,20 +169,40 @@ export function PageHeader({
       />
       <div className="x-grid-field absolute inset-0 opacity-40" aria-hidden />
 
+      {/*
+        The same choreography as a section heading, half a beat slower.
+
+        A page header is the first thing on the route, arriving straight after a
+        navigation, so it plays on mount rather than on scroll - `Reveal` and
+        `MaskReveal` both trigger in the viewport, and this is always in it.
+      */}
       <div className="relative mx-auto max-w-content px-5 pt-16 pb-14 lg:px-8 lg:pt-24 lg:pb-20">
         {eyebrow === undefined ? null : (
-          <Eyebrow accent className="mb-5">
-            {eyebrow}
-          </Eyebrow>
+          <Reveal distance={10} className="mb-5">
+            <Eyebrow accent>{eyebrow}</Eyebrow>
+          </Reveal>
         )}
-        <h1 className="font-display text-display max-w-[14ch] font-black text-ink uppercase">
-          {title}
-        </h1>
+        <MaskReveal delay={0.1}>
+          <h1 className="font-display text-display max-w-[14ch] font-black text-ink uppercase">
+            {title}
+          </h1>
+        </MaskReveal>
         {lead === undefined ? null : (
-          <p className="text-lead mt-6 max-w-2xl text-ink-secondary">{lead}</p>
+          <Reveal delay={0.24} distance={14}>
+            <p className="text-lead mt-6 max-w-2xl text-ink-secondary">{lead}</p>
+          </Reveal>
         )}
-        {children}
+        {children === undefined ? null : (
+          <Reveal delay={0.34} distance={12}>
+            {children}
+          </Reveal>
+        )}
       </div>
+
+      {/* A hairline drawing itself along the bottom edge as the header settles.
+          It is the only decoration on the block and it marks where the page
+          proper begins. */}
+      <AnimatedDivider tone="accent" className="absolute inset-x-0 bottom-0 opacity-50" />
     </header>
   );
 }

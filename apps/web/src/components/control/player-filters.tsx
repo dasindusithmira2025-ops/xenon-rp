@@ -1,16 +1,18 @@
 'use client';
 
 import { Search, X } from 'lucide-react';
-import { usePathname, useRouter, useSearchParams } from 'next/navigation';
+import { useSearchParams } from 'next/navigation';
 import * as React from 'react';
 
 import { Button, Input, Select } from '@xenon/ui';
+import { LoadingRail } from '@xenon/ui/motion';
+
+import { useFilterNavigation } from './use-filter-navigation';
 
 /** Player directory filters. URL-backed, for the same reasons as the queue. */
 export function PlayerFilters(): React.ReactElement {
-  const router = useRouter();
-  const pathname = usePathname();
   const params = useSearchParams();
+  const { navigate, pending } = useFilterNavigation();
   const [query, setQuery] = React.useState(params.get('q') ?? '');
 
   const update = (key: string, value: string | null): void => {
@@ -18,13 +20,18 @@ export function PlayerFilters(): React.ReactElement {
     if (value === null || value.length === 0) next.delete(key);
     else next.set(key, value);
     next.delete('page');
-    router.push(`${pathname}?${next.toString()}`);
+    navigate(next);
   };
 
   const active = ['q', 'whitelist', 'status'].some((key) => params.get(key) !== null);
 
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="relative flex flex-wrap items-center gap-2 pb-1">
+      {/* Shown only while a request is genuinely outstanding: the rows stay on
+          screen and this reports that they are being refreshed. */}
+      {pending ? (
+        <LoadingRail className="absolute inset-x-0 bottom-0" label="Updating the directory" />
+      ) : null}
       <form
         className="relative min-w-56 flex-1"
         action={() => {
@@ -81,7 +88,7 @@ export function PlayerFilters(): React.ReactElement {
           size="sm"
           onClick={() => {
             setQuery('');
-            router.push(pathname);
+            navigate(null);
           }}
         >
           <X /> Clear

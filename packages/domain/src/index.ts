@@ -8,6 +8,7 @@ export * from './health';
 export * from './reports';
 export * from './roles';
 export * from './rules';
+export * from './rule-source';
 export * from './servers';
 export * from './settings';
 export * from './tickets';

@@ -11,6 +11,7 @@ import type { Metadata } from 'next';
 import { MediaSlot } from '~/components/media/media-slot';
 import { PageHeader, Section, SectionHeading } from '~/components/site/section';
 import { communityCopy, creatorCopy } from '~/content/marketing';
+import { resolveDiscordInviteUrl } from '~/server/site';
 
 export const metadata: Metadata = {
   title: 'Community',
@@ -36,8 +37,7 @@ export default async function CommunityPage(): Promise<React.ReactElement> {
     publishedArticles(prisma, 3),
   ]);
 
-  const invite = settings['community.discordInvite'];
-  const discordInvite = invite !== undefined && invite.length > 0 ? invite : null;
+  const discordInvite = resolveDiscordInviteUrl(settings['community.discordInvite']);
 
   const socials = (
     [

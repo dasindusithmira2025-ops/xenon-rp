@@ -104,6 +104,11 @@ export async function grantWhitelist(
     userId: change.userId,
     reason: 'whitelist.granted',
   });
+  // The Discord Whitelisted role mirrors this state.
+  await enqueueBestEffort('discord.role.sync', {
+    userId: change.userId,
+    reason: 'whitelist.granted',
+  });
 
   return whitelist;
 }
@@ -127,6 +132,11 @@ export async function revokeWhitelist(
     userId: change.userId,
     reason: 'whitelist.revoked',
   });
+  // The Discord Whitelisted role mirrors this state.
+  await enqueueBestEffort('discord.role.sync', {
+    userId: change.userId,
+    reason: 'whitelist.revoked',
+  });
 
   return whitelist;
 }
@@ -142,6 +152,11 @@ export async function suspendWhitelist(
   });
 
   await enqueueBestEffort('fivem.whitelist.sync', {
+    userId: change.userId,
+    reason: 'whitelist.suspended',
+  });
+  // The Discord Whitelisted role mirrors this state.
+  await enqueueBestEffort('discord.role.sync', {
     userId: change.userId,
     reason: 'whitelist.suspended',
   });

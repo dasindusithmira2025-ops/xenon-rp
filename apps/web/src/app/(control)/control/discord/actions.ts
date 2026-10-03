@@ -5,6 +5,12 @@ import { revalidatePath } from 'next/cache';
 import { serverEnv } from '@xenon/config/server';
 import { ConflictError } from '@xenon/core';
 import { prisma } from '@xenon/database';
+import {
+  saveSupportSettings,
+  saveWelcomeSettings,
+  supportSettingsInput,
+  welcomeSettingsInput,
+} from '@xenon/discord';
 import { recordAudit } from '@xenon/domain';
 import { enqueueBestEffort } from '@xenon/jobs';
 import { requirePermission } from '@xenon/permissions';
@@ -153,6 +159,24 @@ export async function deleteRoleMappingAction(mappingId: string): Promise<Action
       entityId: id,
     });
 
+    revalidatePath('/control/discord');
+  });
+}
+
+export async function saveWelcomeSettingsAction(raw: unknown): Promise<ActionResult> {
+  return runAction(async () => {
+    const input = parseInput(welcomeSettingsInput, raw);
+    const actor = await currentActor();
+    await saveWelcomeSettings(prisma, actor, input);
+    revalidatePath('/control/discord');
+  });
+}
+
+export async function saveSupportSettingsAction(raw: unknown): Promise<ActionResult> {
+  return runAction(async () => {
+    const input = parseInput(supportSettingsInput, raw);
+    const actor = await currentActor();
+    await saveSupportSettings(prisma, actor, input);
     revalidatePath('/control/discord');
   });
 }

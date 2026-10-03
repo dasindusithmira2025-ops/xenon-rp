@@ -11,6 +11,7 @@ import { FivemLinkPanel } from '~/components/portal/fivem-link-panel';
 import { PortalPage, PortalSection } from '~/components/portal/portal-page';
 import { ProfileForm } from '~/components/portal/profile-form';
 import { requireUserId } from '~/server/context';
+import { resolveDiscordInviteUrl } from '~/server/site';
 
 export const metadata: Metadata = {
   title: 'Your account',
@@ -67,7 +68,7 @@ export default async function AccountPage(): Promise<React.ReactElement> {
     activeLinkToken(prisma, userId),
   ]);
 
-  const invite = settings['community.discordInvite'];
+  const invite = resolveDiscordInviteUrl(settings['community.discordInvite']);
 
   return (
     <PortalPage
@@ -107,7 +108,7 @@ export default async function AccountPage(): Promise<React.ReactElement> {
                       state={user.discordAccount.guildMembershipState}
                       syncedAt={user.discordAccount.guildSyncedAt?.toISOString() ?? null}
                       error={user.discordAccount.guildSyncError}
-                      invite={typeof invite === 'string' && invite.length > 0 ? invite : null}
+                      invite={invite}
                       enabled={serverEnv.DISCORD_MODE === 'enabled'}
                     />
                   </dd>

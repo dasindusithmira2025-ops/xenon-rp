@@ -7,6 +7,8 @@
  * inside the UI package, so those sources are registered explicitly.
  */
 
+@import '@fontsource/noto-sans-sinhala/400.css';
+@import '@fontsource/noto-sans-sinhala/700.css';
 @import '@xenon/ui/styles.css';
 
 @source "../";
@@ -21,6 +23,12 @@
  * are styled here, scoped to `.x-prose` so nothing leaks into the app chrome.
  */
 @layer components {
+  .x-rule-markdown {
+    font-family: var(--font-geist), 'Noto Sans Sinhala', 'Nirmala UI', 'Iskoola Pota', sans-serif;
+    font-size: 1rem;
+    line-height: 1.8;
+  }
+
   .x-prose {
     color: var(--color-ink-secondary);
     font-size: 1.0625rem;

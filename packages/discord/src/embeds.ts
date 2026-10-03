@@ -45,13 +45,13 @@ export interface ReviewCardInput {
 
 const statusColour: Record<ApplicationStatus, number> = {
   DRAFT: brand.state.neutralInt,
-  SUBMITTED: brand.state.infoInt,
-  UNDER_REVIEW: brand.state.infoInt,
+  SUBMITTED: brand.greenInt,
+  UNDER_REVIEW: brand.greenInt,
   CHANGES_REQUESTED: brand.state.warningInt,
-  RESUBMITTED: brand.state.infoInt,
+  RESUBMITTED: brand.greenInt,
   INTERVIEW_REQUIRED: brand.state.warningInt,
-  INTERVIEW_SCHEDULED: brand.state.infoInt,
-  INTERVIEW_COMPLETED: brand.state.infoInt,
+  INTERVIEW_SCHEDULED: brand.greenInt,
+  INTERVIEW_COMPLETED: brand.greenInt,
   APPROVED: brand.state.successInt,
   REJECTED: brand.state.dangerInt,
   WITHDRAWN: brand.state.neutralInt,
@@ -87,15 +87,19 @@ export function buildReviewEmbed(input: ReviewCardInput): EmbedBuilder {
       value: [
         input.applicant.displayName ?? input.applicant.publicId,
         input.applicant.discordId === null ? null : `<@${input.applicant.discordId}>`,
-        `\`${input.applicant.publicId}\``,
       ]
         .filter((line): line is string => line !== null)
         .join('\n'),
       inline: true,
     },
     {
-      name: 'Type',
-      value: `${input.templateName}${input.attempt > 1 ? `\nAttempt ${String(input.attempt)}` : ''}`,
+      name: 'Xenon ID',
+      value: input.applicant.publicId,
+      inline: true,
+    },
+    {
+      name: 'Application',
+      value: `${input.publicId}${input.attempt > 1 ? ` · attempt ${String(input.attempt)}` : ''}`,
       inline: true,
     },
     {
@@ -118,6 +122,13 @@ export function buildReviewEmbed(input: ReviewCardInput): EmbedBuilder {
 
   if (input.characterName !== null) {
     fields.push({ name: 'Character', value: input.characterName, inline: true });
+  }
+  if (input.submittedAt !== null) {
+    fields.push({
+      name: 'Submitted',
+      value: `<t:${String(Math.floor(input.submittedAt.getTime() / 1000))}:R>`,
+      inline: true,
+    });
   }
   if (input.assigneeName !== null) {
     fields.push({ name: 'Reviewer', value: input.assigneeName, inline: true });
@@ -142,11 +153,14 @@ export function buildReviewEmbed(input: ReviewCardInput): EmbedBuilder {
 
   const embed = new EmbedBuilder()
     .setColor(statusColour[input.status])
-    .setAuthor({ name: `${brand.shortName} · Application review`, iconURL: XENON_ICON })
-    .setTitle(input.publicId)
+    .setAuthor({ name: 'XENON STAFF REVIEW', iconURL: XENON_ICON })
+    .setTitle(input.templateName.toUpperCase())
+    .setDescription(
+      `**APPLICATION** · ${input.publicId}\n**STATUS** · ${statusLabel[input.status]}`,
+    )
     .setURL(`${input.siteUrl}/control/applications/${input.publicId}`)
     .addFields(fields)
-    .setFooter({ text: `${brand.wordmark} · ${input.publicId}` });
+    .setFooter({ text: `XenonRP • Official Staff System · ${input.publicId}` });
 
   if (input.submittedAt !== null) embed.setTimestamp(input.submittedAt);
   return embed;
@@ -191,7 +205,7 @@ export function buildReviewActions(
 
   const reviewUrl = new URL(`/control/applications/${publicId}`, siteUrl).toString();
   const openRow = new ActionRowBuilder<ButtonBuilder>().addComponents(
-    new ButtonBuilder().setLabel('Open in Xenon').setStyle(ButtonStyle.Link).setURL(reviewUrl),
+    new ButtonBuilder().setLabel('OPEN APPLICATION').setStyle(ButtonStyle.Link).setURL(reviewUrl),
   );
 
   if (decided) return [openRow];
@@ -328,4 +342,19 @@ export function buildStatusEmbed(input: StatusEmbedInput): EmbedBuilder {
   if (input.checkedAt !== null) embed.setTimestamp(new Date(input.checkedAt));
 
   return embed;
+}
+
+export type EmbedTone = 'brand' | NotificationEmbedInput['tone'];
+
+/**
+ * The base every Xenon embed starts from: semantic colour, Xenon footer.
+ *
+ * Panels, setup reports and status cards all build on this so the Discord
+ * surface reads as one product. Xenon green is the brand tone; success,
+ * warning and danger stay semantic rather than decorative.
+ */
+export function xenonEmbed(tone: EmbedTone = 'brand'): EmbedBuilder {
+  return new EmbedBuilder()
+    .setColor(tone === 'brand' ? brand.greenInt : toneColour[tone])
+    .setFooter({ text: brand.wordmark });
 }

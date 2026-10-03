@@ -8,6 +8,8 @@
     "build": "node build.mjs",
     "start": "node dist/main.js",
     "register": "tsx src/scripts/register-commands.ts",
+    "setup": "tsx src/scripts/discord-setup.ts",
+    "assets": "tsx src/scripts/discord-assets.ts",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --passWithNoTests",

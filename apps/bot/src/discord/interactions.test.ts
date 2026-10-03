@@ -4,13 +4,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Actor } from '@xenon/permissions';
 
 const mocks = vi.hoisted(() => ({
-  prisma: { applicationSubmission: { findUnique: vi.fn() } },
+  prisma: {
+    applicationSubmission: { findUnique: vi.fn() },
+    applicationTemplate: { findUnique: vi.fn() },
+  },
   actorFromDiscord: vi.fn(),
   approveApplication: vi.fn(),
   claimApplication: vi.fn(),
   rejectApplication: vi.fn(),
   requestChanges: vi.fn(),
   requestInterview: vi.fn(),
+  closeOwnTicket: vi.fn(),
+  loadSupportSettings: vi.fn(),
   toSafeMessage: vi.fn((error: unknown) => (error instanceof Error ? error.message : 'Failed')),
   logger: { warn: vi.fn() },
 }));
@@ -24,11 +29,23 @@ vi.mock('@xenon/applications', () => ({
 }));
 vi.mock('@xenon/core', () => ({ toSafeMessage: mocks.toSafeMessage }));
 vi.mock('@xenon/database', () => ({ prisma: mocks.prisma }));
-vi.mock('../runtime', () => ({ logger: mocks.logger }));
+vi.mock('@xenon/domain', () => ({ closeOwnTicket: mocks.closeOwnTicket }));
+vi.mock('@xenon/discord', async () => {
+  const { EmbedBuilder } = await import('discord.js');
+  return {
+    loadSupportSettings: mocks.loadSupportSettings,
+    XenonTicketPanel: vi.fn(),
+    xenonEmbed: () => new EmbedBuilder(),
+  };
+});
+vi.mock('../runtime', () => ({
+  botEnv: { NEXT_PUBLIC_SITE_URL: 'https://xenon.example.test' },
+  logger: mocks.logger,
+}));
 vi.mock('./actor', () => ({ actorFromDiscord: mocks.actorFromDiscord }));
 vi.mock('./review-card', () => ({ postOrUpdateReviewCard: vi.fn() }));
 
-import { handleButton, handleModal } from './interactions';
+import { handleButton, handleModal, handleStringSelect } from './interactions';
 
 function makeActor(canRejectOrRequest = true): Actor {
   return {
@@ -79,7 +96,9 @@ describe('Discord review interactions', () => {
     vi.clearAllMocks();
     shownModalId = undefined;
     mocks.prisma.applicationSubmission.findUnique.mockResolvedValue(null);
+    mocks.prisma.applicationTemplate.findUnique.mockResolvedValue(null);
     mocks.actorFromDiscord.mockResolvedValue(makeActor());
+    mocks.loadSupportSettings.mockResolvedValue({ dmNotifications: true, allowDiscordClose: true });
   });
 
   it('denies an unlinked or unauthorized reviewer before opening a sensitive modal', async () => {
@@ -174,5 +193,67 @@ describe('Discord review interactions', () => {
 
     expect(view.editReply).toHaveBeenCalledWith('APPLICATION_ALREADY_CHANGED');
     expect(mocks.logger.warn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Xenon support and application selections', () => {
+  function makeSelect(customId: string, value: string) {
+    const reply = vi.fn();
+    const interaction = {
+      customId,
+      values: [value],
+      user: { id: 'discord-user-snowflake' },
+      reply,
+    } as never;
+    return { interaction, reply };
+  }
+
+  it('routes a support category to the canonical Xenon portal', async () => {
+    const view = makeSelect('xn:support:category', 'TECHNICAL');
+
+    await handleStringSelect(view.interaction);
+
+    const response = view.reply.mock.calls[0]?.[0] as {
+      components: { components: { url?: string }[] }[];
+      flags: number;
+    };
+    expect(response.flags).toBe(MessageFlags.Ephemeral);
+    expect(response.components[0]?.components[0]?.url).toBe(
+      'https://xenon.example.test/support?category=TECHNICAL',
+    );
+  });
+
+  it('denies developer support without Xenon capabilities', async () => {
+    mocks.actorFromDiscord.mockResolvedValue(makeActor(false));
+    const view = makeSelect('xn:support:category', 'DEVELOPER');
+
+    await handleStringSelect(view.interaction);
+
+    expect(view.reply).toHaveBeenCalledWith({
+      content: 'Developer support is available to Xenon staff only.',
+      flags: MessageFlags.Ephemeral,
+    });
+  });
+
+  it('does not link to an application that is no longer open', async () => {
+    const view = makeSelect('xn:application:open', 'closed-application');
+
+    await handleStringSelect(view.interaction);
+
+    expect(view.reply).toHaveBeenCalledWith({
+      content: 'That application is no longer open. Refresh the panel for current openings.',
+      flags: MessageFlags.Ephemeral,
+    });
+  });
+
+  it('acknowledges an unknown persistent selection without leaving Discord waiting', async () => {
+    const view = makeSelect('xn:unknown:selection', 'value');
+
+    await handleStringSelect(view.interaction);
+
+    expect(view.reply).toHaveBeenCalledWith({
+      content: 'This Xenon selection is no longer available.',
+      flags: MessageFlags.Ephemeral,
+    });
   });
 });

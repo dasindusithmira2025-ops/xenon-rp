@@ -2,6 +2,7 @@
 
 import * as AlertDialogPrimitive from '@radix-ui/react-alert-dialog';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
+import * as VisuallyHiddenPrimitive from '@radix-ui/react-visually-hidden';
 import { X } from 'lucide-react';
 import * as React from 'react';
 
@@ -21,19 +22,42 @@ import { Button } from './button';
  * and the wrong behaviour for a filter panel.
  */
 
+/*
+ * Overlay and panel motion.
+ *
+ * Written as `data-[state]` classes rather than wired through Motion because
+ * Radix already runs a presence machine: it keeps the node mounted until its
+ * CSS animation finishes, so the exit is handled by the library that owns the
+ * unmount rather than by a second animation system racing it.
+ *
+ * Exits are roughly half the length of entrances throughout. A dismissal that
+ * takes as long as an arrival feels reluctant, and the user has already decided.
+ *
+ * The backdrop blur is a static property, never an animated one: animating a
+ * `backdrop-filter` forces a full-screen re-rasterise every frame and is the
+ * single most expensive thing a modal can do on a laptop GPU.
+ */
 const overlayClasses = cn(
-  'fixed inset-0 z-[60] bg-void/80 backdrop-blur-sm',
-  'data-[state=open]:animate-fade-in',
+  'fixed inset-0 z-60 bg-void/80 backdrop-blur-sm',
+  'data-[state=open]:animate-fade-in data-[state=closed]:animate-fade-out',
 );
 
 const panelClasses = cn(
-  'fixed z-[70] flex flex-col gap-4 border border-line-strong bg-elevated p-6 shadow-float',
+  'fixed z-70 flex flex-col gap-4 border border-line-strong bg-elevated p-6 shadow-float',
   'focus:outline-none',
 );
 
 export const Dialog = DialogPrimitive.Root;
 export const DialogTrigger = DialogPrimitive.Trigger;
 export const DialogClose = DialogPrimitive.Close;
+/**
+ * Exported for the dialogs that do not use `DialogHeader` - a full-screen
+ * navigation panel, for instance, whose title belongs in a `VisuallyHidden`.
+ * Radix requires every dialog to have one; a screen reader announcing "dialog"
+ * with no name is a dead end.
+ */
+export const DialogTitle = DialogPrimitive.Title;
+export const VisuallyHidden = VisuallyHiddenPrimitive.Root;
 
 export const DialogContent = React.forwardRef<
   React.ComponentRef<typeof DialogPrimitive.Content>,
@@ -57,11 +81,16 @@ export const DialogContent = React.forwardRef<
             ? [
                 'top-1/2 left-1/2 w-[calc(100vw-2rem)] max-w-lg -translate-x-1/2 -translate-y-1/2 rounded-xl',
                 'max-h-[calc(100dvh-4rem)] overflow-y-auto',
+                // The keyframes carry the centring translate themselves, because
+                // a transform animation replaces the utility rather than
+                // composing with it.
+                'data-[state=open]:animate-dialog-in data-[state=closed]:animate-dialog-out',
               ]
             : [
                 // Full-height on mobile, a panel on desktop: a centred dialog on
                 // a 375px screen is a dialog with no room in it.
                 'inset-y-0 right-0 w-full max-w-md overflow-y-auto border-y-0 border-r-0 sm:rounded-l-xl',
+                'data-[state=open]:animate-sheet-in data-[state=closed]:animate-sheet-out',
               ],
           className,
         )}
@@ -176,6 +205,7 @@ export function ConfirmDialog({
           className={cn(
             panelClasses,
             'top-1/2 left-1/2 w-[calc(100vw-2rem)] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl',
+            'data-[state=open]:animate-dialog-in data-[state=closed]:animate-dialog-out',
           )}
         >
           <AlertDialogPrimitive.Title className="font-display text-xl font-bold tracking-tight text-ink">

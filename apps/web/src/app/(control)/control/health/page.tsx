@@ -2,7 +2,7 @@ import { prisma } from '@xenon/database';
 import { healthReport, unsyncedWhitelists } from '@xenon/domain';
 import { queueDepth } from '@xenon/jobs';
 import { storageStatus } from '@xenon/storage';
-import { Badge, Panel } from '@xenon/ui';
+import { Badge, Panel, StatusDot } from '@xenon/ui';
 
 import { ControlPage, MetricTile } from '~/components/control/control-page';
 import { requireStaff } from '~/server/context';
@@ -16,6 +16,21 @@ const tone = {
   DEGRADED: 'warning',
   UNHEALTHY: 'danger',
   UNKNOWN: 'neutral',
+} as const;
+
+/**
+ * Health status as a live indicator.
+ *
+ * Only `HEALTHY` gets the expanding ring, which is the point: on a page that is
+ * mostly green, the one row that has stopped pulsing is the one worth reading.
+ * A degraded or failing dependency is deliberately inert - a flashing red on a
+ * status board is how people learn to ignore status boards.
+ */
+const dot = {
+  HEALTHY: 'online',
+  DEGRADED: 'degraded',
+  UNHEALTHY: 'offline',
+  UNKNOWN: 'unknown',
 } as const;
 
 /**
@@ -81,7 +96,8 @@ export default async function HealthPage(): Promise<React.ReactElement> {
         <Panel tone="flat" pad="none" className="divide-y divide-line">
           {report.checks.map((check) => (
             <div key={check.name} className="flex flex-wrap items-center gap-4 p-4">
-              <span className="w-24 shrink-0 text-sm text-ink capitalize">{check.name}</span>
+              <StatusDot state={dot[check.status]} />
+              <span className="w-20 shrink-0 text-sm text-ink capitalize">{check.name}</span>
               <span className="min-w-0 flex-1 text-xs text-ink-muted">{check.detail}</span>
               {check.latencyMs === null ? null : (
                 <span className="x-tabular font-mono text-[0.625rem] text-ink-muted">

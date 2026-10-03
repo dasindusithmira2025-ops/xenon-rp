@@ -73,10 +73,18 @@ describe('syncUserRoles', () => {
   function setup({
     current = [] as readonly string[],
     desired = true,
+    whitelistState = 'NONE',
+    whitelistedRoleId = null as string | null,
+    userExists = true,
+    accountLinked = true,
     prerequisite = { roleFound: true, hierarchyBlocked: false, manageRolesMissing: false },
   }: {
     current?: readonly string[];
     desired?: boolean;
+    whitelistState?: string;
+    whitelistedRoleId?: string | null;
+    userExists?: boolean;
+    accountLinked?: boolean;
     prerequisite?: {
       roleFound: boolean;
       hierarchyBlocked: boolean;
@@ -87,14 +95,30 @@ describe('syncUserRoles', () => {
     const db = {
       user: {
         findUnique: vi.fn(() =>
-          Promise.resolve({
-            status: 'ACTIVE',
-            discordAccount: { discordId: 'discord-user' },
-            roles: desired ? [{ roleId: 'xenon-role' }] : [],
-          }),
+          Promise.resolve(
+            userExists
+              ? {
+                  status: 'ACTIVE',
+                  whitelistState,
+                  discordAccount: accountLinked ? { discordId: 'discord-user' } : null,
+                  roles: desired ? [{ roleId: 'xenon-role' }] : [],
+                }
+              : null,
+          ),
         ),
       },
-      discordGuild: { findFirst: vi.fn(() => Promise.resolve({ id: 'guild-row' })) },
+      discordGuild: {
+        findFirst: vi.fn(() => Promise.resolve({ id: 'guild-row', guildId: 'guild-snowflake' })),
+      },
+      discordManagedResource: {
+        findUnique: vi.fn(() =>
+          Promise.resolve(
+            whitelistedRoleId === null
+              ? null
+              : { discordResourceId: whitelistedRoleId, managed: true },
+          ),
+        ),
+      },
       discordRoleMapping: {
         findMany: vi.fn(() =>
           Promise.resolve([
@@ -188,5 +212,33 @@ describe('syncUserRoles', () => {
 
     expect(outcome.memberMissing).toBe(true);
     expect(fixture.calls.addRole).not.toHaveBeenCalled();
+  });
+
+  it('treats deleted Xenon users as permanent and unlinked existing users as pending', async () => {
+    const stale = setup({ userExists: false });
+    const staleOutcome = await syncUserRoles(stale.db, stale.port, 'deleted-user');
+    expect(staleOutcome.permanentErrors).toContain('Xenon user no longer exists');
+    expect(staleOutcome.errors).toEqual([]);
+
+    const pending = setup({ accountLinked: false });
+    const pendingOutcome = await syncUserRoles(pending.db, pending.port, 'unlinked-user');
+    expect(pendingOutcome.errors).toContain('No linked Discord account');
+    expect(pendingOutcome.permanentErrors).toEqual([]);
+  });
+
+  it('mirrors the whitelist state onto the provisioned Whitelisted role', async () => {
+    const approved = setup({ desired: false, whitelistState: 'APPROVED', whitelistedRoleId: 'wl' });
+    await syncUserRoles(approved.db, approved.port, 'xenon-user');
+    expect(approved.calls.addRole).toHaveBeenCalledWith('discord-user', 'wl');
+
+    const revoked = setup({
+      desired: false,
+      current: ['wl', 'unrelated'],
+      whitelistState: 'REVOKED',
+      whitelistedRoleId: 'wl',
+    });
+    await syncUserRoles(revoked.db, revoked.port, 'xenon-user');
+    expect(revoked.calls.removeRole).toHaveBeenCalledWith('discord-user', 'wl');
+    expect(revoked.calls.removeRole).not.toHaveBeenCalledWith('discord-user', 'unrelated');
   });
 });

@@ -2,6 +2,7 @@
 
 import {
   Activity,
+  Blocks,
   Building2,
   FileCog,
   FileText,
@@ -148,6 +149,12 @@ const groups: readonly NavGroup[] = [
         label: 'Discord',
         icon: Link2,
         permissions: ['discord.manage'],
+      },
+      {
+        href: '/control/discord/setup',
+        label: 'Server setup',
+        icon: Blocks,
+        permissions: ['system.discord.bootstrap'],
       },
       {
         href: '/control/fivem',

@@ -80,6 +80,7 @@ export async function syncUserRoles(
     where: { id: userId },
     select: {
       status: true,
+      whitelistState: true,
       discordAccount: { select: { discordId: true } },
       roles: {
         where: { OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] },
@@ -99,18 +100,32 @@ export async function syncUserRoles(
     permanentErrors: [],
   };
 
-  if (user?.discordAccount == null) {
+  if (user === null) {
+    return { ...empty, permanentErrors: ['Xenon user no longer exists'] };
+  }
+
+  if (user.discordAccount === null) {
     return { ...empty, errors: ['No linked Discord account'] };
   }
 
   const guild = await db.discordGuild.findFirst({ where: { isPrimary: true } });
   if (guild === null) return { ...empty, errors: ['No primary guild configured'] };
 
-  const mappings = await db.discordRoleMapping.findMany({
-    where: { guildId: guild.id, syncToDiscord: true },
-    select: { id: true, roleId: true, discordRoleId: true },
-  });
-  if (mappings.length === 0) return { ...empty, applied: true };
+  const [mappings, whitelistedRole] = await Promise.all([
+    db.discordRoleMapping.findMany({
+      where: { guildId: guild.id, syncToDiscord: true },
+      select: { id: true, roleId: true, discordRoleId: true },
+    }),
+    // The provisioned Whitelisted role mirrors a state rather than a Xenon
+    // role, so it is resolved from the managed resource registry.
+    db.discordManagedResource.findUnique({
+      where: { guildId_logicalKey: { guildId: guild.guildId, logicalKey: 'role.whitelisted' } },
+      select: { discordResourceId: true, managed: true },
+    }),
+  ]);
+  const whitelistedRoleId =
+    whitelistedRole?.managed === true ? whitelistedRole.discordResourceId : null;
+  if (mappings.length === 0 && whitelistedRoleId === null) return { ...empty, applied: true };
 
   const held = new Set(user.roles.map((assignment) => assignment.roleId));
 
@@ -121,7 +136,12 @@ export async function syncUserRoles(
 
   const desired = sanctioned
     ? []
-    : mappings.filter((mapping) => held.has(mapping.roleId)).map((m) => m.discordRoleId);
+    : [
+        ...mappings.filter((mapping) => held.has(mapping.roleId)).map((m) => m.discordRoleId),
+        ...(whitelistedRoleId !== null && user.whitelistState === 'APPROVED'
+          ? [whitelistedRoleId]
+          : []),
+      ];
 
   const current = await port.memberRoles(user.discordAccount.discordId);
   if (current === null) {
@@ -129,7 +149,10 @@ export async function syncUserRoles(
   }
 
   const plan = planRoleSync(
-    mappings.map((mapping) => mapping.discordRoleId),
+    [
+      ...mappings.map((mapping) => mapping.discordRoleId),
+      ...(whitelistedRoleId === null ? [] : [whitelistedRoleId]),
+    ],
     desired,
     current,
   );

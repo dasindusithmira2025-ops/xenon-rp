@@ -91,6 +91,9 @@ export const discordSchema = z.object({
   DISCORD_GUILD_ID: optional(discordSnowflake),
 });
 
+/** Public community invite used when no Control Center invite setting exists. */
+export const discordInviteUrl = optional(z.url());
+
 export const discordMode = z.enum(['enabled', 'disabled']).default('disabled');
 
 /**

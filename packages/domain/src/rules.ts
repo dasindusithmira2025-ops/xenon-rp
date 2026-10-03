@@ -28,6 +28,11 @@ import { refreshOnboardingStep } from './users';
 const RULES_CACHE_KEY = 'rules:published';
 const RULES_CACHE_TTL = 300;
 
+/** Invalidate the published view after an out-of-band official-source import. */
+export async function invalidatePublishedRulebookCache(): Promise<void> {
+  await cacheDelete(RULES_CACHE_KEY);
+}
+
 export interface PublicRule {
   readonly id: string;
   readonly code: string;
@@ -35,9 +40,15 @@ export interface PublicRule {
   readonly title: string;
   readonly description: string;
   readonly examples: string | null;
-  readonly severity: RuleSeverity;
+  readonly severity: RuleSeverity | null;
   readonly aliases: readonly string[];
   readonly updatedAt: string;
+  readonly sourceRoot: string | null;
+  readonly sourceUrl: string | null;
+  readonly sourcePath: string | null;
+  readonly sourceOrder: number | null;
+  readonly contentHash: string | null;
+  readonly sourceRetrievedAt: string | null;
 }
 
 export interface PublicRuleCategory {
@@ -45,6 +56,11 @@ export interface PublicRuleCategory {
   readonly slug: string;
   readonly name: string;
   readonly description: string | null;
+  readonly sourceRoot: string | null;
+  readonly sourceUrl: string | null;
+  readonly sourcePath: string | null;
+  readonly sourceContentHash: string | null;
+  readonly sourceRetrievedAt: string | null;
   readonly rules: readonly PublicRule[];
 }
 
@@ -52,6 +68,9 @@ export interface PublishedRulebook {
   readonly categories: readonly PublicRuleCategory[];
   readonly version: number | null;
   readonly publishedAt: string | null;
+  readonly sourceRoot: string | null;
+  readonly contentHash: string | null;
+  readonly sourceRetrievedAt: string | null;
   readonly ruleCount: number;
 }
 
@@ -83,6 +102,11 @@ export async function publishedRulebook(db: Db): Promise<PublishedRulebook> {
         slug: category.slug,
         name: category.name,
         description: category.description,
+        sourceRoot: category.sourceRoot,
+        sourceUrl: category.sourceUrl,
+        sourcePath: category.sourcePath,
+        sourceContentHash: category.sourceContentHash,
+        sourceRetrievedAt: category.sourceRetrievedAt?.toISOString() ?? null,
         rules: category.rules.map((rule): PublicRule => ({
           id: rule.id,
           code: rule.code,
@@ -93,6 +117,12 @@ export async function publishedRulebook(db: Db): Promise<PublishedRulebook> {
           severity: rule.severity,
           aliases: rule.aliases,
           updatedAt: rule.updatedAt.toISOString(),
+          sourceRoot: rule.sourceRoot,
+          sourceUrl: rule.sourceUrl,
+          sourcePath: rule.sourcePath,
+          sourceOrder: rule.sourceOrder,
+          contentHash: rule.sourceContentHash,
+          sourceRetrievedAt: rule.sourceRetrievedAt?.toISOString() ?? null,
         })),
       }))
       // An empty category is a staging artefact, not something a player needs
@@ -103,6 +133,9 @@ export async function publishedRulebook(db: Db): Promise<PublishedRulebook> {
       categories: mapped,
       version: current?.version ?? null,
       publishedAt: current?.publishedAt.toISOString() ?? null,
+      sourceRoot: current?.sourceRoot ?? null,
+      contentHash: current?.sourceContentHash ?? null,
+      sourceRetrievedAt: current?.sourceRetrievedAt?.toISOString() ?? null,
       ruleCount: mapped.reduce((total, category) => total + category.rules.length, 0),
     };
   });
@@ -119,7 +152,7 @@ export function searchRulebook(
   rulebook: PublishedRulebook,
   query: string,
 ): readonly (PublicRule & { categoryName: string; score: number })[] {
-  const needle = query.trim().toLowerCase();
+  const needle = normalizeRuleSearchText(query.trim());
   if (needle.length === 0) return [];
 
   const results: (PublicRule & { categoryName: string; score: number })[] = [];
@@ -127,18 +160,24 @@ export function searchRulebook(
   for (const category of rulebook.categories) {
     for (const rule of category.rules) {
       let score = 0;
-      if (rule.aliases.some((alias) => alias.toLowerCase() === needle)) score += 100;
-      if (rule.code.toLowerCase() === needle) score += 90;
-      if (rule.aliases.some((alias) => alias.toLowerCase().includes(needle))) score += 40;
-      if (rule.title.toLowerCase().includes(needle)) score += 30;
-      if (rule.code.toLowerCase().includes(needle)) score += 20;
-      if (rule.description.toLowerCase().includes(needle)) score += 10;
+      if (rule.aliases.some((alias) => normalizeRuleSearchText(alias) === needle)) score += 100;
+      if (normalizeRuleSearchText(rule.code) === needle) score += 90;
+      if (rule.aliases.some((alias) => normalizeRuleSearchText(alias).includes(needle)))
+        score += 40;
+      if (normalizeRuleSearchText(rule.title).includes(needle)) score += 30;
+      if (normalizeRuleSearchText(rule.code).includes(needle)) score += 20;
+      if (normalizeRuleSearchText(rule.description).includes(needle)) score += 10;
 
       if (score > 0) results.push({ ...rule, categoryName: category.name, score });
     }
   }
 
   return results.sort((a, b) => b.score - a.score).slice(0, 40);
+}
+
+/** Unicode canonical equivalence is used for matching; stored rule text is untouched. */
+export function normalizeRuleSearchText(value: string): string {
+  return value.normalize('NFC').toLocaleLowerCase();
 }
 
 /** Create or update a rule, writing an immutable revision for the new wording. */
@@ -185,6 +224,7 @@ export async function upsertRule(
       severity: rule.severity,
       editedBy: actor.userId,
       changeNote: input.changeNote ?? null,
+      contentHash: null,
     },
   });
 
@@ -339,6 +379,7 @@ export async function acceptRules(
     create: {
       userId,
       ruleSetId,
+      ruleSetHash: ruleSet.sourceContentHash,
       ipHash: hashIp(context.ip),
       userAgent: context.userAgent?.slice(0, 300) ?? null,
     },

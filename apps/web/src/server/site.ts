@@ -3,12 +3,19 @@ import 'server-only';
 import { cache } from 'react';
 
 import { isStaff } from '@xenon/auth';
+import { serverEnv } from '@xenon/config/server';
 import { prisma } from '@xenon/database';
 import { allSettings, currentRuleSet, statusBoard } from '@xenon/domain';
 
 import { currentActor } from './context';
 
 import type { HeaderViewer } from '~/components/site/site-header';
+
+/** Use the Control Center value when set, with the configured invite as its default. */
+export function resolveDiscordInviteUrl(value: unknown): string | null {
+  if (typeof value === 'string' && value.trim().length > 0) return value;
+  return serverEnv.DISCORD_INVITE_URL ?? null;
+}
 
 /**
  * Data the public shell needs on every page.
@@ -62,13 +69,11 @@ export const getSiteChrome = cache(async (): Promise<SiteChrome> => {
     if (href !== undefined && href.length > 0) socials.push({ label, href });
   }
 
-  const invite = settings['community.discordInvite'];
-
   return {
     viewer,
     serverState: board.aggregate,
     playerCount: board.totalPlayers,
-    discordInvite: invite !== undefined && invite.length > 0 ? invite : null,
+    discordInvite: resolveDiscordInviteUrl(settings['community.discordInvite']),
     socials,
     ruleVersion: ruleSet?.version ?? null,
     banner:

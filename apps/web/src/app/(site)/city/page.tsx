@@ -1,12 +1,12 @@
-import { ArrowRight, Check } from 'lucide-react';
+import { ArrowRight } from 'lucide-react';
 import Link from 'next/link';
 
 import { Button, Eyebrow, Panel } from '@xenon/ui';
-import { Parallax, Reveal, Stagger, StaggerItem } from '@xenon/ui/motion';
+import { Reveal, Stagger, StaggerItem } from '@xenon/ui/motion';
 
 import type { Metadata } from 'next';
 
-import { MediaSlot } from '~/components/media/media-slot';
+import { CityChapters } from '~/components/city/city-chapters';
 import { PageHeader, Section, SectionHeading } from '~/components/site/section';
 import { cityFacets, citySystems, storyPaths } from '~/content/marketing';
 
@@ -20,9 +20,10 @@ export const metadata: Metadata = {
 /**
  * /city
  *
- * The page that answers "what is it actually like". Alternates side, so the
- * four facets read as a sequence rather than as four identical rows, and the
- * media sits on the opposite side each time.
+ * The page that answers "what is it actually like". The facets alternate side,
+ * so they read as a sequence rather than as four identical rows, and a rail
+ * down the edge of the viewport marks which one the reader is in - the page is
+ * tall enough that "how far through am I" is a real question.
  *
  * Nothing here claims a mechanic. The copy lives in `~/content/marketing` and
  * is written about roleplay as a form, so an owner can rewrite it without
@@ -55,40 +56,7 @@ export default function CityPage(): React.ReactElement {
         </div>
       </PageHeader>
 
-      {cityFacets.map((facet, index) => (
-        <Section key={facet.eyebrow} tone={index % 2 === 0 ? 'void' : 'black'} width="wide">
-          <div className="grid gap-12 lg:grid-cols-2 lg:items-center lg:gap-20">
-            <Reveal className={index % 2 === 0 ? 'lg:order-2' : ''}>
-              <Parallax strength={0.08} className="aspect-4/3 rounded-xl border border-line">
-                <MediaSlot
-                  src={null}
-                  alt={facet.title}
-                  slot={`city.${facet.eyebrow.toLowerCase()}`}
-                  seed={index}
-                  className="size-full"
-                  sizes="(max-width: 1024px) 100vw, 48vw"
-                />
-              </Parallax>
-            </Reveal>
-
-            <div className="flex flex-col gap-6">
-              <Eyebrow accent>{facet.eyebrow}</Eyebrow>
-              <h2 className="font-display text-headline font-black text-ink uppercase">
-                {facet.title}
-              </h2>
-              <p className="text-lead text-ink-secondary">{facet.body}</p>
-              <ul className="mt-2 flex flex-col gap-3">
-                {facet.points.map((point) => (
-                  <li key={point} className="flex items-start gap-3 text-sm text-ink-secondary">
-                    <Check className="mt-0.5 size-4 shrink-0 text-xenon" aria-hidden />
-                    {point}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-        </Section>
-      ))}
+      <CityChapters facets={cityFacets} />
 
       <Section width="wide" tone="surface">
         <SectionHeading

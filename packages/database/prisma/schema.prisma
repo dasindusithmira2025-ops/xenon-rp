@@ -838,6 +838,7 @@ enum ActionSource {
   DISCORD
   SYSTEM
   FIVEM
+  CLI
 }
 
 // =============================================================================
@@ -944,6 +945,10 @@ model Department {
   /// Discord role key granted to members of this department.
   roleKey String?
 
+  /// Optional Discord space for this department, validated by the Discord
+  /// provisioner (`departmentSpaceConfig`). Null means no Discord resources.
+  discordSpace Json?
+
   status       PublishStatus @default(DRAFT)
   sortOrder    Int           @default(0)
   createdAt    DateTime      @default(now())
@@ -969,6 +974,18 @@ enum PublishStatus {
   DRAFT
   PUBLISHED
   ARCHIVED
+}
+
+enum AnnouncementType {
+  SERVER
+  MAINTENANCE
+  RESTART
+  UPDATE
+  PATCH_NOTES
+  EVENT
+  RECRUITMENT
+  EMERGENCY
+  COMMUNITY
 }
 
 model DepartmentMember {
@@ -1006,6 +1023,15 @@ model RuleCategory {
   description String? @db.Text
   sortOrder   Int     @default(0)
 
+  /// Provenance for source-derived rulebook sections.
+  sourceRoot         String?   @db.Text
+  sourceUrl          String?   @db.Text
+  sourcePath         String?   @db.Text
+  sourcePageTitle    String?   @db.Text
+  sourceOrder        Int?
+  sourceContentHash  String?
+  sourceRetrievedAt  DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -1030,12 +1056,23 @@ model Rule {
   /// Worked examples, rendered as a distinct block.
   examples    String? @db.Text
 
-  severity RuleSeverity @default(STANDARD)
+  /// Null when the official source does not define a severity.
+  severity RuleSeverity? @default(STANDARD)
   /// Shorthand the community uses, e.g. ["RDM", "Random Deathmatch"].
   aliases  String[]     @default([])
 
   status    PublishStatus @default(DRAFT)
   sortOrder Int           @default(0)
+  /// Seeded demo material is excluded from the official rules publication.
+  isDevelopmentFixture Boolean @default(false)
+
+  /// Exact source provenance for imported rulebook pages.
+  sourceRoot        String?   @db.Text
+  sourceUrl         String?   @db.Text
+  sourcePath        String?   @db.Text
+  sourceOrder       Int?
+  sourceContentHash String?
+  sourceRetrievedAt DateTime?
 
   createdAt   DateTime  @default(now())
   updatedAt   DateTime  @updatedAt
@@ -1067,7 +1104,16 @@ model RuleRevision {
   title       String
   description String  @db.Text
   examples    String? @db.Text
-  severity    RuleSeverity
+  severity    RuleSeverity?
+
+  /// Content hash and source details are frozen with this revision.
+  contentHash       String?
+  sourceRoot        String?   @db.Text
+  sourceUrl         String?   @db.Text
+  sourcePath        String?   @db.Text
+  sourceOrder       Int?
+  sourceContentHash String?
+  sourceRetrievedAt DateTime?
 
   /// User id of the editor, or null for an import.
   editedBy  String?
@@ -1091,6 +1137,10 @@ model RuleSet {
   publishedAt DateTime  @default(now())
   publishedBy String?
   note        String?
+  /// Hash and provenance of an imported source ruleset, when applicable.
+  sourceRoot        String?   @db.Text
+  sourceContentHash String?
+  sourceRetrievedAt DateTime?
   /// Exactly one ruleset is current; the service enforces this.
   isCurrent   Boolean   @default(false)
   retiredAt   DateTime?
@@ -1108,6 +1158,9 @@ model RuleAcceptance {
 
   ruleSetId String
   ruleSet   RuleSet @relation(fields: [ruleSetId], references: [id], onDelete: Cascade)
+
+  /// Copied at acceptance time to make the acknowledged version self-identifying.
+  ruleSetHash String?
 
   acceptedAt DateTime @default(now())
   ipHash     String?
@@ -1473,9 +1526,108 @@ model DiscordMessageReference {
   @@map("discord_message_references")
 }
 
+/// One Discord resource Xenon provisioned or adopted, keyed by a stable
+/// logical key (`channel.welcome`, `role.staff.moderator`). The snowflake is a
+/// runtime mapping; the logical key is the identity.
+model DiscordManagedResource {
+  id      String @id @default(cuid(2))
+  /// Guild snowflake.
+  guildId String
+
+  logicalKey        String
+  resourceType      DiscordResourceType
+  /// Null while a resolution (e.g. CREATE_ALTERNATIVE) is recorded but not yet applied.
+  discordResourceId String?
+  /// For panels: the channel holding the message.
+  channelId         String?
+
+  blueprintVersion  String
+  /// Hash of the uploaded bytes or rendered panel payload.
+  contentHash       String?
+  /// Hash of the desired configuration when it was last applied.
+  configurationHash String?
+
+  /// False records an operator decision to leave a conflicting resource alone.
+  managed         Boolean   @default(true)
+  createdByRunId  String?
+  lastVerifiedAt  DateTime?
+  metadata        Json      @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([guildId, logicalKey])
+  @@index([guildId, resourceType])
+  @@index([createdByRunId])
+  @@map("discord_managed_resources")
+}
+
+enum DiscordResourceType {
+  ROLE
+  CATEGORY
+  CHANNEL
+  EMOJI
+  STICKER
+  PANEL
+  SPACE
+  AUTOMOD
+}
+
+/// One invocation of the provisioning engine, from any surface. Survives a
+/// restart, so progress and the approved plan are never memory-only.
+model DiscordProvisionRun {
+  id      String @id @default(cuid(2))
+  guildId String
+
+  mode   DiscordProvisionMode
+  status DiscordProvisionStatus @default(QUEUED)
+  source ActionSource
+
+  /// Xenon user id; kept as a plain column so the run outlives the account.
+  actorId    String?
+  actorLabel String
+
+  blueprintVersion String
+  /// The approved PLAN run an APPLY or REPAIR executes against.
+  basedOnRunId     String?
+  options          Json    @default("{}")
+
+  plannedChanges Json?
+  appliedChanges Json?
+  progress       Json?
+  summary        Json?
+  failure        String?
+
+  createdAt   DateTime  @default(now())
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  @@index([guildId, createdAt])
+  @@index([status])
+  @@map("discord_provision_runs")
+}
+
+enum DiscordProvisionMode {
+  PLAN
+  APPLY
+  STATUS
+  REPAIR
+  VALIDATE
+  CLEANUP
+}
+
+enum DiscordProvisionStatus {
+  QUEUED
+  RUNNING
+  SUCCEEDED
+  FAILED
+  VALIDATION_FAILED
+}
+
 enum DiscordMessageKind {
   APPLICATION_REVIEW
   TICKET_THREAD
+  TICKET_DM
   ANNOUNCEMENT
   STATUS_BOARD
 }
@@ -1561,6 +1713,14 @@ model Article {
   heroImageUrl String?
   category     String?
   tags         String[] @default([])
+
+  /// Structured announcement controls. Ordinary articles use the defaults.
+  announcementType  AnnouncementType @default(COMMUNITY)
+  publishToWebsite  Boolean           @default(false)
+  publishToDiscord  Boolean           @default(false)
+  discordChannelId  String?
+  discordNotifyRoleId String?
+  scheduledAt       DateTime?
 
   authorId String?
   author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)

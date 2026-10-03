@@ -22,7 +22,12 @@ const external = Object.keys(manifest.dependencies ?? {}).filter(
 );
 
 const result = await esbuild.build({
-  entryPoints: ['src/main.ts', 'src/scripts/register-commands.ts'],
+  entryPoints: [
+    'src/main.ts',
+    'src/scripts/register-commands.ts',
+    'src/scripts/discord-setup.ts',
+    'src/scripts/discord-assets.ts',
+  ],
   outdir: 'dist',
   bundle: true,
   platform: 'node',

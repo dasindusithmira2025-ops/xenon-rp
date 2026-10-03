@@ -1,7 +1,7 @@
-import { NotFoundError } from '@xenon/core';
+import { NotFoundError, ValidationError } from '@xenon/core';
 import type { Article, Db, GalleryItem, Prisma } from '@xenon/database';
 import { cacheDelete, cached, enqueueBestEffort } from '@xenon/jobs';
-import { type Actor, requirePermission } from '@xenon/permissions';
+import { type Actor, requirePermission, systemActor } from '@xenon/permissions';
 import type { AnnouncementInput, ArticleInput } from '@xenon/validation';
 
 import { recordAudit } from './audit';
@@ -154,49 +154,193 @@ export async function createAnnouncement(
   input: AnnouncementInput,
 ): Promise<Article | null> {
   requirePermission(actor, 'content.publish');
+  if (!input.toWebsite && !input.toDiscord) {
+    throw new ValidationError({ _form: ['Choose at least one publishing destination.'] });
+  }
+  if (input.toDiscord && input.discordChannelId == null) {
+    throw new ValidationError({ discordChannelId: ['Choose a Discord target channel.'] });
+  }
 
-  let article: Article | null = null;
+  let primaryGuild: { id: string; guildId: string; announcementChannelId: string | null } | null =
+    null;
+  if (input.toDiscord) {
+    primaryGuild = await db.discordGuild.findFirst({
+      where: { isPrimary: true },
+      select: { id: true, guildId: true, announcementChannelId: true },
+    });
+    if (primaryGuild === null) {
+      throw new ValidationError({ discordChannelId: ['Configure the Xenon Discord guild first.'] });
+    }
+    const configured = await db.discordManagedResource.findFirst({
+      where: {
+        guildId: primaryGuild.guildId,
+        resourceType: 'CHANNEL',
+        discordResourceId: input.discordChannelId,
+        managed: true,
+      },
+      select: { logicalKey: true },
+    });
+    if (configured === null && primaryGuild.announcementChannelId !== input.discordChannelId) {
+      throw new ValidationError({
+        discordChannelId: ['Choose a channel managed by the Xenon server setup.'],
+      });
+    }
+  }
 
-  if (input.toWebsite) {
-    const slug = `${input.title
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/^-|-$/g, '')
-      .slice(0, 48)}-${Date.now().toString(36)}`;
+  if (input.toDiscord && input.discordNotifyRoleId != null) {
+    const role = await db.discordManagedResource.findFirst({
+      where: {
+        guildId: primaryGuild?.guildId ?? '',
+        resourceType: 'ROLE',
+        discordResourceId: input.discordNotifyRoleId,
+        managed: true,
+        logicalKey: { startsWith: 'role.notify.' },
+      },
+      select: { logicalKey: true },
+    });
+    if (role === null) {
+      throw new ValidationError({
+        discordNotifyRoleId: ['Only Xenon notification roles can be selected.'],
+      });
+    }
+  }
 
-    article = await db.article.create({
-      data: {
-        slug,
-        title: input.title,
-        excerpt: input.body.slice(0, 280),
-        body: `<p>${input.body.replace(/\n/g, '</p><p>')}</p>`,
-        category: 'Announcement',
-        status: 'PUBLISHED',
-        publishedAt: new Date(),
-        authorId: actor.userId,
+  const now = new Date();
+  const scheduleAt =
+    input.scheduledAt != null && input.scheduledAt.getTime() > now.getTime()
+      ? input.scheduledAt
+      : null;
+  const slug = `${input.title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '')
+    .slice(0, 48)}-${Date.now().toString(36)}`;
+  const status = input.toWebsite && scheduleAt === null ? 'PUBLISHED' : 'DRAFT';
+  const bodyHtml = input.body
+    .split(/\n{2,}/)
+    .map((paragraph) => `<p>${escapeAnnouncementHtml(paragraph).replace(/\n/g, '<br />')}</p>`)
+    .join('');
+  const article = await db.article.create({
+    data: {
+      slug,
+      title: input.title,
+      excerpt: input.body,
+      body: bodyHtml,
+      category: 'Announcement',
+      status,
+      publishedAt: status === 'PUBLISHED' ? now : null,
+      authorId: actor.userId,
+      announcementType: input.type,
+      publishToWebsite: input.toWebsite,
+      publishToDiscord: input.toDiscord,
+      discordChannelId: input.toDiscord ? (input.discordChannelId ?? null) : null,
+      discordNotifyRoleId: input.toDiscord ? (input.discordNotifyRoleId ?? null) : null,
+      scheduledAt: scheduleAt,
+    },
+  });
+
+  await recordAudit(db, actor, {
+    action: scheduleAt === null ? 'ANNOUNCEMENT_PUBLISHED' : 'announcement.scheduled',
+    entityType: 'announcement',
+    entityId: article.id,
+    entityLabel: input.title,
+    after: {
+      type: input.type,
+      toWebsite: input.toWebsite,
+      toDiscord: input.toDiscord,
+      scheduledAt: scheduleAt?.toISOString() ?? null,
+      channelId: article.discordChannelId,
+    },
+  });
+
+  if (scheduleAt !== null) {
+    await enqueueBestEffort(
+      'announcement.publish',
+      { articleId: article.id },
+      { delayMs: scheduleAt.getTime() - now.getTime() },
+    );
+  } else if (input.toDiscord && article.discordChannelId !== null) {
+    await enqueueBestEffort('discord.channel.post', {
+      channelId: article.discordChannelId,
+      kind: 'ANNOUNCEMENT',
+      entityType: 'announcement',
+      entityId: article.id,
+    });
+  }
+
+  if (status === 'PUBLISHED') {
+    await cacheDelete(`${NEWS_CACHE_KEY}:24`, `${NEWS_CACHE_KEY}:3`, `${NEWS_CACHE_KEY}:6`);
+  }
+  return article;
+}
+
+function escapeAnnouncementHtml(value: string): string {
+  return value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      })[character] ?? character,
+  );
+}
+
+/** Publish a scheduled announcement once its effective time arrives. */
+export async function publishScheduledAnnouncement(db: Db, articleId: string): Promise<boolean> {
+  const article = await db.article.findUnique({ where: { id: articleId } });
+  if (article === null) return false;
+  const now = new Date();
+  if (article.scheduledAt !== null && article.scheduledAt.getTime() > now.getTime()) {
+    await enqueueBestEffort(
+      'announcement.publish',
+      { articleId },
+      { delayMs: article.scheduledAt.getTime() - now.getTime() },
+    );
+    return false;
+  }
+
+  const shouldPublishWebsite = article.publishToWebsite && article.status !== 'PUBLISHED';
+  if (shouldPublishWebsite) {
+    await db.article.update({
+      where: { id: article.id },
+      data: { status: 'PUBLISHED', publishedAt: now },
+    });
+  }
+
+  if (
+    article.publishToDiscord &&
+    article.discordChannelId !== null &&
+    article.announcedAt === null
+  ) {
+    await enqueueBestEffort('discord.channel.post', {
+      channelId: article.discordChannelId,
+      kind: 'ANNOUNCEMENT',
+      entityType: 'announcement',
+      entityId: article.id,
+    });
+  }
+
+  if (shouldPublishWebsite || article.publishToDiscord) {
+    await recordAudit(db, systemActor, {
+      action: 'ANNOUNCEMENT_PUBLISHED',
+      entityType: 'announcement',
+      entityId: article.id,
+      entityLabel: article.title,
+      after: {
+        type: article.announcementType,
+        toWebsite: article.publishToWebsite,
+        toDiscord: article.publishToDiscord,
+        publishedAt: now.toISOString(),
       },
     });
   }
-
-  await recordAudit(db, actor, {
-    action: 'announcement.created',
-    entityType: 'announcement',
-    entityId: article?.id ?? 'discord-only',
-    entityLabel: input.title,
-    after: { toWebsite: input.toWebsite, toDiscord: input.toDiscord },
-  });
-
-  if (input.toDiscord && input.discordChannelId) {
-    await enqueueBestEffort('discord.channel.post', {
-      channelId: input.discordChannelId,
-      kind: 'ANNOUNCEMENT',
-      entityType: 'announcement',
-      entityId: article?.id ?? input.title,
-    });
+  if (shouldPublishWebsite) {
+    await cacheDelete(`${NEWS_CACHE_KEY}:24`, `${NEWS_CACHE_KEY}:3`, `${NEWS_CACHE_KEY}:6`);
   }
-
-  await cacheDelete(`${NEWS_CACHE_KEY}:24`, `${NEWS_CACHE_KEY}:3`, `${NEWS_CACHE_KEY}:6`);
-  return article;
+  return true;
 }
 
 // --- Gallery -----------------------------------------------------------------

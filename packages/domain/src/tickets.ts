@@ -7,7 +7,7 @@ import {
   type TicketStatus,
   transaction,
 } from '@xenon/database';
-import { enforceRateLimit } from '@xenon/jobs';
+import { enqueueBestEffort, enforceRateLimit } from '@xenon/jobs';
 import { createNotification, dispatchPending, notificationCopy } from '@xenon/notifications';
 import {
   type Actor,
@@ -68,14 +68,42 @@ export async function createTicket(
   });
 
   await recordAudit(db, actor, {
-    action: 'ticket.created',
+    action: 'SUPPORT_TICKET_CREATED',
     entityType: 'ticket',
     entityId: ticket.id,
     entityLabel: ticket.publicId,
     after: { category: ticket.category, subject: ticket.subject },
   });
 
+  await enqueueBestEffort('discord.ticket.created', { ticketId: ticket.id });
+
   return ticket;
+}
+
+/** Let the ticket owner close their own ticket; staff can close any ticket. */
+export async function closeOwnTicket(db: Db, actor: Actor, publicIdOrId: string): Promise<Ticket> {
+  const normalised = normalisePublicId(publicIdOrId, 'TK');
+  const ticket = await db.ticket.findFirst({
+    where: normalised === null ? { id: publicIdOrId } : { publicId: normalised },
+  });
+  if (ticket === null) throw new NotFoundError('Ticket', publicIdOrId);
+  requireOwnerOrPermission(actor, ticket.authorId, 'tickets.manage');
+  if (ticket.status === 'CLOSED') return ticket;
+
+  const now = new Date();
+  const closed = await db.ticket.update({
+    where: { id: ticket.id },
+    data: { status: 'CLOSED', closedAt: now },
+  });
+  await recordAudit(db, actor, {
+    action: 'SUPPORT_TICKET_CLOSED',
+    entityType: 'ticket',
+    entityId: closed.id,
+    entityLabel: closed.publicId,
+    before: { status: ticket.status },
+    after: { status: closed.status },
+  });
+  return closed;
 }
 
 /**
@@ -169,7 +197,7 @@ export async function updateTicket(
   });
 
   await recordAudit(db, actor, {
-    action: 'ticket.updated',
+    action: input.status === 'CLOSED' ? 'SUPPORT_TICKET_CLOSED' : 'ticket.updated',
     entityType: 'ticket',
     entityId: ticket.id,
     entityLabel: ticket.publicId,

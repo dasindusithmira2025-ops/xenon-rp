@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import * as React from 'react';
 
 import { Badge, Button, ConfirmDialog, Panel, useToast } from '@xenon/ui';
+import { ProgressBar, StepProgress } from '@xenon/ui/motion';
 
 import { issueLinkCodeAction, unlinkIdentityAction } from '~/app/(portal)/portal/actions';
 
@@ -56,6 +57,15 @@ export function FivemLinkPanel({
     activeCodeExpiresAt === null ? null : new Date(activeCodeExpiresAt),
   );
   const [remaining, setRemaining] = React.useState<number | null>(null);
+  /*
+   * The full length of the window this code was issued for.
+   *
+   * Measured from the server's own `expiresAt` at the moment it arrives rather
+   * than hardcoded to ten minutes here. A copy of the server's TTL in this file
+   * would keep working and start lying the day someone changes it, and a
+   * countdown bar that is wrong about its own scale is worse than no bar.
+   */
+  const [codeWindow, setCodeWindow] = React.useState<number | null>(null);
   const [copied, setCopied] = React.useState(false);
   const [unlinking, setUnlinking] = React.useState<LinkedIdentity | null>(null);
   const [pending, startTransition] = React.useTransition();
@@ -82,8 +92,10 @@ export function FivemLinkPanel({
     startTransition(async () => {
       const result = await issueLinkCodeAction();
       if (result.ok) {
+        const expiry = new Date(result.data.expiresAt);
         setCode(result.data.code);
-        setExpiresAt(new Date(result.data.expiresAt));
+        setExpiresAt(expiry);
+        setCodeWindow(Math.max(1, Math.round((expiry.getTime() - Date.now()) / 1000)));
         setCopied(false);
         return;
       }
@@ -107,10 +119,39 @@ export function FivemLinkPanel({
 
   const minutes = remaining === null ? 0 : Math.floor(remaining / 60);
   const seconds = remaining === null ? 0 : remaining % 60;
+  const linked = identities.length > 0;
 
   return (
     <>
       <div className="flex flex-col gap-4">
+        {/*
+          Three identities becoming one.
+
+          Discord signed you in, Xenon holds the account, and FiveM is the one
+          still to be joined - so the rail fills to the node the player is
+          actually standing on. It is the clearest thing on the page about what
+          linking is *for*, which matters because "type /link ABC-123 in game"
+          is otherwise a chore with no visible purpose.
+
+          Every node is a fact: Discord because the session exists, Xenon
+          because the account does, FiveM only once an identifier has genuinely
+          been attached. Nothing here lights up in anticipation.
+        */}
+        <StepProgress
+          steps={[
+            { key: 'discord', label: 'Discord', state: 'complete' },
+            { key: 'xenon', label: 'Xenon', state: 'complete' },
+            {
+              key: 'fivem',
+              label: 'FiveM',
+              state: linked ? 'complete' : 'active',
+              hint: linked ? 'Identity linked' : 'Waiting for a code in game',
+            },
+          ]}
+          className="mx-auto w-full max-w-sm"
+          label="Identity linking"
+        />
+
         <Panel tone="raised" pad="lg" edgeLight className="flex flex-col gap-5">
           <div className="flex items-start gap-3">
             <Gamepad2 className="mt-0.5 size-5 shrink-0 text-xenon" aria-hidden />
@@ -159,6 +200,21 @@ export function FivemLinkPanel({
                   )}
                 </Button>
               </div>
+              {/*
+                A measured countdown, because this one genuinely is measured:
+                the code expires at a known instant and the bar is the fraction
+                of ten minutes left. It drains toward empty rather than filling,
+                so the shape itself says "running out".
+              */}
+              {codeWindow === null ? null : (
+                <ProgressBar
+                  value={remaining ?? 0}
+                  max={codeWindow}
+                  size="thin"
+                  tone={remaining !== null && remaining < 60 ? 'warning' : 'accent'}
+                  label="Time left on this code"
+                />
+              )}
               <p className="x-tabular font-mono text-xs text-ink-muted">
                 {remaining === 0
                   ? 'Expired. Generate a new one.'

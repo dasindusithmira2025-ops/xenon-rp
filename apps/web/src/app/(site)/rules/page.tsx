@@ -13,9 +13,8 @@ import { PageHeader, Section } from '~/components/site/section';
 import { currentActor } from '~/server/context';
 
 export const metadata: Metadata = {
-  title: 'Rulebook',
-  description:
-    'The XenonRP rulebook. Searchable by shorthand, versioned, and the exact text every player agreed to.',
+  title: { absolute: 'XenonRP Rules | Official Server Rulebook' },
+  description: 'The official XenonRP server rulebook.',
   alternates: { canonical: '/rules' },
 };
 
@@ -24,13 +23,8 @@ export const revalidate = 300;
 /**
  * /rules
  *
- * Not a PDF, and not a wall of text. Every rule has a code staff can quote, a
- * severity, the shorthand the community actually uses, and its own anchor so a
- * moderator can link someone directly to the line in question.
- *
- * The ruleset version is displayed prominently because acceptance is recorded
- * against it: "which rules did you agree to" has an exact answer, and this page
- * is where that answer becomes visible.
+ * The official source is stored in Xenon's versioned rules system, so players
+ * can read the published copy without a live GitBook request.
  */
 export default async function RulesPage(): Promise<React.ReactElement> {
   const [rulebook, actor] = await Promise.all([publishedRulebook(prisma), currentActor()]);
@@ -43,24 +37,24 @@ export default async function RulesPage(): Promise<React.ReactElement> {
       <ScrollProgress />
 
       <PageHeader
-        eyebrow="Rulebook"
+        eyebrow="Official rulebook"
         title={
           <>
-            Know the
+            Official
             <br />
-            rules
+            rulebook
           </>
         }
-        lead="Short, specific and enforceable. Every rule has an identifier staff can quote and a link you can send."
+        lead="The published XenonRP rules, preserved from their official source and hosted here for players."
       >
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <span className="rounded-pill border border-line-strong px-3.5 py-1.5 font-mono text-[0.625rem] tracking-[0.16em] text-ink-secondary uppercase">
             {rulebook.version === null ? 'Unpublished' : `Version ${String(rulebook.version)}`}
           </span>
-          {rulebook.publishedAt === null ? null : (
+          {rulebook.sourceRetrievedAt === null ? null : (
             <span className="font-mono text-[0.625rem] tracking-[0.16em] text-ink-muted uppercase">
-              Published{' '}
-              {new Date(rulebook.publishedAt).toLocaleDateString('en-GB', {
+              Last synchronized{' '}
+              {new Date(rulebook.sourceRetrievedAt).toLocaleDateString('en-GB', {
                 day: '2-digit',
                 month: 'short',
                 year: 'numeric',
@@ -79,7 +73,7 @@ export default async function RulesPage(): Promise<React.ReactElement> {
         {rulebook.categories.length === 0 ? (
           <EmptyState
             title="The rulebook has not been published yet"
-            description="Rules are written and published from the Xenon control centre. Until a ruleset is published there is nothing for players to accept."
+            description="The official XenonRP rulebook has not been synchronized into Xenon yet."
             action={
               <Button variant="outline" asChild>
                 <Link href="/support">Ask a question</Link>

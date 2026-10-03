@@ -81,6 +81,7 @@ const nextConfig: NextConfig = {
     '@xenon/config',
     '@xenon/core',
     '@xenon/database',
+    '@xenon/discord',
     '@xenon/domain',
     '@xenon/fivem',
     '@xenon/jobs',
