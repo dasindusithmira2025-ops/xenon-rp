@@ -10,16 +10,18 @@ import * as esbuild from 'esbuild';
  * that imports `@xenon/domain` and resolves it to a `.ts` file at runtime.
  * esbuild bundles those sources into the output instead.
  *
- * Third-party dependencies stay external: they are already in `node_modules`
- * on the deployment target, several ship native binaries (Prisma's query
- * engine, sharp), and bundling them would multiply the build time for no
- * benefit. The externals list is derived from package.json so it cannot drift.
+ * Third-party dependencies stay external: they are installed by pnpm on the
+ * deployment target. Sharp is also an explicit bot runtime dependency because
+ * bundled workspace code imports it from the bot output directory. Its
+ * platform-specific @img packages must remain normal pnpm dependencies too.
+ * The main externals list is derived from package.json so it cannot drift.
  */
 const manifest = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
 
 const external = Object.keys(manifest.dependencies ?? {}).filter(
   (name) => !name.startsWith('@xenon/'),
 );
+external.push('@img/*');
 
 const result = await esbuild.build({
   entryPoints: [
