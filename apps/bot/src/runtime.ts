@@ -1,15 +1,17 @@
-import '@xenon/config/load-env';
-
 import { botEnv } from '@xenon/config/bot';
 import { createLogger, type Logger } from '@xenon/logger';
+
+// Integrated deployments share the repository's root .env. A Discord-only
+// process receives its complete environment from the host and must not load
+// unrelated database, Redis, Auth.js, storage, or FiveM values from that file.
+if (process.env.BOT_RUNTIME_MODE !== 'discord-only') {
+  await import('@xenon/config/load-env');
+}
 
 /**
  * Process-wide runtime services.
  *
- * Imported for its side effect of loading the root `.env` before anything else
- * reads configuration - the bot, the web tier and the Prisma CLI all share one
- * file so a connection string cannot be right in one place and stale in
- * another.
+ * Integrated mode loads the root `.env` before configuration is first read.
  */
 
 export const logger: Logger = createLogger({

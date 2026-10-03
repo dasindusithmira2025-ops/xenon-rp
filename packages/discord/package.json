@@ -6,7 +6,10 @@
   "exports": {
     ".": "./src/index.ts",
     "./provisioning": "./src/provisioning/index.ts",
+    "./provisioning/pure": "./src/provisioning/pure.ts",
     "./web": "./src/provisioning/web.ts",
+    "./interaction-ids": "./src/interaction-ids.ts",
+    "./panels": "./src/provisioning/panels.ts",
     "./assets": "./src/assets/index.ts",
     "./testing": "./src/provisioning/testing.ts",
     "./config": "./src/provisioning/config.ts"

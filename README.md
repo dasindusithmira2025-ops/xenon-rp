@@ -76,10 +76,25 @@ The minimum you must fill into `.env` before anything will boot:
 
 `DATABASE_URL` and `REDIS_URL` already match `docker-compose.yml`.
 
-Everything else is optional in development and **required in production** — the
-config layer refuses to start a production process with object storage,
-Turnstile or the FiveM bridge left unconfigured, rather than running degraded
-without saying so.
+### Bot runtime modes
+
+`BOT_RUNTIME_MODE=integrated` (the default) runs the existing Discord, PostgreSQL,
+Redis, website, application, ticket, identity and FiveM integrations.
+`BOT_RUNTIME_MODE=discord-only` runs Discord server features without initializing
+those platform services. Its production environment requires `NODE_ENV=production`,
+`LOG_LEVEL=info`, `DISCORD_MODE=enabled`, `DISCORD_APPLICATION_ID`,
+`DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID` and `DISCORD_INVITE_URL`. Discord-native
+setup state is stored atomically in the ignored `.data/discord-runtime.json` file.
+
+In Discord-only mode, profile, application, review, identity-link, player and
+queue commands report that Xenon Platform integration is disabled. Server setup,
+panels, welcome messages, moderation, temporary voice rooms and curated image
+assets continue to use Discord and its API.
+
+The integrated runtime keeps its existing service-specific production checks
+for PostgreSQL, Redis, object storage, Turnstile and FiveM. Discord-only bot mode
+uses only the Discord environment listed above; the web runtime's requirements
+are unchanged.
 
 > **Ports.** Postgres is on **5442** and Redis on **6389**, not the defaults.
 > Dev machines commonly already have something on 5432/6379, and a project

@@ -1,7 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 
-import sharp from 'sharp';
-
 import { brand } from '@xenon/config';
 
 import { assetFile, assetsRoot, type ManifestEntry, readManifest, writeManifest } from './manifest';
@@ -95,6 +93,7 @@ const drawings: readonly {
 ];
 
 export async function generateBrandEmojis(root = assetsRoot()): Promise<string[]> {
+  const { default: sharp } = await import('sharp');
   await mkdir(assetFile(root, 'generated/emoji'), { recursive: true });
   const manifest = await readManifest(root);
   const byKey = new Map(manifest.assets.map((entry) => [entry.key, entry]));

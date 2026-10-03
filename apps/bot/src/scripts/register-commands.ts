@@ -1,6 +1,5 @@
 import { REST, Routes } from 'discord.js';
 
-import { commandDefinitions } from '../discord/commands';
 import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
 
 /**
@@ -15,6 +14,10 @@ import { botEnv, hasRealDiscordCredentials, logger } from '../runtime';
  *   pnpm --filter @xenon/bot register
  */
 async function main(): Promise<void> {
+  const commandDefinitions =
+    botEnv.BOT_RUNTIME_MODE === 'discord-only'
+      ? (await import('../discord/discord-only-commands')).DISCORD_ONLY_COMMANDS
+      : (await import('../discord/commands')).commandDefinitions;
   if (
     !hasRealDiscordCredentials() ||
     botEnv.DISCORD_BOT_TOKEN === undefined ||

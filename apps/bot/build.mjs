@@ -22,10 +22,15 @@ const external = Object.keys(manifest.dependencies ?? {}).filter(
   (name) => !name.startsWith('@xenon/'),
 );
 external.push('@img/*');
+// Keep the integrated subsystem in its own bundle. The entry router imports it
+// only in integrated mode, so Discord-only production never evaluates Prisma,
+// BullMQ, Redis, FiveM or website service modules.
+external.push('./integrated-main.js');
 
 const result = await esbuild.build({
   entryPoints: [
     'src/main.ts',
+    'src/integrated-main.ts',
     'src/scripts/register-commands.ts',
     'src/scripts/discord-setup.ts',
     'src/scripts/discord-assets.ts',

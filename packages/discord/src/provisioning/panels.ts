@@ -42,6 +42,8 @@ export interface EmojiRef {
 }
 
 export interface PanelContext {
+  /** Omits platform-dependent copy and interactions on a standalone bot. */
+  readonly discordOnly?: boolean;
   readonly siteUrl: string;
   /** False in production when the site URL is localhost: link buttons are omitted. */
   readonly linksAllowed: boolean;
@@ -125,7 +127,10 @@ export function XenonErrorPanel(title: string, description: string) {
 export function XenonWelcomePanel(context: PanelContext): PanelPayload {
   const embed = XenonBasePanel({
     title: 'WELCOME TO XENON.',
-    description: `One city. Thousands of stories. Your reputation starts here.\n\n**${siteMeta.tagline}**\nNeed help? Choose a category in #support.`,
+    description:
+      context.discordOnly === true
+        ? `One city. Thousands of stories. Your reputation starts here.\n\n**${siteMeta.tagline}**\nNeed help? Read #support.`
+        : `One city. Thousands of stories. Your reputation starts here.\n\n**${siteMeta.tagline}**\nNeed help? Choose a category in #support.`,
   });
   embed.addFields(
     {
@@ -136,9 +141,9 @@ export function XenonWelcomePanel(context: PanelContext): PanelPayload {
       name: 'BEFORE YOU START',
       value: [
         'Read the rules in #rules',
-        'Connect your Xenon account',
-        'Link FiveM and complete your whitelist',
-        'Enter the city when approved',
+        ...(context.discordOnly === true
+          ? ['Introduce yourself in #general', 'Follow server announcements']
+          : ['Connect your Xenon account', 'Link FiveM and complete your whitelist', 'Enter the city when approved']),
       ].join('\n'),
     },
   );
@@ -157,7 +162,9 @@ export function XenonRulesPanel(context: PanelContext): PanelPayload {
   const embed = XenonBasePanel({
     title: 'XENON OFFICIAL RULEBOOK',
     description:
-      'All players are responsible for understanding and following the current XenonRP rules before entering the city. The website rulebook is canonical.',
+      context.discordOnly === true
+        ? 'Read and follow the rules shared by the XenonRP staff before participating in the community.'
+        : 'All players are responsible for understanding and following the current XenonRP rules before entering the city. The website rulebook is canonical.',
     footer: 'XenonRP • Official Rulebook',
   });
   embed.addFields(
@@ -247,6 +254,22 @@ const supportCategories = [
 ] as const;
 
 export function XenonSupportPanel(context: PanelContext): PanelPayload {
+  if (context.discordOnly === true) {
+    return {
+      embeds: [
+        XenonBasePanel({
+          title: 'XENON SUPPORT INFORMATION',
+          description: [
+            'Ask general questions in the appropriate public channel.',
+            'For account, application, whitelist or player reports, contact a Xenon staff member.',
+            'Private platform tickets are unavailable until Xenon Platform integration is enabled.',
+          ].join('\n\n'),
+          footer: 'XenonRP • Support',
+        }).toJSON(),
+      ],
+      components: [],
+    };
+  }
   const select = new StringSelectMenuBuilder()
     .setCustomId(xenonIds.supportCategory())
     .setPlaceholder('Select a support category')
@@ -357,6 +380,19 @@ export function XenonRolePanel(context: PanelContext): PanelPayload {
 }
 
 export function XenonStaffPanel(context: PanelContext): PanelPayload {
+  if (context.discordOnly === true) {
+    return {
+      embeds: [
+        XenonBasePanel({
+          title: 'XENON STAFF INFORMATION',
+          description:
+            'Use Discord moderation tools and coordinate application or whitelist decisions with the staff team. Xenon Platform review queues are not connected on this deployment.',
+          footer: 'XenonRP • Staff',
+        }).toJSON(),
+      ],
+      components: [],
+    };
+  }
   return {
     embeds: [
       XenonBasePanel({
@@ -512,14 +548,25 @@ export function renderPanel(panel: DesiredPanel, context: PanelContext): PanelPa
       return XenonRulesPanel(context);
 
     case 'how-to-join': {
-      const steps = [
-        ['Discord', 'You are here.'],
-        ['Xenon account', 'Sign in on the website with this Discord account.'],
-        ['Rules', 'Read and accept the current rulebook.'],
-        ['FiveM', 'Link your game account from the player portal.'],
-        ['Whitelist', 'Apply. Staff review every application.'],
-        ['Enter the city', 'Approved? Connect and start your story.'],
-      ] as const;
+      const steps =
+        context.discordOnly === true
+          ? ([
+              ['Discord', 'You are here.'],
+              ['Rules', 'Read the rules and follow staff guidance.'],
+              ['Community', 'Introduce yourself and join the conversation.'],
+              [
+                'Xenon Platform',
+                'Applications and city access will be available when platform integration is enabled.',
+              ],
+            ] as const)
+          : ([
+              ['Discord', 'You are here.'],
+              ['Xenon account', 'Sign in on the website with this Discord account.'],
+              ['Rules', 'Read and accept the current rulebook.'],
+              ['FiveM', 'Link your game account from the player portal.'],
+              ['Whitelist', 'Apply. Staff review every application.'],
+              ['Enter the city', 'Approved? Connect and start your story.'],
+            ] as const);
       return {
         embeds: [
           xenonEmbed()

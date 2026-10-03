@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { extname } from 'node:path';
 
-import sharp, { type Metadata } from 'sharp';
+import type { Metadata } from 'sharp';
 
 /**
  * Image validation and normalisation for Discord assets.
@@ -120,7 +120,9 @@ export async function scanImage(path: string, data: Buffer, kind: AssetKind): Pr
   }
 
   let metadata: Metadata;
+  let sharp: typeof import('sharp').default;
   try {
+    ({ default: sharp } = await import('sharp'));
     metadata = await sharp(data, { animated: true, limitInputPixels: 4096 * 4096 }).metadata();
   } catch {
     return { ok: false, name, reason: 'Image is malformed or could not be decoded', review: false };
