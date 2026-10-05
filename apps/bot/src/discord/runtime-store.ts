@@ -28,10 +28,13 @@ export interface TicketRecord {
   readonly status: TicketStatus;
 }
 
-/** Existing Discord resources selected with `/xenon tickets publish`. Never created by Xenon. */
+/**
+ * Existing Discord resources selected with `/xenon tickets publish`. Never
+ * created by Xenon. Documents written before per-type categories may still
+ * carry a `ticketCategoryId`; it is ignored on load.
+ */
 export interface TicketConfig {
   readonly ticketPanelChannelId: string;
-  readonly ticketCategoryId: string;
   readonly ticketLogChannelId: string;
   readonly ticketStaffRoleId: string;
   readonly ticketPanelMessageId: string | null;
@@ -44,6 +47,8 @@ export interface DiscordGuildRuntimeState {
   readonly welcomeDmEnabled: boolean;
   readonly rooms: Readonly<Record<string, TemporaryRoomRecord>>;
   readonly ticketConfig: TicketConfig | null;
+  /** Ticket type value → id of the Discord category Xenon created for it. */
+  readonly ticketCategories: Readonly<Record<string, string>>;
   readonly tickets: Readonly<Record<string, TicketRecord>>;
   /** Last issued ticket number; only ever increases so references are never reused. */
   readonly ticketSequence: number;
@@ -65,6 +70,8 @@ export interface DiscordRuntimeStore {
   saveRoom(room: TemporaryRoomRecord): Promise<void>;
   removeRoom(guildId: string, channelId: string): Promise<void>;
   saveTicketConfig(guildId: string, config: TicketConfig): Promise<void>;
+  /** Records a ticket category Xenon created, as soon as it exists. */
+  saveTicketCategory(guildId: string, ticketType: string, categoryId: string): Promise<void>;
   /** Allocates the next `XN-TK-NNNN` reference; gaps are fine, reuse never happens. */
   reserveTicketId(guildId: string): Promise<string>;
   /** Inserts an OPEN ticket unless the owner already has one; false when rejected. */
@@ -92,9 +99,11 @@ const EMPTY_GUILD: DiscordGuildRuntimeState = {
   ticketConfig: null,
   tickets: {},
   ticketSequence: 0,
+  ticketCategories: {},
 };
 
 const TICKET_ID = /^XN-TK-(\d{4,9})$/;
+const TICKET_TYPE = /^[A-Z_]{1,32}$/;
 
 const SENSITIVE_KEY = /(?:secret|token|password|credential|database|redis|auth|pepper|private.?key)/i;
 const SNOWFLAKE = /^\d{17,20}$/;
@@ -204,6 +213,15 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
 
   public async saveTicketConfig(guildId: string, config: TicketConfig): Promise<void> {
     await this.updateGuild(guildId, (state) => ({ ...state, ticketConfig: config }));
+  }
+
+  public async saveTicketCategory(guildId: string, ticketType: string, categoryId: string): Promise<void> {
+    assertSnowflake(categoryId, 'categoryId');
+    if (!TICKET_TYPE.test(ticketType)) throw new Error('Invalid ticket type.');
+    await this.updateGuild(guildId, (state) => ({
+      ...state,
+      ticketCategories: { ...state.ticketCategories, [ticketType]: categoryId },
+    }));
   }
 
   public async reserveTicketId(guildId: string): Promise<string> {
@@ -354,6 +372,17 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
     (highest, ticketId) => Math.max(highest, Number(TICKET_ID.exec(ticketId)?.[1] ?? 0)),
     storedSequence,
   );
+  const ticketCategories: Record<string, string> = {};
+  if (value.ticketCategories !== undefined) {
+    if (!isRecord(value.ticketCategories)) {
+      if (strict) throw new Error('Invalid ticket categories.');
+    } else {
+      for (const [ticketType, categoryId] of Object.entries(value.ticketCategories)) {
+        if (TICKET_TYPE.test(ticketType) && isSnowflake(categoryId)) ticketCategories[ticketType] = categoryId;
+        else if (strict) throw new Error('Invalid ticket category entry.');
+      }
+    }
+  }
   return {
     entries,
     features,
@@ -361,6 +390,7 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
     welcomeDmEnabled,
     rooms,
     ticketConfig: ticketConfig ?? null,
+    ticketCategories,
     tickets,
     ticketSequence,
   };
@@ -370,12 +400,11 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
 function parseTicketConfig(value: unknown): TicketConfig | null | undefined {
   if (value === undefined || value === null) return null;
   if (!isRecord(value)) return undefined;
-  const ids = [value.ticketPanelChannelId, value.ticketCategoryId, value.ticketLogChannelId, value.ticketStaffRoleId];
+  const ids = [value.ticketPanelChannelId, value.ticketLogChannelId, value.ticketStaffRoleId];
   if (!ids.every(isSnowflake)) return undefined;
   if (!(value.ticketPanelMessageId === null || isSnowflake(value.ticketPanelMessageId))) return undefined;
   return {
     ticketPanelChannelId: value.ticketPanelChannelId as string,
-    ticketCategoryId: value.ticketCategoryId as string,
     ticketLogChannelId: value.ticketLogChannelId as string,
     ticketStaffRoleId: value.ticketStaffRoleId as string,
     ticketPanelMessageId: value.ticketPanelMessageId,

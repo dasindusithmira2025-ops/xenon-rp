@@ -9,6 +9,7 @@ import {
   RESTJSONErrorCodes,
   StringSelectMenuBuilder,
   type ButtonInteraction,
+  type CategoryChannel,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildMember,
@@ -33,14 +34,13 @@ import type { DiscordRuntimeStore, TicketConfig, TicketRecord } from './runtime-
  * are the panel message and one private text channel per ticket.
  */
 
+/** Each type gets its own Xenon-created Discord category, named `<label> Tickets`. */
 export const TICKET_CATEGORIES = [
   { value: 'GENERAL', label: 'General Support', description: 'Questions and general help' },
   { value: 'TECHNICAL', label: 'Technical Support', description: 'Connection, game or Discord problems' },
   { value: 'WHITELIST', label: 'Whitelist Support', description: 'Whitelist or application help' },
   { value: 'PLAYER_REPORT', label: 'Player Report', description: 'Report a player or rule violation' },
   { value: 'STAFF_REPORT', label: 'Staff Report', description: 'Report a Xenon staff member' },
-  { value: 'BUSINESS', label: 'Business / Organization', description: 'Business, gang or organization help' },
-  { value: 'OTHER', label: 'Other', description: 'Anything else' },
 ] as const;
 
 const OWNER_ALLOW = [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles];
@@ -54,8 +54,11 @@ const BOT_ALLOW = [
   P.ManageMessages,
   P.ManageChannels,
 ];
-/** The bot can only grant permissions it holds, and needs Manage Roles to write overwrites. */
-const CATEGORY_REQUIRED = [...new Set([...OWNER_ALLOW, ...STAFF_ALLOW, ...BOT_ALLOW, P.ManageRoles])];
+/**
+ * Guild-level: the bot creates the ticket categories, and can only grant
+ * permissions it holds; Manage Roles is needed to write overwrites.
+ */
+const GUILD_REQUIRED = [...new Set([...OWNER_ALLOW, ...STAFF_ALLOW, ...BOT_ALLOW, P.ManageRoles])];
 const MESSAGE_CHANNEL_REQUIRED = [P.ViewChannel, P.SendMessages, P.EmbedLinks, P.ReadMessageHistory];
 
 const CREATE_COOLDOWN_MS = 60_000;
@@ -94,7 +97,8 @@ export function ticketCenterPanel() {
 }
 
 function categoryLabel(value: string): string {
-  return TICKET_CATEGORIES.find((category) => category.value === value)?.label ?? 'Other';
+  // Tickets opened under since-retired types keep their stored value.
+  return TICKET_CATEGORIES.find((category) => category.value === value)?.label ?? value;
 }
 
 function openedEmbed(ticket: TicketRecord) {
@@ -154,19 +158,14 @@ async function publishSerialized(
   guild: Guild,
   store: DiscordRuntimeStore,
 ): Promise<void> {
-  const [panelChannel, category, logChannel, staffRole] = await Promise.all([
+  const [panelChannel, logChannel, staffRole] = await Promise.all([
     guild.channels.fetch(interaction.options.getChannel('panel_channel', true).id).catch(() => null),
-    guild.channels.fetch(interaction.options.getChannel('ticket_category', true).id).catch(() => null),
     guild.channels.fetch(interaction.options.getChannel('log_channel', true).id).catch(() => null),
     guild.roles.fetch(interaction.options.getRole('staff_role', true).id).catch(() => null),
   ]);
 
   if (panelChannel?.guildId !== guild.id || panelChannel.type !== ChannelType.GuildText) {
     await interaction.editReply('panel_channel must be an existing text channel in this server. Nothing was saved.');
-    return;
-  }
-  if (category?.guildId !== guild.id || category.type !== ChannelType.GuildCategory) {
-    await interaction.editReply('ticket_category must be an existing category in this server. Nothing was saved.');
     return;
   }
   if (logChannel?.guildId !== guild.id || logChannel.type !== ChannelType.GuildText) {
@@ -180,7 +179,7 @@ async function publishSerialized(
 
   const me = await guild.members.fetchMe();
   const missing = [
-    ...missingPermissions(category.permissionsFor(me).missing(CATEGORY_REQUIRED), `category ${category.name}`),
+    ...missingPermissions(me.permissions.missing(GUILD_REQUIRED), 'server'),
     ...missingPermissions(panelChannel.permissionsFor(me).missing(MESSAGE_CHANNEL_REQUIRED), `#${panelChannel.name}`),
     ...missingPermissions(logChannel.permissionsFor(me).missing(MESSAGE_CHANNEL_REQUIRED), `#${logChannel.name}`),
   ];
@@ -192,7 +191,7 @@ async function publishSerialized(
   const state = await store.getGuild(guild.id);
   const saved = state.ticketConfig;
   if (saved !== null && saved.ticketStaffRoleId !== staffRole.id) {
-    // Publish never edits channels, so a new staff role would leave the old one reading retained tickets.
+    // Publish never edits ticket channels, so a new staff role would leave the old one reading retained tickets.
     const stillGranted: string[] = [];
     for (const ticket of Object.values(state.tickets)) {
       const channel = await guild.channels.fetch(ticket.channelId).catch((error: unknown) =>
@@ -211,6 +210,12 @@ async function publishSerialized(
       );
       return;
     }
+  }
+
+  const categories = await ensureTicketCategories(guild, me.id, staffRole.id, saved?.ticketStaffRoleId ?? null, store);
+  if (typeof categories === 'string') {
+    await interaction.editReply(categories);
+    return;
   }
 
   const payload = ticketCenterPanel();
@@ -253,7 +258,6 @@ async function publishSerialized(
   try {
     await store.saveTicketConfig(guild.id, {
       ticketPanelChannelId: panelChannel.id,
-      ticketCategoryId: category.id,
       ticketLogChannelId: logChannel.id,
       ticketStaffRoleId: staffRole.id,
       ticketPanelMessageId: panelMessageId,
@@ -268,13 +272,73 @@ async function publishSerialized(
       'XENON TICKETS PUBLISHED',
       '',
       `Panel: <#${panelChannel.id}>`,
-      `Ticket category: ${category.name}`,
       `Log channel: <#${logChannel.id}>`,
       `Staff role: <@&${staffRole.id}>`,
       '',
-      'No channels or roles were created or modified.',
+      'Ticket categories:',
+      ...categories.lines,
+      '',
+      categories.created === 0
+        ? 'No channels or roles were created.'
+        : `Created ${String(categories.created)} private ticket categor${categories.created === 1 ? 'y' : 'ies'}. No other channels or roles were modified.`,
     ].join('\n'),
   );
+}
+
+/**
+ * Reuses each Xenon-created ticket category that still exists and creates the
+ * missing ones. Every id is saved the moment its category exists, so a failure
+ * part-way never leaves an untracked category to be duplicated next time.
+ */
+async function ensureTicketCategories(
+  guild: Guild,
+  botId: string,
+  staffRoleId: string,
+  previousStaffRoleId: string | null,
+  store: DiscordRuntimeStore,
+): Promise<{ readonly lines: string[]; readonly created: number } | string> {
+  const stored = (await store.getGuild(guild.id)).ticketCategories;
+  const lines: string[] = [];
+  let created = 0;
+  for (const type of TICKET_CATEGORIES) {
+    const storedId = stored[type.value];
+    let category: CategoryChannel | null = null;
+    if (storedId !== undefined) {
+      try {
+        const fetched = await guild.channels.fetch(storedId);
+        category = fetched?.type === ChannelType.GuildCategory ? fetched : null;
+      } catch (error) {
+        if (!isUnknownResource(error)) {
+          logger.warn({ err: error, guildId: guild.id }, 'Could not verify a ticket category');
+          return `Xenon could not verify the ${type.label} ticket category. Try again shortly.`;
+        }
+      }
+    }
+    if (category === null) {
+      category = await guild.channels.create({
+        name: `${type.label} Tickets`,
+        type: ChannelType.GuildCategory,
+        reason: 'Xenon ticket category',
+        permissionOverwrites: [
+          { id: guild.id, type: OverwriteType.Role, deny: [P.ViewChannel] },
+          { id: staffRoleId, type: OverwriteType.Role, allow: STAFF_ALLOW },
+          { id: botId, type: OverwriteType.Member, allow: BOT_ALLOW },
+        ],
+      });
+      await store.saveTicketCategory(guild.id, type.value, category.id);
+      created += 1;
+    } else if (previousStaffRoleId !== null && previousStaffRoleId !== staffRoleId) {
+      // Xenon owns these categories, so it keeps their staff access in step with the configured role.
+      await category.permissionOverwrites.delete(previousStaffRoleId, 'Xenon ticket staff role changed');
+      await category.permissionOverwrites.edit(
+        staffRoleId,
+        { ViewChannel: true, SendMessages: true, ReadMessageHistory: true, ManageMessages: true },
+        { type: OverwriteType.Role, reason: 'Xenon ticket staff role changed' },
+      );
+    }
+    lines.push(`${type.label} → ${category.name}`);
+  }
+  return { lines, created };
 }
 
 function missingPermissions(missing: readonly string[], where: string): string[] {
@@ -301,16 +365,21 @@ export async function ticketStatus(
     resources.panelChannel?.type === ChannelType.GuildText && config.ticketPanelMessageId !== null
       ? await resources.panelChannel.messages.fetch(config.ticketPanelMessageId).catch(() => null)
       : null;
+  const categories = await Promise.all(
+    TICKET_CATEGORIES.map(async (type) => ({ type, category: await ticketCategory(guild, state.ticketCategories[type.value]) })),
+  );
   const healthy = (present: boolean, label: string) => `${label}${present ? '' : ' — MISSING'}`;
-  const problems = panel === null || !resources.complete;
+  const problems = panel === null || !resources.complete || categories.some(({ category }) => category === null);
   await interaction.editReply(
     [
       'XENON TICKETS',
       '',
       healthy(panel !== null, `Panel: <#${config.ticketPanelChannelId}>`),
-      healthy(resources.category !== null, `Ticket category: ${resources.category?.name ?? config.ticketCategoryId}`),
       healthy(resources.logChannel !== null, `Log channel: <#${config.ticketLogChannelId}>`),
       healthy(resources.staffRole !== null, `Staff role: <@&${config.ticketStaffRoleId}>`),
+      '',
+      'Ticket categories:',
+      ...categories.map(({ type, category }) => healthy(category !== null, `${type.label} → ${category?.name ?? 'not created'}`)),
       '',
       `Open tickets: ${String(tickets.filter((ticket) => ticket.status === 'OPEN').length)}`,
       `Closed tickets: ${String(tickets.filter((ticket) => ticket.status === 'CLOSED').length)}`,
@@ -319,21 +388,24 @@ export async function ticketStatus(
   );
 }
 
+async function ticketCategory(guild: Guild, categoryId: string | undefined): Promise<CategoryChannel | null> {
+  if (categoryId === undefined) return null;
+  const category = await guild.channels.fetch(categoryId).catch(() => null);
+  return category?.type === ChannelType.GuildCategory ? category : null;
+}
+
 async function resolveResources(guild: Guild, config: TicketConfig) {
-  const [panelChannel, category, logChannel, staffRole] = await Promise.all([
+  const [panelChannel, logChannel, staffRole] = await Promise.all([
     guild.channels.fetch(config.ticketPanelChannelId).catch(() => null),
-    guild.channels.fetch(config.ticketCategoryId).catch(() => null),
     guild.channels.fetch(config.ticketLogChannelId).catch(() => null),
     guild.roles.fetch(config.ticketStaffRoleId).catch(() => null),
   ]);
-  const validCategory = category?.type === ChannelType.GuildCategory ? category : null;
   const validLog = logChannel?.type === ChannelType.GuildText ? logChannel : null;
   return {
     panelChannel,
-    category: validCategory,
     logChannel: validLog,
     staffRole,
-    complete: panelChannel !== null && validCategory !== null && validLog !== null && staffRole !== null,
+    complete: panelChannel !== null && validLog !== null && staffRole !== null,
   };
 }
 
@@ -403,8 +475,11 @@ export async function openTicketFromSelect(
       return;
     }
 
-    const resources = await resolveResources(guild, config);
-    if (resources.category === null || resources.staffRole === null || resources.logChannel === null) {
+    const [resources, parent] = await Promise.all([
+      resolveResources(guild, config),
+      ticketCategory(guild, state.ticketCategories[category.value]),
+    ]);
+    if (parent === null || resources.staffRole === null || resources.logChannel === null) {
       logger.warn({ guildId: guild.id }, 'A configured ticket resource is missing');
       await reply(RERUN_PUBLISH);
       return;
@@ -417,7 +492,7 @@ export async function openTicketFromSelect(
       .create({
         name: ticketChannelName(interaction.user.username, ticketId),
         type: ChannelType.GuildText,
-        parent: resources.category.id,
+        parent: parent.id,
         topic: `Xenon support ticket ${ticketId}`,
         reason: `Xenon support ticket ${ticketId}`,
         permissionOverwrites: [

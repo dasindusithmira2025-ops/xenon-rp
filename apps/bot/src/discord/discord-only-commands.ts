@@ -93,19 +93,12 @@ const xenon = new SlashCommandBuilder()
       .addSubcommand((sub) =>
         sub
           .setName('publish')
-          .setDescription('Bind existing ticket resources and post or update the ticket panel')
+          .setDescription('Create ticket categories, bind existing channels and post or update the ticket panel')
           .addChannelOption((option) =>
             option
               .setName('panel_channel')
               .setDescription('Existing channel for the support ticket panel')
               .addChannelTypes(ChannelType.GuildText)
-              .setRequired(true),
-          )
-          .addChannelOption((option) =>
-            option
-              .setName('ticket_category')
-              .setDescription('Existing category where ticket channels are created')
-              .addChannelTypes(ChannelType.GuildCategory)
               .setRequired(true),
           )
           .addChannelOption((option) =>
