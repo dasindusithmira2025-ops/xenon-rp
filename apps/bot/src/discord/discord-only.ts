@@ -23,6 +23,7 @@ import {
   panelHash,
   parseFeatures,
   planGuild,
+  planResourceAdoption,
   PROVISION_PHRASE,
   renderPanel,
   type DesiredPanel,
@@ -31,6 +32,7 @@ import {
   type PlanItem,
 } from '@xenon/discord/provisioning/pure';
 
+import { adoptionReply } from './adoption-reply';
 import {
   DISABLED_PLATFORM_RESPONSE,
   DISCORD_ONLY_COMMANDS,
@@ -221,7 +223,7 @@ async function loadContext(guild: Guild, runtimeStore: DiscordRuntimeStore): Pro
   };
 }
 
-async function handleCommand(
+export async function handleCommand(
   interaction: ChatInputCommandInteraction,
   client: Client,
   runtimeStore: DiscordRuntimeStore,
@@ -325,6 +327,10 @@ async function handleXenon(
       await ephemeral(interaction, `Curated assets: ${String(assets.length)} enabled\nEmojis: ${String(assets.filter((asset) => asset.type === 'EMOJI').length)}\nStickers: ${String(assets.filter((asset) => asset.type === 'STICKER').length)}`);
       return;
     }
+    if (subcommand === 'adopt') {
+      await ephemeral(interaction, await adoptRegistryResources(context));
+      return;
+    }
     const confirmation = interaction.options.getString('confirm', true);
     if (confirmation !== PROVISION_PHRASE) {
       await ephemeral(interaction, `No changes applied. Type exactly “${PROVISION_PHRASE}” in the confirm option.`);
@@ -376,6 +382,29 @@ async function execute(
       readAsset: context.readAsset,
     },
   );
+}
+
+/** Registry-only: binds exact live matches in the JSON store; never calls Discord mutation APIs. */
+async function adoptRegistryResources(context: StandaloneContext): Promise<string> {
+  const channels = context.snapshot.channels.flatMap(({ id, name, kind }) =>
+    kind === 'other' ? [] : [{ id, name, kind }],
+  );
+  const roles = context.snapshot.roles.map(({ id, name, managed }) => ({ id, name, managed }));
+  const plan = planResourceAdoption(context.state, context.entries, channels, roles);
+  for (const resource of plan.adopted) {
+    await context.registry.upsert({
+      logicalKey: resource.logicalKey,
+      resourceType: resource.resourceType,
+      discordId: resource.discordId,
+      channelId: null,
+      managed: true,
+      contentHash: null,
+      configurationHash: null,
+      createdByRunId: null,
+      metadata: { adopted: true, adoptedFrom: resource.name, source: 'setup-adopt' },
+    });
+  }
+  return adoptionReply(plan, context.state);
 }
 
 async function handleButton(
@@ -561,7 +590,7 @@ async function handleAnnouncement(
     ? null
     : await interaction.guild!.channels.fetch(entry.discordId).catch(() => null);
   if (channel?.isTextBased() !== true || !('send' in channel)) {
-    await ephemeral(interaction, 'The announcements channel is not set up. Run /xenon setup apply first.');
+    await ephemeral(interaction, 'The announcements channel is not mapped. Run /xenon setup adopt first.');
     return;
   }
   const embed = XenonAnnouncementPanel({

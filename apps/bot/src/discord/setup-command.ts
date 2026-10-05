@@ -33,10 +33,11 @@ import type { Actor } from '@xenon/permissions';
 import { logger } from '../runtime';
 
 import { actorFromDiscord } from './actor';
+import { adoptionReply } from './adoption-reply';
 import { loadProvisioningContext } from './provisioning/context';
 import { buildRunEmbed, controlUrl } from './provisioning/report';
 import { executeProvisionRun } from './provisioning/runner';
-import { adoptionReply, adoptGuildResources } from './setup-adopt';
+import { adoptGuildResources } from './setup-adopt';
 
 /**
  * `/xenon setup …` and `/xenon automod …`.

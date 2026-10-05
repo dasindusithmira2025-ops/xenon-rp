@@ -34,7 +34,8 @@ const xenon = new SlashCommandBuilder()
       )
       .addSubcommand((sub) => sub.setName('validate').setDescription('Validate permissions and hierarchy'))
       .addSubcommand((sub) => sub.setName('permissions').setDescription('Show server permission audit'))
-      .addSubcommand((sub) => sub.setName('assets').setDescription('Show emoji and sticker assets')),
+      .addSubcommand((sub) => sub.setName('assets').setDescription('Show emoji and sticker assets'))
+      .addSubcommand((sub) => sub.setName('adopt').setDescription('Adopt existing server channels and roles')),
   )
   .addSubcommandGroup((group) =>
     group

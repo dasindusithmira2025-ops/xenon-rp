@@ -1,4 +1,5 @@
 /** Provisioning contracts and engine with no Postgres-backed service exports. */
+export * from './adoption';
 export * from './blueprint';
 export * from './cleanup';
 export * from './config';

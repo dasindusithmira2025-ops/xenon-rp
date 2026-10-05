@@ -26,4 +26,15 @@ describe('Discord-only command degradation', () => {
       expect.arrayContaining(['status', 'announce', 'xenon', 'room']),
     );
   });
+
+  it('registers /xenon setup adopt without a confirmation option', () => {
+    const xenon = DISCORD_ONLY_COMMANDS.find((command) => command.name === 'xenon');
+    const setup = xenon?.options?.find((option) => option.name === 'setup');
+    const adopt =
+      setup !== undefined && 'options' in setup
+        ? setup.options?.find((option) => option.name === 'adopt')
+        : undefined;
+    expect(adopt).toMatchObject({ description: 'Adopt existing server channels and roles' });
+    expect(adopt !== undefined && 'options' in adopt ? (adopt.options ?? []) : []).toEqual([]);
+  });
 });

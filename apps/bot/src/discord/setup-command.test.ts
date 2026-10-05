@@ -27,10 +27,8 @@ vi.mock('./actor', () => ({ actorFromDiscord: mocks.actorFromDiscord }));
 vi.mock('./provisioning/context', () => ({ loadProvisioningContext: vi.fn() }));
 vi.mock('./provisioning/report', () => ({ buildRunEmbed: vi.fn(), controlUrl: vi.fn() }));
 vi.mock('./provisioning/runner', () => ({ executeProvisionRun: mocks.executeProvisionRun }));
-vi.mock('./setup-adopt', () => ({
-  adoptionReply: mocks.adoptionReply,
-  adoptGuildResources: mocks.adoptGuildResources,
-}));
+vi.mock('./adoption-reply', () => ({ adoptionReply: mocks.adoptionReply }));
+vi.mock('./setup-adopt', () => ({ adoptGuildResources: mocks.adoptGuildResources }));
 
 import { handleXenonCommand, xenonCommand } from './setup-command';
 
