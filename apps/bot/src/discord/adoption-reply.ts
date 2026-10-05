@@ -6,10 +6,14 @@ const integrationLabels = {
   reviewChannel: 'Review',
 } as const;
 
-/** Shared by the platform and discord-only runtimes; must stay free of Prisma imports. */
+/**
+ * Shared by the platform and discord-only runtimes; must stay free of Prisma imports.
+ * `explicit` (discord-only) lists operator-selected bindings, reported apart from automatic matches.
+ */
 export function adoptionReply(
   plan: AdoptionPlan & { readonly roleMappingsSkipped?: number },
   state: DesiredState,
+  explicit?: readonly { readonly logicalKey: string; readonly label: string; readonly name: string }[],
 ): string {
   const matches = [...plan.adopted, ...plan.alreadyMapped];
   const integrationLines = Object.entries(integrationLabels).map(([key, label]) => {
@@ -48,12 +52,21 @@ export function adoptionReply(
       ),
   ].slice(0, 8);
   const announcementReady = matches.some((match) => match.integration === 'announcementChannel');
+  const explicitKeys = new Set(explicit?.map((selection) => selection.logicalKey));
+  const alreadyMapped = plan.alreadyMapped.filter((match) => !explicitKeys.has(match.logicalKey));
 
   return [
     'XENON EXISTING SERVER ADOPTED',
     '',
-    `Adopted: ${String(plan.adopted.length)}`,
-    `Already mapped: ${String(plan.alreadyMapped.length)}`,
+    ...(explicit === undefined || explicit.length === 0
+      ? []
+      : [
+          'Explicitly mapped:',
+          ...explicit.map((selection) => `${selection.label} → #${selection.name}`),
+          '',
+        ]),
+    `${explicit === undefined ? 'Adopted' : 'Auto adopted'}: ${String(plan.adopted.length)}`,
+    `Already mapped: ${String(alreadyMapped.length)}`,
     `Missing: ${String(plan.missing.length)}`,
     `Ambiguous: ${String(plan.ambiguous.length)}`,
     ...(plan.roleMappingsSkipped === undefined || plan.roleMappingsSkipped === 0

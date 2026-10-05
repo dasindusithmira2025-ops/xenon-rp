@@ -1,4 +1,4 @@
-import { MessageFlags } from 'discord.js';
+import { ApplicationCommandOptionType, ChannelType, MessageFlags } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -27,7 +27,7 @@ describe('Discord-only command degradation', () => {
     );
   });
 
-  it('registers /xenon setup adopt without a confirmation option', () => {
+  it('registers /xenon setup adopt with optional text-channel bindings and no confirmation', () => {
     const xenon = DISCORD_ONLY_COMMANDS.find((command) => command.name === 'xenon');
     const setup = xenon?.options?.find((option) => option.name === 'setup');
     const adopt =
@@ -35,6 +35,14 @@ describe('Discord-only command degradation', () => {
         ? setup.options?.find((option) => option.name === 'adopt')
         : undefined;
     expect(adopt).toMatchObject({ description: 'Adopt existing server channels and roles' });
-    expect(adopt !== undefined && 'options' in adopt ? (adopt.options ?? []) : []).toEqual([]);
+    const options = adopt !== undefined && 'options' in adopt ? (adopt.options ?? []) : [];
+    expect(options.map((option) => option.name)).toEqual(['announcements', 'logs', 'review', 'welcome', 'rules']);
+    for (const option of options) {
+      expect(option).toMatchObject({
+        type: ApplicationCommandOptionType.Channel,
+        channel_types: [ChannelType.GuildText, ChannelType.GuildAnnouncement],
+      });
+      expect(option.required ?? false).toBe(false);
+    }
   });
 });

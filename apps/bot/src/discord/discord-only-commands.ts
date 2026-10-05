@@ -1,4 +1,16 @@
-import { MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
+
+/** Channels a server owner may bind explicitly with `/xenon setup adopt`. */
+export const ADOPT_CHANNEL_OPTIONS = [
+  { option: 'announcements', logicalKey: 'channel.announcements', label: 'Announcements' },
+  { option: 'logs', logicalKey: 'channel.bot-ops', label: 'Logs' },
+  { option: 'review', logicalKey: 'channel.whitelist-review', label: 'Review' },
+  { option: 'welcome', logicalKey: 'channel.welcome', label: 'Welcome' },
+  { option: 'rules', logicalKey: 'channel.rules', label: 'Rules' },
+] as const;
+
+/** Sendable text channel types accepted for every explicit adoption option. */
+export const ADOPT_CHANNEL_TYPES = [ChannelType.GuildText, ChannelType.GuildAnnouncement] as const;
 
 const xenon = new SlashCommandBuilder()
   .setName('xenon')
@@ -35,7 +47,18 @@ const xenon = new SlashCommandBuilder()
       .addSubcommand((sub) => sub.setName('validate').setDescription('Validate permissions and hierarchy'))
       .addSubcommand((sub) => sub.setName('permissions').setDescription('Show server permission audit'))
       .addSubcommand((sub) => sub.setName('assets').setDescription('Show emoji and sticker assets'))
-      .addSubcommand((sub) => sub.setName('adopt').setDescription('Adopt existing server channels and roles')),
+      .addSubcommand((sub) => {
+        sub.setName('adopt').setDescription('Adopt existing server channels and roles');
+        for (const binding of ADOPT_CHANNEL_OPTIONS) {
+          sub.addChannelOption((option) =>
+            option
+              .setName(binding.option)
+              .setDescription(`Existing channel to use as ${binding.label}`)
+              .addChannelTypes(...ADOPT_CHANNEL_TYPES),
+          );
+        }
+        return sub;
+      }),
   )
   .addSubcommandGroup((group) =>
     group

@@ -34,6 +34,8 @@ import {
 
 import { adoptionReply } from './adoption-reply';
 import {
+  ADOPT_CHANNEL_OPTIONS,
+  ADOPT_CHANNEL_TYPES,
   DISABLED_PLATFORM_RESPONSE,
   DISCORD_ONLY_COMMANDS,
   isPlatformDataCommand,
@@ -328,7 +330,7 @@ async function handleXenon(
       return;
     }
     if (subcommand === 'adopt') {
-      await ephemeral(interaction, await adoptRegistryResources(context));
+      await ephemeral(interaction, await adoptRegistryResources(interaction, guild, context));
       return;
     }
     const confirmation = interaction.options.getString('confirm', true);
@@ -384,13 +386,38 @@ async function execute(
   );
 }
 
-/** Registry-only: binds exact live matches in the JSON store; never calls Discord mutation APIs. */
-async function adoptRegistryResources(context: StandaloneContext): Promise<string> {
+/**
+ * Registry-only: binds explicitly selected channels, then exact live matches, in the
+ * JSON store. Never calls Discord mutation APIs or the provisioning engine.
+ */
+async function adoptRegistryResources(
+  interaction: ChatInputCommandInteraction,
+  guild: Guild,
+  context: StandaloneContext,
+): Promise<string> {
+  const explicit = await resolveExplicitChannels(interaction, guild, context);
+  if (typeof explicit === 'string') return explicit;
+
+  for (const selection of explicit) {
+    await context.registry.upsert({
+      logicalKey: selection.logicalKey,
+      resourceType: 'CHANNEL',
+      discordId: selection.id,
+      channelId: null,
+      managed: true,
+      contentHash: null,
+      configurationHash: null,
+      createdByRunId: null,
+      metadata: { adopted: true, adoptedFrom: selection.name, source: 'setup-adopt-explicit' },
+    });
+  }
+
   const channels = context.snapshot.channels.flatMap(({ id, name, kind }) =>
     kind === 'other' ? [] : [{ id, name, kind }],
   );
   const roles = context.snapshot.roles.map(({ id, name, managed }) => ({ id, name, managed }));
-  const plan = planResourceAdoption(context.state, context.entries, channels, roles);
+  const entries = explicit.length === 0 ? context.entries : await context.registry.list();
+  const plan = planResourceAdoption(context.state, entries, channels, roles);
   for (const resource of plan.adopted) {
     await context.registry.upsert({
       logicalKey: resource.logicalKey,
@@ -404,7 +431,42 @@ async function adoptRegistryResources(context: StandaloneContext): Promise<strin
       metadata: { adopted: true, adoptedFrom: resource.name, source: 'setup-adopt' },
     });
   }
-  return adoptionReply(plan, context.state);
+  return adoptionReply(plan, context.state, explicit);
+}
+
+/** Validates every selected option before anything is saved; returns an error message on failure. */
+async function resolveExplicitChannels(
+  interaction: ChatInputCommandInteraction,
+  guild: Guild,
+  context: StandaloneContext,
+): Promise<{ logicalKey: string; label: string; id: string; name: string }[] | string> {
+  const selections: { logicalKey: string; label: string; id: string; name: string }[] = [];
+  for (const binding of ADOPT_CHANNEL_OPTIONS) {
+    const selected = interaction.options.getChannel(binding.option);
+    if (selected === null) continue;
+    const channel = await guild.channels.fetch(selected.id).catch(() => null);
+    if (
+      channel?.guildId !== guild.id ||
+      !(ADOPT_CHANNEL_TYPES as readonly ChannelType[]).includes(channel.type) ||
+      !channel.isTextBased() ||
+      !('send' in channel)
+    ) {
+      return `${binding.label} must be a text or announcement channel in this server. Nothing was saved.`;
+    }
+    selections.push({ logicalKey: binding.logicalKey, label: binding.label, id: channel.id, name: channel.name });
+  }
+
+  if (new Set(selections.map((selection) => selection.id)).size !== selections.length)
+    return 'Each option needs a different channel. Nothing was saved.';
+  const explicitKeys = new Set(selections.map((selection) => selection.logicalKey));
+  for (const selection of selections) {
+    const owner = context.entries.find(
+      (entry) => entry.discordId === selection.id && !explicitKeys.has(entry.logicalKey),
+    );
+    if (owner !== undefined)
+      return `#${selection.name} is already mapped to ${owner.logicalKey}. Nothing was saved.`;
+  }
+  return selections;
 }
 
 async function handleButton(
@@ -590,7 +652,7 @@ async function handleAnnouncement(
     ? null
     : await interaction.guild!.channels.fetch(entry.discordId).catch(() => null);
   if (channel?.isTextBased() !== true || !('send' in channel)) {
-    await ephemeral(interaction, 'The announcements channel is not mapped. Run /xenon setup adopt first.');
+    await ephemeral(interaction, 'The announcements channel is not mapped. Run /xenon setup adopt and select an announcements channel.');
     return;
   }
   const embed = XenonAnnouncementPanel({
