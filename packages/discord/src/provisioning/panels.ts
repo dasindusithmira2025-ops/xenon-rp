@@ -261,8 +261,7 @@ export function XenonSupportPanel(context: PanelContext): PanelPayload {
           title: 'XENON SUPPORT INFORMATION',
           description: [
             'Ask general questions in the appropriate public channel.',
-            'For account, application, whitelist or player reports, contact a Xenon staff member.',
-            'Private platform tickets are unavailable until Xenon Platform integration is enabled.',
+            'Need private help with an account, application, whitelist or player report? Open a private ticket from the XENON SUPPORT CENTER panel and the staff team will reply there.',
           ].join('\n\n'),
           footer: 'XenonRP • Support',
         }).toJSON(),

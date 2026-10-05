@@ -7,9 +7,11 @@ import {
   MessageFlags,
   Partials,
   PermissionFlagsBits as P,
+  type ButtonInteraction,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildMember,
+  type StringSelectMenuInteraction,
   type VoiceBasedChannel,
 } from 'discord.js';
 import { randomUUID } from 'node:crypto';
@@ -41,6 +43,12 @@ import {
   isPlatformDataCommand,
   respondPlatformUnavailable,
 } from './discord-only-commands';
+import {
+  closeTicketFromButton,
+  openTicketFromSelect,
+  publishTicketPanel,
+  ticketStatus,
+} from './discord-only-tickets';
 import { discordGuildAdapter } from './provisioning/guild-adapter';
 import { JsonDiscordRuntimeStore, type DiscordGuildRuntimeState, type DiscordRuntimeStore } from './runtime-store';
 import { botEnv, logger } from '../runtime';
@@ -88,7 +96,7 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
       } else if (interaction.isButton()) {
         await handleButton(interaction, runtimeStore);
       } else {
-        await interaction.reply({ content: DISABLED_PLATFORM_RESPONSE, flags: MessageFlags.Ephemeral });
+        await handleSelect(interaction, runtimeStore);
       }
     })().catch((error: unknown) => logger.error({ err: error }, 'Discord-only interaction failed'));
   });
@@ -283,6 +291,13 @@ async function handleXenon(
     return;
   }
 
+  if (group === 'tickets') {
+    await (subcommand === 'publish'
+      ? publishTicketPanel(interaction, guild, runtimeStore)
+      : ticketStatus(interaction, guild, runtimeStore));
+    return;
+  }
+
   const context = await loadContext(guild, runtimeStore);
   if (group === 'automod') {
     if (subcommand === 'status') {
@@ -469,11 +484,15 @@ async function resolveExplicitChannels(
   return selections;
 }
 
-async function handleButton(
-  interaction: import('discord.js').ButtonInteraction,
+export async function handleButton(
+  interaction: ButtonInteraction,
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
   const xenonId = parseXenonId(interaction.customId);
+  if (xenonId?.namespace === 'ticket' && xenonId.action === 'close' && xenonId.argument !== null) {
+    await closeTicketFromButton(interaction, xenonId.argument, runtimeStore);
+    return;
+  }
   if (xenonId?.namespace !== 'role' || xenonId.action !== 'toggle' || interaction.guild === null || xenonId.argument === null) {
     await ephemeral(interaction, DISABLED_PLATFORM_RESPONSE);
     return;
@@ -495,6 +514,18 @@ async function handleButton(
   const hasRole = member.roles.cache.has(role.id);
   await member.roles[hasRole ? 'remove' : 'add'](role, 'Xenon self-role panel');
   await ephemeral(interaction, `${hasRole ? 'Removed' : 'Added'} ${role.name}.`);
+}
+
+export async function handleSelect(
+  interaction: StringSelectMenuInteraction,
+  runtimeStore: DiscordRuntimeStore,
+): Promise<void> {
+  const xenonId = parseXenonId(interaction.customId);
+  if (xenonId?.namespace === 'ticket' && xenonId.action === 'open') {
+    await openTicketFromSelect(interaction, runtimeStore);
+    return;
+  }
+  await interaction.reply({ content: DISABLED_PLATFORM_RESPONSE, flags: MessageFlags.Ephemeral });
 }
 
 async function handleMemberJoin(member: GuildMember, runtimeStore: DiscordRuntimeStore): Promise<void> {

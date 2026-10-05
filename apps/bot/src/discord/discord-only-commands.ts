@@ -86,6 +86,41 @@ const xenon = new SlashCommandBuilder()
       .addSubcommand((sub) => sub.setName('dm-enable').setDescription('Send new members a welcome DM'))
       .addSubcommand((sub) => sub.setName('dm-disable').setDescription('Stop sending welcome DMs')),
   )
+  .addSubcommandGroup((group) =>
+    group
+      .setName('tickets')
+      .setDescription('Discord support tickets')
+      .addSubcommand((sub) =>
+        sub
+          .setName('publish')
+          .setDescription('Bind existing ticket resources and post or update the ticket panel')
+          .addChannelOption((option) =>
+            option
+              .setName('panel_channel')
+              .setDescription('Existing channel for the support ticket panel')
+              .addChannelTypes(ChannelType.GuildText)
+              .setRequired(true),
+          )
+          .addChannelOption((option) =>
+            option
+              .setName('ticket_category')
+              .setDescription('Existing category where ticket channels are created')
+              .addChannelTypes(ChannelType.GuildCategory)
+              .setRequired(true),
+          )
+          .addChannelOption((option) =>
+            option
+              .setName('log_channel')
+              .setDescription('Existing channel for ticket logs')
+              .addChannelTypes(ChannelType.GuildText)
+              .setRequired(true),
+          )
+          .addRoleOption((option) =>
+            option.setName('staff_role').setDescription('Existing role that handles tickets').setRequired(true),
+          ),
+      )
+      .addSubcommand((sub) => sub.setName('status').setDescription('Show ticket configuration and counts')),
+  )
   .toJSON();
 
 const room = new SlashCommandBuilder()

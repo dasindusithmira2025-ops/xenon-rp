@@ -12,12 +12,41 @@ export interface TemporaryRoomRecord {
   readonly createdAt: string;
 }
 
+export type TicketStatus = 'OPEN' | 'CLOSED';
+
+/** One Discord-only support ticket. Keyed by `ticketId` in the guild state. */
+export interface TicketRecord {
+  readonly ticketId: string;
+  readonly guildId: string;
+  readonly channelId: string;
+  readonly ownerId: string;
+  readonly category: string;
+  readonly createdAt: string;
+  readonly closedAt: string | null;
+  /** Member who closed it; null when the system closed a ticket whose channel vanished. */
+  readonly closedBy: string | null;
+  readonly status: TicketStatus;
+}
+
+/** Existing Discord resources selected with `/xenon tickets publish`. Never created by Xenon. */
+export interface TicketConfig {
+  readonly ticketPanelChannelId: string;
+  readonly ticketCategoryId: string;
+  readonly ticketLogChannelId: string;
+  readonly ticketStaffRoleId: string;
+  readonly ticketPanelMessageId: string | null;
+}
+
 export interface DiscordGuildRuntimeState {
   readonly entries: readonly RegistryEntry[];
   readonly features: Partial<BlueprintFeatures>;
   readonly welcomeEnabled: boolean;
   readonly welcomeDmEnabled: boolean;
   readonly rooms: Readonly<Record<string, TemporaryRoomRecord>>;
+  readonly ticketConfig: TicketConfig | null;
+  readonly tickets: Readonly<Record<string, TicketRecord>>;
+  /** Last issued ticket number; only ever increases so references are never reused. */
+  readonly ticketSequence: number;
 }
 
 /** Storage contract so the PostgreSQL service can replace JSON without feature changes. */
@@ -35,6 +64,18 @@ export interface DiscordRuntimeStore {
   ): Promise<void>;
   saveRoom(room: TemporaryRoomRecord): Promise<void>;
   removeRoom(guildId: string, channelId: string): Promise<void>;
+  saveTicketConfig(guildId: string, config: TicketConfig): Promise<void>;
+  /** Allocates the next `XN-TK-NNNN` reference; gaps are fine, reuse never happens. */
+  reserveTicketId(guildId: string): Promise<string>;
+  /** Inserts an OPEN ticket unless the owner already has one; false when rejected. */
+  openTicket(ticket: TicketRecord): Promise<boolean>;
+  /** OPEN → CLOSED transition; null when the ticket is missing or already closed. */
+  closeTicket(
+    guildId: string,
+    ticketId: string,
+    closedBy: string | null,
+    closedAt: string,
+  ): Promise<TicketRecord | null>;
 }
 
 interface RuntimeDocument {
@@ -48,7 +89,12 @@ const EMPTY_GUILD: DiscordGuildRuntimeState = {
   welcomeEnabled: true,
   welcomeDmEnabled: false,
   rooms: {},
+  ticketConfig: null,
+  tickets: {},
+  ticketSequence: 0,
 };
+
+const TICKET_ID = /^XN-TK-(\d{4,9})$/;
 
 const SENSITIVE_KEY = /(?:secret|token|password|credential|database|redis|auth|pepper|private.?key)/i;
 const SNOWFLAKE = /^\d{17,20}$/;
@@ -98,7 +144,7 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
       assertSafe(nextGuild);
       const next: RuntimeDocument = {
         version: 1,
-        guilds: { ...document.guilds, [guildId]: validateGuild(nextGuild) },
+        guilds: { ...document.guilds, [guildId]: validateGuild(nextGuild, true) },
       };
       await this.write(next);
     });
@@ -156,6 +202,50 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
     });
   }
 
+  public async saveTicketConfig(guildId: string, config: TicketConfig): Promise<void> {
+    await this.updateGuild(guildId, (state) => ({ ...state, ticketConfig: config }));
+  }
+
+  public async reserveTicketId(guildId: string): Promise<string> {
+    let sequence = 0;
+    await this.updateGuild(guildId, (state) => {
+      sequence = state.ticketSequence + 1;
+      return { ...state, ticketSequence: sequence };
+    });
+    return `XN-TK-${String(sequence).padStart(4, '0')}`;
+  }
+
+  public async openTicket(ticket: TicketRecord): Promise<boolean> {
+    let opened = false;
+    await this.updateGuild(ticket.guildId, (state) => {
+      const duplicate = Object.values(state.tickets).some(
+        (existing) =>
+          existing.ticketId === ticket.ticketId ||
+          (existing.ownerId === ticket.ownerId && existing.status === 'OPEN'),
+      );
+      if (duplicate) return state;
+      opened = true;
+      return { ...state, tickets: { ...state.tickets, [ticket.ticketId]: ticket } };
+    });
+    return opened;
+  }
+
+  public async closeTicket(
+    guildId: string,
+    ticketId: string,
+    closedBy: string | null,
+    closedAt: string,
+  ): Promise<TicketRecord | null> {
+    let closed: TicketRecord | null = null;
+    await this.updateGuild(guildId, (state) => {
+      const current = state.tickets[ticketId];
+      if (current?.status !== 'OPEN') return state;
+      closed = { ...current, status: 'CLOSED', closedAt, closedBy };
+      return { ...state, tickets: { ...state.tickets, [ticketId]: closed } };
+    });
+    return closed;
+  }
+
   private enqueue(operation: () => Promise<void>): Promise<void> {
     const result = this.writes.then(operation);
     this.writes = result.catch(() => undefined);
@@ -171,7 +261,7 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
       const guilds: Record<string, DiscordGuildRuntimeState> = {};
       for (const [guildId, state] of Object.entries(raw.guilds)) {
         assertSnowflake(guildId, 'guildId');
-        guilds[guildId] = validateGuild(state);
+        guilds[guildId] = validateGuild(state, false);
       }
       return { version: 1, guilds };
     } catch (error) {
@@ -198,7 +288,11 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
   }
 }
 
-function validateGuild(value: unknown): DiscordGuildRuntimeState {
+/**
+ * `strict` is used for writes. Reads tolerate documents written before tickets
+ * existed and drop malformed ticket data instead of taking the whole bot down.
+ */
+function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeState {
   if (!isRecord(value) || !Array.isArray(value.entries) || !isRecord(value.features))
     throw new Error('Invalid Discord guild runtime state.');
   const entries = value.entries.map((entry) => {
@@ -236,7 +330,88 @@ function validateGuild(value: unknown): DiscordGuildRuntimeState {
       rooms[channelId] = room as unknown as TemporaryRoomRecord;
     }
   }
-  return { entries, features, welcomeEnabled, welcomeDmEnabled, rooms };
+  const ticketConfig = parseTicketConfig(value.ticketConfig);
+  if (ticketConfig === undefined && strict) throw new Error('Invalid ticket configuration.');
+  const tickets: Record<string, TicketRecord> = {};
+  if (value.tickets !== undefined) {
+    if (!isRecord(value.tickets)) {
+      if (strict) throw new Error('Invalid ticket registry.');
+    } else {
+      for (const [ticketId, ticket] of Object.entries(value.tickets)) {
+        const parsed = parseTicket(ticketId, ticket);
+        if (parsed !== null) tickets[ticketId] = parsed;
+        else if (strict) throw new Error('Invalid ticket registry entry.');
+      }
+    }
+  }
+  const storedSequence =
+    typeof value.ticketSequence === 'number' && Number.isSafeInteger(value.ticketSequence) && value.ticketSequence >= 0
+      ? value.ticketSequence
+      : 0;
+  if (strict && storedSequence !== value.ticketSequence) throw new Error('Invalid ticket sequence.');
+  // Never hand out a reference that already exists, even if the counter was lost.
+  const ticketSequence = Object.keys(tickets).reduce(
+    (highest, ticketId) => Math.max(highest, Number(TICKET_ID.exec(ticketId)?.[1] ?? 0)),
+    storedSequence,
+  );
+  return {
+    entries,
+    features,
+    welcomeEnabled,
+    welcomeDmEnabled,
+    rooms,
+    ticketConfig: ticketConfig ?? null,
+    tickets,
+    ticketSequence,
+  };
+}
+
+/** null when absent; undefined when present but malformed. */
+function parseTicketConfig(value: unknown): TicketConfig | null | undefined {
+  if (value === undefined || value === null) return null;
+  if (!isRecord(value)) return undefined;
+  const ids = [value.ticketPanelChannelId, value.ticketCategoryId, value.ticketLogChannelId, value.ticketStaffRoleId];
+  if (!ids.every(isSnowflake)) return undefined;
+  if (!(value.ticketPanelMessageId === null || isSnowflake(value.ticketPanelMessageId))) return undefined;
+  return {
+    ticketPanelChannelId: value.ticketPanelChannelId as string,
+    ticketCategoryId: value.ticketCategoryId as string,
+    ticketLogChannelId: value.ticketLogChannelId as string,
+    ticketStaffRoleId: value.ticketStaffRoleId as string,
+    ticketPanelMessageId: value.ticketPanelMessageId,
+  };
+}
+
+function parseTicket(ticketId: string, value: unknown): TicketRecord | null {
+  if (
+    !isRecord(value) ||
+    value.ticketId !== ticketId ||
+    !TICKET_ID.test(ticketId) ||
+    !isSnowflake(value.guildId) ||
+    !isSnowflake(value.channelId) ||
+    !isSnowflake(value.ownerId) ||
+    typeof value.category !== 'string' ||
+    typeof value.createdAt !== 'string' ||
+    !(value.closedAt === null || typeof value.closedAt === 'string') ||
+    !(value.closedBy === null || isSnowflake(value.closedBy)) ||
+    (value.status !== 'OPEN' && value.status !== 'CLOSED')
+  )
+    return null;
+  return {
+    ticketId,
+    guildId: value.guildId,
+    channelId: value.channelId,
+    ownerId: value.ownerId,
+    category: value.category,
+    createdAt: value.createdAt,
+    closedAt: value.closedAt,
+    closedBy: value.closedBy,
+    status: value.status,
+  };
+}
+
+function isSnowflake(value: unknown): value is string {
+  return typeof value === 'string' && SNOWFLAKE.test(value);
 }
 
 function cloneGuild(state: DiscordGuildRuntimeState): DiscordGuildRuntimeState {
