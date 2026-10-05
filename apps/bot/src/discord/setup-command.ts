@@ -36,6 +36,7 @@ import { actorFromDiscord } from './actor';
 import { loadProvisioningContext } from './provisioning/context';
 import { buildRunEmbed, controlUrl } from './provisioning/report';
 import { executeProvisionRun } from './provisioning/runner';
+import { adoptionReply, adoptGuildResources } from './setup-adopt';
 
 /**
  * `/xenon setup …` and `/xenon automod …`.
@@ -58,6 +59,11 @@ export const xenonCommand = new SlashCommandBuilder()
     group
       .setName('setup')
       .setDescription('Provision and maintain the Xenon Discord server')
+      .addSubcommand((sub) =>
+        sub
+          .setName('adopt')
+          .setDescription('Bind exact existing resources without changing Discord'),
+      )
       .addSubcommand((sub) =>
         sub.setName('plan').setDescription('Show exactly what would change. Changes nothing.'),
       )
@@ -189,21 +195,35 @@ async function runNow(
 }
 
 export async function handleXenonCommand(interaction: ChatInputCommandInteraction): Promise<void> {
+  const group = interaction.options.getSubcommandGroup(true);
+  const sub = interaction.options.getSubcommand(true);
+  const adopting = group === 'setup' && sub === 'adopt';
+  if (adopting) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
   const actor = await provisioningActor(interaction);
   if (actor === null) {
-    await interaction.reply({
+    const response = {
       content:
         'Provisioning needs the Xenon `system.discord.bootstrap` permission or ownership of this server.',
       flags: MessageFlags.Ephemeral,
-    });
+    } as const;
+    if (adopting) await interaction.editReply(response.content);
+    else await interaction.reply(response);
     return;
   }
 
-  const group = interaction.options.getSubcommandGroup(true);
-  const sub = interaction.options.getSubcommand(true);
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  if (!adopting) await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
   try {
+    if (adopting) {
+      if (interaction.guild === null) {
+        await interaction.editReply('Run adoption inside the Xenon Discord server.');
+        return;
+      }
+      const { plan, state } = await adoptGuildResources(interaction.guild, actor);
+      await interaction.editReply(adoptionReply(plan, state));
+      return;
+    }
     if (group === 'panel') {
       await handlePanelCommand(interaction, actor, sub);
       return;

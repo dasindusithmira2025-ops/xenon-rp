@@ -2,6 +2,7 @@ import {
   type ChatInputCommandInteraction,
   EmbedBuilder,
   MessageFlags,
+  PermissionFlagsBits,
   SlashCommandBuilder,
 } from 'discord.js';
 
@@ -16,7 +17,7 @@ import {
 import { brand } from '@xenon/config';
 import { toSafeMessage } from '@xenon/core';
 import { prisma } from '@xenon/database';
-import { buildStatusEmbed } from '@xenon/discord';
+import { buildStatusEmbed, XenonAnnouncementPanel } from '@xenon/discord';
 import { findUserByReference, statusBoard } from '@xenon/domain';
 import { redeemLinkCode } from '@xenon/fivem';
 import { can } from '@xenon/permissions';
@@ -94,6 +95,26 @@ export const commandDefinitions = [
     )
     .toJSON(),
 
+  new SlashCommandBuilder()
+    .setName('announce')
+    .setDescription('Post an announcement to Xenon announcements')
+    .setDefaultMemberPermissions(PermissionFlagsBits.ManageGuild)
+    .addStringOption((option) =>
+      option
+        .setName('title')
+        .setDescription('Announcement title')
+        .setRequired(true)
+        .setMaxLength(100),
+    )
+    .addStringOption((option) =>
+      option
+        .setName('message')
+        .setDescription('Announcement message')
+        .setRequired(true)
+        .setMaxLength(3500),
+    )
+    .toJSON(),
+
   xenonCommand,
   roomCommand,
 ];
@@ -108,6 +129,7 @@ function reply(interaction: ChatInputCommandInteraction, content: string): Promi
 const handlers: Record<string, Handler> = {
   xenon: handleXenonCommand,
   room: handleRoomCommand,
+  announce: handleAnnouncementCommand,
 
   async status(interaction) {
     const [board, settings] = await Promise.all([
@@ -337,6 +359,56 @@ const handlers: Record<string, Handler> = {
     );
   },
 };
+
+export async function handleAnnouncementCommand(
+  interaction: ChatInputCommandInteraction,
+): Promise<void> {
+  if (interaction.guild === null || interaction.guildId === null) {
+    await reply(interaction, 'Use this command in the Xenon Discord server.');
+    return;
+  }
+  if (
+    interaction.guild.ownerId !== interaction.user.id &&
+    interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) !== true
+  ) {
+    await reply(
+      interaction,
+      'Only the Discord server owner or a member with Manage Server can post announcements.',
+    );
+    return;
+  }
+
+  const configured = await prisma.discordGuild.findUnique({
+    where: { guildId: interaction.guildId },
+    select: { announcementChannelId: true },
+  });
+  const channelId = configured?.announcementChannelId;
+  const channel =
+    channelId === null || channelId === undefined
+      ? null
+      : await interaction.guild.channels.fetch(channelId).catch(() => null);
+  const me = await interaction.guild.members.fetchMe();
+  const permissions = channel?.permissionsFor(me);
+  if (
+    channel?.isTextBased() !== true ||
+    !('send' in channel) ||
+    permissions?.has([PermissionFlagsBits.SendMessages, PermissionFlagsBits.EmbedLinks]) !== true
+  ) {
+    await reply(
+      interaction,
+      'The configured announcements channel is unavailable or Xenon cannot post there. Run `/xenon setup adopt` after checking the channel.',
+    );
+    return;
+  }
+
+  const embed = XenonAnnouncementPanel({
+    type: 'COMMUNITY',
+    title: interaction.options.getString('title', true),
+    message: interaction.options.getString('message', true),
+  });
+  await channel.send({ embeds: [embed.toJSON()], allowedMentions: { parse: [] } });
+  await reply(interaction, 'Announcement posted.');
+}
 
 /** Dispatch a slash command. Errors never leak internal detail to a channel. */
 export async function handleCommand(interaction: ChatInputCommandInteraction): Promise<void> {

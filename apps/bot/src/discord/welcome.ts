@@ -53,7 +53,7 @@ export async function handleMemberJoin(member: GuildMember): Promise<void> {
   const publicEnabled = value('discord.welcome.publicEnabled') === true;
   const dmEnabled = value('discord.welcome.dmEnabled') === true;
   const channelValue = value('discord.welcome.channelId');
-  const channelId = typeof channelValue === 'string' ? channelValue : null;
+  let channelId = typeof channelValue === 'string' && channelValue.length > 0 ? channelValue : null;
   const personalized = value('discord.welcome.personalized') === true;
   const initialRoleValue = value('discord.welcome.initialRoleKey');
   const deleteValue = value('discord.welcome.deleteAfterSeconds');
@@ -63,6 +63,16 @@ export async function handleMemberJoin(member: GuildMember): Promise<void> {
       : 0;
 
   if (!enabled) return;
+
+  if (publicEnabled && channelId === null) {
+    const adopted = await prisma.discordManagedResource.findUnique({
+      where: { guildId_logicalKey: { guildId: member.guild.id, logicalKey: 'channel.welcome' } },
+      select: { resourceType: true, discordResourceId: true },
+    });
+    if (adopted?.resourceType === 'CHANNEL' && adopted.discordResourceId !== null) {
+      channelId = adopted.discordResourceId;
+    }
+  }
 
   if (initialRoleValue === 'role.citizen') {
     const entry = await prisma.discordManagedResource.findUnique({

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { ForbiddenError, ValidationError } from '@xenon/core';
 import {
+  adoptExistingResources,
   buildDesiredState,
   createRun,
   loadOrganizationSpaces,
@@ -65,6 +66,19 @@ describe('registry persistence', () => {
 });
 
 describe('run safety', () => {
+  it('refuses exact resource adoption without bootstrap permission', async () => {
+    const { actor } = await createActor({ roleKeys: ['administrator'] });
+    await expect(
+      adoptExistingResources(prisma, actor, {
+        guildId: 'guild-id',
+        guildName: 'Existing server',
+        state: buildDesiredState(blueprintContext()),
+        channels: [],
+        roles: [],
+      }),
+    ).rejects.toBeInstanceOf(ForbiddenError);
+  });
+
   it('refuses provisioning to anyone without the bootstrap capability', async () => {
     const { actor } = await createActor({ roleKeys: ['administrator'] });
     await expect(createRun(prisma, actor, { guildId: 'g', mode: 'PLAN' })).rejects.toBeInstanceOf(
@@ -157,6 +171,85 @@ describe('run safety', () => {
 });
 
 describe('conflicts and integration', () => {
+  it('adopts existing channels and staff roles, writes integrations, preserves role choices and audits', async () => {
+    const actor = await owner();
+    const state = buildDesiredState(blueprintContext());
+    const guildId = '100000000000000000';
+    const channels = [
+      { id: 'existing-announcements', name: 'announcements', kind: 'text' as const },
+      { id: 'existing-welcome', name: 'welcome', kind: 'text' as const },
+      { id: 'existing-rules', name: 'rules', kind: 'text' as const },
+      { id: 'existing-review', name: 'whitelist-review', kind: 'text' as const },
+      { id: 'existing-logs', name: 'bot-logs', kind: 'text' as const },
+    ];
+    const roles = [
+      { id: 'existing-management', name: 'Management', managed: false },
+      { id: 'existing-admin', name: 'Administrator', managed: false },
+      { id: 'existing-moderator', name: 'Moderator', managed: false },
+      { id: 'existing-whitelist', name: 'Whitelist Team', managed: false },
+    ];
+    const operatorRole = await prisma.role.findUniqueOrThrow({ where: { key: 'administrator' } });
+    const discordGuild = await prisma.discordGuild.create({
+      data: { guildId, name: 'Existing production server', isPrimary: true },
+    });
+    await prisma.discordRoleMapping.create({
+      data: {
+        guildId: discordGuild.id,
+        roleId: operatorRole.id,
+        discordRoleId: 'operator-selected-admin-role',
+      },
+    });
+
+    const result = await adoptExistingResources(prisma, actor, {
+      guildId,
+      guildName: 'Existing production server',
+      state,
+      channels,
+      roles,
+    });
+
+    expect(result.adopted.map((entry) => entry.logicalKey)).toEqual(
+      expect.arrayContaining([
+        'channel.announcements',
+        'channel.welcome',
+        'channel.rules',
+        'channel.whitelist-review',
+        'channel.bot-ops',
+        'role.staff.management',
+        'role.staff.admin',
+        'role.staff.moderator',
+        'role.staff.whitelist',
+      ]),
+    );
+    expect(result.roleMappingsSkipped).toBe(1);
+    const announcements = await prisma.discordManagedResource.findUniqueOrThrow({
+      where: { guildId_logicalKey: { guildId, logicalKey: 'channel.announcements' } },
+    });
+    expect(announcements.discordResourceId).toBe('existing-announcements');
+    expect(announcements.managed).toBe(true);
+    expect(announcements.createdByRunId).toBeNull();
+    expect(announcements.metadata).toMatchObject({ adopted: true, adoptedFrom: 'announcements' });
+
+    const integration = await prisma.discordGuild.findUniqueOrThrow({ where: { guildId } });
+    expect(integration.announcementChannelId).toBe('existing-announcements');
+    expect(integration.reviewChannelId).toBe('existing-review');
+    expect(integration.logChannelId).toBe('existing-logs');
+    const mappings = await prisma.discordRoleMapping.findMany({
+      where: { guildId: discordGuild.id },
+    });
+    expect(mappings.find((mapping) => mapping.roleId === operatorRole.id)?.discordRoleId).toBe(
+      'operator-selected-admin-role',
+    );
+    const moderator = await prisma.role.findUniqueOrThrow({ where: { key: 'moderator' } });
+    expect(mappings.find((mapping) => mapping.roleId === moderator.id)?.discordRoleId).toBe(
+      'existing-moderator',
+    );
+    expect(await prisma.discordProvisionRun.count({ where: { guildId } })).toBe(0);
+    expect(await prisma.auditLog.count({ where: { action: 'DISCORD_RESOURCE_ADOPTED' } })).toBe(
+      result.adopted.length,
+    );
+  });
+
   it('adopts an unmanaged channel on an operator decision, and apply updates it in place', async () => {
     const actor = await owner();
     const guild = new FakeGuild();

@@ -9,6 +9,7 @@ import {
 import { publishedRulebook, recordAudit, setting, statusBoard } from '@xenon/domain';
 import { type Actor, requirePermission } from '@xenon/permissions';
 
+import { planResourceAdoption, type AdoptionChannel, type AdoptionRole } from './adoption';
 import {
   type BlueprintFeatures,
   CLEANUP_PHRASE,
@@ -30,7 +31,7 @@ import { BLUEPRINT_VERSION } from './types';
 import type { DepartmentInput } from './blueprint';
 import type { PanelContext } from './panels';
 import type { RegistryStore } from './ports';
-import type { PlanItem, RegistryEntry } from './types';
+import type { DesiredState, PlanItem, RegistryEntry } from './types';
 
 /**
  * Database side of provisioning.
@@ -105,6 +106,79 @@ export function prismaRegistry(db: Db, guildId: string): RegistryStore {
       await db.discordManagedResource.deleteMany({ where: { guildId, logicalKey } });
     },
   };
+}
+
+/**
+ * Bind exact existing Discord resources to the current blueprint. This only
+ * writes Xenon's registry, integration pointers and role mappings; Discord is
+ * represented by read-only snapshots supplied by the bot command.
+ */
+export async function adoptExistingResources(
+  db: Db,
+  actor: Actor,
+  input: {
+    readonly guildId: string;
+    readonly guildName: string;
+    readonly state: DesiredState;
+    readonly channels: readonly AdoptionChannel[];
+    readonly roles: readonly AdoptionRole[];
+  },
+) {
+  requirePermission(actor, 'system.discord.bootstrap');
+
+  const store = prismaRegistry(db, input.guildId);
+  const plan = planResourceAdoption(input.state, await store.list(), input.channels, input.roles);
+
+  for (const resource of plan.adopted) {
+    await store.upsert({
+      logicalKey: resource.logicalKey,
+      resourceType: resource.resourceType,
+      discordId: resource.discordId,
+      channelId: null,
+      managed: true,
+      contentHash: null,
+      configurationHash: null,
+      createdByRunId: null,
+      metadata: { adopted: true, adoptedFrom: resource.name, source: 'setup-adopt' },
+    });
+    await recordAudit(db, actor, {
+      action: 'DISCORD_RESOURCE_ADOPTED',
+      entityType: 'discord_resource',
+      entityId: resource.logicalKey,
+      entityLabel: resource.name,
+      metadata: { discordId: resource.discordId, source: 'setup-adopt' },
+    });
+  }
+
+  const matched = [...plan.adopted, ...plan.alreadyMapped];
+  const channels: Partial<Record<'reviewChannel' | 'announcementChannel' | 'logChannel', string>> =
+    {};
+  for (const resource of matched) {
+    if (resource.integration !== undefined) channels[resource.integration] = resource.discordId;
+  }
+  const roleMappings = matched.flatMap((resource) =>
+    resource.xenonRoleKey === undefined
+      ? []
+      : [
+          {
+            xenonRoleKey: resource.xenonRoleKey,
+            discordRoleId: resource.discordId,
+            discordRoleName: resource.name,
+          },
+        ],
+  );
+
+  const integrationWriteBack =
+    Object.keys(channels).length > 0 || roleMappings.length > 0
+      ? await saveIntegration(db, actor, {
+          guildId: input.guildId,
+          guildName: input.guildName,
+          channels,
+          roleMappings,
+        })
+      : { mapped: 0, skipped: 0 };
+
+  return { ...plan, roleMappingsSkipped: integrationWriteBack.skipped };
 }
 
 // --- Settings ----------------------------------------------------------------------

@@ -98,6 +98,33 @@ describe('member welcome event', () => {
     ]);
   });
 
+  it('uses the adopted welcome channel when no separate channel override is configured', async () => {
+    mocks.settings.mockResolvedValue([
+      row('discord.welcome.enabled', true),
+      row('discord.welcome.publicEnabled', true),
+    ]);
+    mocks.managedRole.mockResolvedValue({
+      resourceType: 'CHANNEL',
+      discordResourceId: 'adopted-welcome-channel',
+    });
+    const view = makeMember();
+    vi.mocked(view.member.guild.channels.fetch).mockResolvedValue({
+      isSendable: () => true,
+      send: view.publicSend,
+    } as never);
+
+    await handleMemberJoin(view.member);
+
+    expect(mocks.managedRole).toHaveBeenCalledWith({
+      where: {
+        guildId_logicalKey: { guildId: 'guild-id', logicalKey: 'channel.welcome' },
+      },
+      select: { resourceType: true, discordResourceId: true },
+    });
+    expect(view.member.guild.channels.fetch).toHaveBeenCalledWith('adopted-welcome-channel');
+    expect(view.publicSend).toHaveBeenCalledOnce();
+  });
+
   it('does not grant a citizen role that has acquired Discord permissions', async () => {
     mocks.settings.mockResolvedValue([
       row('discord.welcome.enabled', true),

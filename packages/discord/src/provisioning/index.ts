@@ -1,4 +1,5 @@
 export * from './blueprint';
+export * from './adoption';
 export * from './cleanup';
 export * from './config';
 export * from './effective';
