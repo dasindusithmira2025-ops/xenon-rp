@@ -55,6 +55,8 @@ export interface WelcomeConfig {
   readonly dmEnabled: boolean;
   readonly rulesChannelId: string | null;
   readonly rolesChannelId: string | null;
+  /** Whitelist/application channel shown in the welcome's Get Started section. */
+  readonly whitelistChannelId: string | null;
   readonly initialRoleId: string | null;
   readonly showMemberCount: boolean;
   readonly generateCard: boolean;
@@ -70,6 +72,7 @@ export const DEFAULT_WELCOME: WelcomeConfig = {
   dmEnabled: false,
   rulesChannelId: null,
   rolesChannelId: null,
+  whitelistChannelId: null,
   initialRoleId: null,
   showMemberCount: true,
   generateCard: true,
@@ -469,6 +472,8 @@ function parseWelcome(value: Record<string, unknown>, strict: boolean): WelcomeC
     dmEnabled: pick('dmEnabled', isBoolean, base.dmEnabled),
     rulesChannelId: pick('rulesChannelId', isOptionalSnowflake, null),
     rolesChannelId: pick('rolesChannelId', isOptionalSnowflake, null),
+    // Added after the first WelcomeConfig release; absent in those documents.
+    whitelistChannelId: raw.whitelistChannelId === undefined ? null : pick('whitelistChannelId', isOptionalSnowflake, null),
     initialRoleId: pick('initialRoleId', isOptionalSnowflake, null),
     showMemberCount: pick('showMemberCount', isBoolean, DEFAULT_WELCOME.showMemberCount),
     generateCard: pick('generateCard', isBoolean, DEFAULT_WELCOME.generateCard),

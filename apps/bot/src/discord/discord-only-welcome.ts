@@ -5,6 +5,7 @@ import {
   escapeMarkdown,
   MessageFlags,
   PermissionFlagsBits as P,
+  type APIEmbed,
   type ChatInputCommandInteraction,
   type Client,
   type Guild,
@@ -41,6 +42,7 @@ export const WELCOME_TOKENS = [
   'memberCount',
   'rulesChannel',
   'rolesChannel',
+  'whitelistChannel',
 ] as const;
 
 /** Permissions that make a role staff, moderation or administrative; never auto-assigned. */
@@ -107,10 +109,15 @@ export function unknownWelcomeTokens(message: string): string[] {
     .filter((token) => !(WELCOME_TOKENS as readonly string[]).includes(token));
 }
 
-/** Public welcome text. Only whitelisted tokens are substituted; nothing else is evaluated. */
+function channelMention(id: string | null): string | null {
+  return id === null ? null : `<#${id}>`;
+}
+
+/**
+ * Embed description. Only whitelisted tokens are substituted in a custom
+ * message; nothing else is evaluated.
+ */
 export function renderWelcomeText(config: WelcomeConfig, context: WelcomeTextContext): string {
-  const rules = config.rulesChannelId === null ? null : `<#${config.rulesChannelId}>`;
-  const roles = config.rolesChannelId === null ? null : `<#${config.rolesChannelId}>`;
   if (config.customMessage !== null) {
     const values: Record<(typeof WELCOME_TOKENS)[number], string> = {
       mention: `<@${context.memberId}>`,
@@ -118,29 +125,46 @@ export function renderWelcomeText(config: WelcomeConfig, context: WelcomeTextCon
       displayName: escapeMarkdown(context.displayName),
       server: escapeMarkdown(context.guildName),
       memberCount: context.memberCount === null ? '' : String(context.memberCount),
-      rulesChannel: rules ?? '',
-      rolesChannel: roles ?? '',
+      rulesChannel: channelMention(config.rulesChannelId) ?? '',
+      rolesChannel: channelMention(config.rolesChannelId) ?? '',
+      whitelistChannel: channelMention(config.whitelistChannelId) ?? '',
     };
     return config.customMessage
-      .replace(/\{(mention|username|displayName|server|memberCount|rulesChannel|rolesChannel)\}/g, (_, token: keyof typeof values) => values[token])
-      .slice(0, 2_000);
+      .replace(
+        /\{(mention|username|displayName|server|memberCount|rulesChannel|rolesChannel|whitelistChannel)\}/g,
+        (_, token: keyof typeof values) => values[token],
+      )
+      .slice(0, 4_000);
   }
-
-  const guide =
-    rules !== null && roles !== null
-      ? `Make sure to check out ${rules} and pick your roles in ${roles}.`
-      : rules !== null
-        ? `Make sure to check out ${rules}.`
-        : roles !== null
-          ? `Pick your roles in ${roles}.`
-          : null;
   return [
-    `👋 **Welcome <@${context.memberId}> to Xenon Roleplay!**`,
-    ...(guide === null ? [] : ['', guide]),
+    `Welcome <@${context.memberId}>, your story in Xenon starts now.`,
     '',
     ...(context.memberCount === null ? [] : [`You are our **${ordinal(context.memberCount)} member**!`]),
     'Enjoy your roleplay experience in Xenon. 💚',
   ].join('\n');
+}
+
+/** The short "Get started" section; only configured channels appear. */
+export function welcomeLinks(config: WelcomeConfig): string[] {
+  const links: readonly (readonly [emoji: string, label: string, id: string | null])[] = [
+    ['📜', 'Rules', config.rulesChannelId],
+    ['📝', 'Whitelist', config.whitelistChannelId],
+    ['🎭', 'Roles', config.rolesChannelId],
+  ];
+  return links.flatMap(([emoji, label, id]) => (id === null ? [] : [`${emoji} **${label}** — <#${id}>`]));
+}
+
+function welcomeEmbed(config: WelcomeConfig, context: WelcomeTextContext, withCard: boolean) {
+  const links = welcomeLinks(config);
+  const embed = XenonBasePanel({
+    title: '👋 WELCOME TO XENON ROLEPLAY',
+    description: renderWelcomeText(config, context),
+    footer: context.memberCount === null ? 'Xenon Roleplay' : `Xenon Roleplay • Member #${String(context.memberCount)}`,
+    timestamp: new Date(),
+  });
+  if (links.length > 0) embed.addFields({ name: '📌 GET STARTED', value: links.join('\n') });
+  if (withCard) embed.setImage('attachment://welcome.png');
+  return embed.toJSON();
 }
 
 function liveMemberCount(guild: Guild): number | null {
@@ -226,35 +250,39 @@ export async function handleWelcomeJoin(
   }
 }
 
-/** The text and card for a member, shared by the real welcome and the preview. */
+/** The ping, embed and card for a member, shared by the real welcome and the preview. */
 async function buildWelcome(
   member: GuildMember,
   config: WelcomeConfig,
   deps: WelcomeDeps,
-): Promise<{ readonly content: string; readonly files: AttachmentBuilder[] }> {
+): Promise<{ readonly content: string; readonly embeds: APIEmbed[]; readonly files: AttachmentBuilder[] }> {
   const memberCount = config.showMemberCount ? liveMemberCount(member.guild) : null;
-  const content = renderWelcomeText(config, {
+  const context: WelcomeTextContext = {
     memberId: member.id,
     username: member.user.username,
     displayName: member.displayName,
     guildName: member.guild.name,
     memberCount,
-  });
-  if (!config.generateCard) return { content, files: [] };
-  try {
-    const avatar = await deps
-      .fetchAvatar(member.user.displayAvatarURL({ extension: 'png', size: 256, forceStatic: true }))
-      .catch(() => null);
-    const card = await deps.renderCard({
-      avatar,
-      name: cardName(member.displayName, member.user.username),
-      memberCount,
-    });
-    return { content, files: [new AttachmentBuilder(card, { name: 'welcome.png' })] };
-  } catch (error) {
-    logger.warn({ guildId: member.guild.id, error: describe(error) }, 'Welcome card render failed; sending text only');
-    return { content, files: [] };
+  };
+  // Embeds never ping, so the mention lives in the message content.
+  const content = `<@${member.id}>`;
+  let files: AttachmentBuilder[] = [];
+  if (config.generateCard) {
+    try {
+      const avatar = await deps
+        .fetchAvatar(member.user.displayAvatarURL({ extension: 'png', size: 256, forceStatic: true }))
+        .catch(() => null);
+      const card = await deps.renderCard({
+        avatar,
+        name: cardName(member.displayName, member.user.username),
+        memberCount,
+      });
+      files = [new AttachmentBuilder(card, { name: 'welcome.png' })];
+    } catch (error) {
+      logger.warn({ guildId: member.guild.id, error: describe(error) }, 'Welcome card render failed; sending without image');
+    }
   }
+  return { content, embeds: [welcomeEmbed(config, context, files.length > 0)], files };
 }
 
 async function sendPublicWelcome(
@@ -263,9 +291,10 @@ async function sendPublicWelcome(
   config: WelcomeConfig,
   deps: WelcomeDeps,
 ): Promise<void> {
-  const { content, files } = await buildWelcome(member, config, deps);
+  const { content, embeds, files } = await buildWelcome(member, config, deps);
   const message = await channel.send({
     content,
+    embeds,
     files,
     // Only the new member may be pinged: never roles, @everyone or @here.
     allowedMentions: { users: [member.id], roles: [], parse: [] },
@@ -306,6 +335,7 @@ function welcomeDmEmbed(displayName: string, config: WelcomeConfig) {
       'Your story starts here.',
       '',
       `• Read the server rules${where(config.rulesChannelId)}`,
+      `• Apply for the whitelist${where(config.whitelistChannelId)}`,
       `• Choose your roles${where(config.rolesChannelId)}`,
       '• Ask the support team if you need help',
       '• Enjoy your time in Xenon',
@@ -397,6 +427,11 @@ async function configureWelcome(interaction: ChatInputCommandInteraction, guild:
     await reject('roles_channel must be a text or announcement channel in this server.');
     return;
   }
+  const whitelist = await pick('whitelist_channel', false);
+  if (whitelist === 'invalid') {
+    await reject('whitelist_channel must be a text or announcement channel in this server.');
+    return;
+  }
 
   const state = await store.getGuild(guild.id);
   const roleOption = interaction.options.getRole('initial_role', false);
@@ -436,6 +471,7 @@ async function configureWelcome(interaction: ChatInputCommandInteraction, guild:
     dmEnabled: interaction.options.getBoolean('dm_enabled', false) ?? current.dmEnabled,
     rulesChannelId: rules?.id ?? null,
     rolesChannelId: roles?.id ?? null,
+    whitelistChannelId: whitelist?.id ?? null,
     initialRoleId,
     showMemberCount: interaction.options.getBoolean('show_member_count', false) ?? current.showMemberCount,
     generateCard,
@@ -489,6 +525,7 @@ export async function welcomeStatus(
     '',
     `Channel: ${channelLine}`,
     `Rules: ${config.rulesChannelId === null ? 'not set' : `<#${config.rulesChannelId}>`}`,
+    `Whitelist: ${config.whitelistChannelId === null ? 'not set' : `<#${config.whitelistChannelId}>`}`,
     `Roles: ${config.rolesChannelId === null ? 'not set' : `<#${config.rolesChannelId}>`}`,
     `Initial role: ${config.initialRoleId === null ? 'none' : `<@&${config.initialRoleId}>`}`,
     '',
@@ -513,14 +550,11 @@ async function previewWelcome(
   await interaction.deferReply({ flags: MessageFlags.Ephemeral });
   const member = await guild.members.fetch(interaction.user.id);
   const config = (await store.getGuild(guild.id)).welcome;
-  const { content, files } = await buildWelcome(member, config, deps);
+  const { embeds, files } = await buildWelcome(member, config, deps);
   const count = liveMemberCount(guild);
   await interaction.editReply({
-    content: [
-      `-# Preview only — nothing was posted, assigned or sent. Current member count: ${count === null ? 'unavailable' : String(count)}.`,
-      '',
-      content,
-    ].join('\n').slice(0, 2_000),
+    content: `-# Preview only — nothing was posted, assigned or sent. Current member count: ${count === null ? 'unavailable' : String(count)}.`,
+    embeds,
     files,
     allowedMentions: { parse: [] },
   });

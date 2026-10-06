@@ -110,6 +110,12 @@ const xenon = new SlashCommandBuilder()
               .setDescription('Role selection channel mentioned in the welcome')
               .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
           )
+          .addChannelOption((option) =>
+            option
+              .setName('whitelist_channel')
+              .setDescription('Whitelist/application channel shown in the welcome')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+          )
           .addRoleOption((option) =>
             option.setName('initial_role').setDescription('Harmless starter role given on join, such as Citizen'),
           )
@@ -128,7 +134,7 @@ const xenon = new SlashCommandBuilder()
           .addStringOption((option) =>
             option
               .setName('message')
-              .setDescription('Custom text. Tokens: {mention} {displayName} {memberCount} {rulesChannel} {rolesChannel}')
+              .setDescription('Custom text. Tokens: {mention} {displayName} {memberCount} {rulesChannel} {whitelistChannel}')
               .setMaxLength(MAX_WELCOME_MESSAGE_LENGTH),
           ),
       )

@@ -33,6 +33,7 @@ import {
   renderWelcomeText,
   resetWelcomeDedupe,
   unknownWelcomeTokens,
+  welcomeLinks,
   type WelcomeDeps,
 } from './discord-only-welcome';
 import { DEFAULT_WELCOME, JsonDiscordRuntimeStore, type WelcomeConfig } from './runtime-store';
@@ -46,6 +47,7 @@ const WELCOME = '500000000000000001';
 const RULES = '500000000000000002';
 const ROLES = '500000000000000003';
 const ADOPTED = '500000000000000004';
+const WHITELIST = '500000000000000005';
 const CITIZEN = '600000000000000001';
 const ADMIN_ROLE = '600000000000000002';
 const MOD_ROLE = '600000000000000003';
@@ -84,6 +86,7 @@ function fakeGuild() {
       fakeChannel(RULES, 'rules'),
       fakeChannel(ROLES, 'choose-roles'),
       fakeChannel(ADOPTED, 'adopted-welcome'),
+      fakeChannel(WHITELIST, 'whitelist'),
     ].map((channel) => [channel.id, channel]),
   );
   const roles = new Map(
@@ -159,8 +162,17 @@ function text(mock: { mock: { calls: unknown[][] } }): string {
   return typeof value === 'string' ? value : ((value as { content?: string } | undefined)?.content ?? '');
 }
 
+interface SentEmbed {
+  title?: string;
+  description?: string;
+  fields?: { name: string; value: string }[];
+  image?: { url: string };
+  footer?: { text: string };
+}
+
 interface SentPayload {
   content: string;
+  embeds: SentEmbed[];
   files: { name: string; attachment: Buffer }[];
   allowedMentions: unknown;
 }
@@ -190,6 +202,7 @@ describe('discord-only Xenon welcome', () => {
       channelId: WELCOME,
       rulesChannelId: RULES,
       rolesChannelId: ROLES,
+      whitelistChannelId: WHITELIST,
       ...patch,
     });
   }
@@ -246,32 +259,44 @@ describe('discord-only Xenon welcome', () => {
     expect(target.roles.add).toHaveBeenCalledOnce();
   });
 
-  it('renders the default text with safe mentions, member count and both channel links', async () => {
+  it('sends an embed welcome that pings only the member, with count and Get Started links', async () => {
     await configure();
     await welcomeJoin();
 
     const [payload] = sent();
-    expect(payload?.content).toBe(
+    expect(payload?.content).toBe(`<@${MEMBER}>`);
+    expect(payload?.allowedMentions).toEqual({ users: [MEMBER], roles: [], parse: [] });
+    const [embed] = payload?.embeds ?? [];
+    expect(embed?.title).toBe('👋 WELCOME TO XENON ROLEPLAY');
+    expect(embed?.description).toBe(
       [
-        `👋 **Welcome <@${MEMBER}> to Xenon Roleplay!**`,
-        '',
-        `Make sure to check out <#${RULES}> and pick your roles in <#${ROLES}>.`,
+        `Welcome <@${MEMBER}>, your story in Xenon starts now.`,
         '',
         'You are our **280th member**!',
         'Enjoy your roleplay experience in Xenon. 💚',
       ].join('\n'),
     );
-    expect(payload?.allowedMentions).toEqual({ users: [MEMBER], roles: [], parse: [] });
+    expect(embed?.fields).toEqual([
+      {
+        name: '📌 GET STARTED',
+        value: [`📜 **Rules** — <#${RULES}>`, `📝 **Whitelist** — <#${WHITELIST}>`, `🎭 **Roles** — <#${ROLES}>`].join('\n'),
+      },
+    ]);
+    expect(embed?.footer?.text).toBe('Xenon Roleplay • Member #280');
   });
 
-  it('omits missing optional channels and the member count cleanly', () => {
+  it('omits missing optional channels and the member count cleanly', async () => {
     const base = { memberId: MEMBER, username: 'jake', displayName: 'JAKE', guildName: 'Xenon', memberCount: null };
-    const none = renderWelcomeText({ ...DEFAULT_WELCOME }, base);
-    expect(none).toBe(`👋 **Welcome <@${MEMBER}> to Xenon Roleplay!**\n\nEnjoy your roleplay experience in Xenon. 💚`);
-    expect(renderWelcomeText({ ...DEFAULT_WELCOME, rulesChannelId: RULES }, base)).toContain(`Make sure to check out <#${RULES}>.`);
-    expect(renderWelcomeText({ ...DEFAULT_WELCOME, rolesChannelId: ROLES }, base)).toContain(`Pick your roles in <#${ROLES}>.`);
-    for (const rendered of [none, renderWelcomeText({ ...DEFAULT_WELCOME, rulesChannelId: RULES }, base)])
-      expect(rendered).not.toMatch(/undefined|null|<#>|member\*\*!/);
+    const description = renderWelcomeText({ ...DEFAULT_WELCOME }, base);
+    expect(description).toBe(`Welcome <@${MEMBER}>, your story in Xenon starts now.\n\nEnjoy your roleplay experience in Xenon. 💚`);
+    expect(welcomeLinks({ ...DEFAULT_WELCOME })).toEqual([]);
+    expect(welcomeLinks({ ...DEFAULT_WELCOME, whitelistChannelId: WHITELIST })).toEqual([`📝 **Whitelist** — <#${WHITELIST}>`]);
+
+    await configure({ rulesChannelId: null, rolesChannelId: null, whitelistChannelId: null, showMemberCount: false });
+    await welcomeJoin();
+    const [embed] = sent()[0]?.embeds ?? [];
+    expect(embed?.fields).toBeUndefined();
+    expect(JSON.stringify(embed)).not.toMatch(/undefined|null|<#>|member\*\*!|Member #/);
     expect(['1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '280th', '1002nd'].map((value) => ordinal(Number.parseInt(value, 10)))).toEqual(
       ['1st', '2nd', '3rd', '4th', '11th', '12th', '13th', '21st', '280th', '1002nd'],
     );
@@ -279,10 +304,10 @@ describe('discord-only Xenon welcome', () => {
 
   it('substitutes only whitelisted custom tokens and escapes member-controlled text', () => {
     const rendered = renderWelcomeText(
-      { ...DEFAULT_WELCOME, customMessage: 'Hi {mention} aka {displayName} on {server} #{memberCount} {rulesChannel}{rolesChannel}' },
+      { ...DEFAULT_WELCOME, whitelistChannelId: WHITELIST, customMessage: 'Hi {mention} aka {displayName} on {server} #{memberCount} {whitelistChannel}{rolesChannel}' },
       { memberId: MEMBER, username: 'jake', displayName: '@everyone **bold**', guildName: 'Xenon', memberCount: 280 },
     );
-    expect(rendered).toBe(`Hi <@${MEMBER}> aka @everyone \\*\\*bold\\*\\* on Xenon #280 `);
+    expect(rendered).toBe(`Hi <@${MEMBER}> aka @everyone \\*\\*bold\\*\\* on Xenon #280 <#${WHITELIST}>`);
     expect(unknownWelcomeTokens('Hi {mention} {constructor} {process.env}')).toEqual(['constructor', 'process.env']);
   });
 
@@ -292,6 +317,7 @@ describe('discord-only Xenon welcome', () => {
 
     const [payload] = sent();
     expect(payload?.files[0]?.name).toBe('welcome.png');
+    expect(payload?.embeds[0]?.image?.url).toBe('attachment://welcome.png');
     const metadata = await sharp(payload?.files[0]?.attachment).metadata();
     expect([metadata.format, metadata.width, metadata.height]).toEqual(['png', CARD_WIDTH, CARD_HEIGHT]);
     expect(deps.renderCard).toHaveBeenCalledWith(expect.objectContaining({ name: 'JAKE', memberCount: 280 }));
@@ -315,6 +341,8 @@ describe('discord-only Xenon welcome', () => {
     const [payload] = sent();
     expect(payload?.content).toContain(`<@${MEMBER}>`);
     expect(payload?.files).toEqual([]);
+    expect(payload?.embeds[0]?.image).toBeUndefined();
+    expect(payload?.embeds[0]?.fields?.[0]?.value).toContain(`<#${WHITELIST}>`);
   });
 
   it('truncates long names and escapes markup before rendering', async () => {
@@ -377,6 +405,7 @@ describe('discord-only Xenon welcome', () => {
     await welcomeJoin(target);
     expect(JSON.stringify(target.send.mock.calls[0])).toContain('👋 WELCOME TO XENON ROLEPLAY');
     expect(JSON.stringify(target.send.mock.calls[0])).toContain(`<#${RULES}>`);
+    expect(JSON.stringify(target.send.mock.calls[0])).toContain(`Apply for the whitelist in <#${WHITELIST}>`);
 
     resetWelcomeDedupe();
     const closed = member(fake.guild, '400000000000000009');
@@ -410,6 +439,7 @@ describe('discord-only Xenon welcome', () => {
       channel: WELCOME,
       rules_channel: RULES,
       roles_channel: ROLES,
+      whitelist_channel: WHITELIST,
       initial_role: CITIZEN,
       dm_enabled: true,
       show_member_count: true,
@@ -422,6 +452,7 @@ describe('discord-only Xenon welcome', () => {
       channelId: WELCOME,
       rulesChannelId: RULES,
       rolesChannelId: ROLES,
+      whitelistChannelId: WHITELIST,
       initialRoleId: CITIZEN,
       dmEnabled: true,
     });
@@ -438,8 +469,9 @@ describe('discord-only Xenon welcome', () => {
     await handleWelcomeCommand(view as never, fake.guild as never, store, 'preview', deps);
 
     const reply = view.editReply.mock.calls[0]?.[0] as SentPayload;
-    expect(reply.content).toContain(`<@${ADMIN}>`);
+    expect(reply.content).toContain('Preview only');
     expect(reply.content).toContain('280');
+    expect(reply.embeds[0]?.description).toContain(`<@${ADMIN}>`);
     expect(reply.files[0]?.name).toBe('welcome.png');
     expect(reply.allowedMentions).toEqual({ parse: [] });
     for (const channel of fake.channels.values()) expect(channel.send).not.toHaveBeenCalled();
@@ -463,6 +495,7 @@ describe('discord-only Xenon welcome', () => {
       `Channel: <#${WELCOME}>`,
       `Rules: <#${RULES}>`,
       `Roles: <#${ROLES}>`,
+      `Whitelist: <#${WHITELIST}>`,
       `Initial role: <@&${CITIZEN}>`,
       'Welcome card: ON',
       'Member count: ON',
