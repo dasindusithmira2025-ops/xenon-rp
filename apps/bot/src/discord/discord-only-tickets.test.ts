@@ -60,7 +60,7 @@ const TYPES = [
   ['CHARACTER', '🎭', 'Character Issue'],
   ['WHITELIST', '📜', 'Whitelist Support'],
   ['PLAYER_REPORT', '🚩', 'Player Report'],
-  ['STAFF_REPORT', '⚖️', 'Staff Report'],
+  ['BUSINESS', '💼', 'Business / Organization'],
 ] as const;
 
 let sequence = 900000000000000000n;
@@ -366,7 +366,7 @@ describe('discord-only tickets', () => {
     expect(menu.options.map((option) => [option.value, option.emoji?.name, option.label])).toEqual(TYPES.map((type) => [...type]));
     expect(new Set(menu.options.map((option) => option.emoji?.name)).size).toBe(TYPES.length);
     expect(menu.options.map((option) => option.emoji?.name)).not.toContain('🎫');
-    expect(JSON.stringify(panel)).not.toMatch(/Business|Developer/);
+    expect(JSON.stringify(panel)).not.toMatch(/Staff Report|Developer/);
   });
 
   it('adds the website button only for a public https site URL', () => {
@@ -465,24 +465,24 @@ describe('discord-only tickets', () => {
 
   it('keeps report tickets private to the owner, staff role and bot', async () => {
     await publish();
-    await open(OWNER, 'STAFF_REPORT');
+    await open(OWNER, 'PLAYER_REPORT');
     const ticket = await onlyTicket();
     const options = fake.channels.get(ticket.channelId)?.createOptions as CreateOptions;
 
-    expect(options.parent).toBe((await store.getGuild(GUILD)).ticketCategories.STAFF_REPORT);
+    expect(options.parent).toBe((await store.getGuild(GUILD)).ticketCategories.PLAYER_REPORT);
     expect(options.permissionOverwrites.map((entry) => entry.id).sort()).toEqual([BOT, GUILD, OWNER, STAFF_ROLE].sort());
     expect(fake.channels.get(PANEL)?.send).toHaveBeenCalledOnce();
   });
 
-  it('rejects the retired Business and Developer ticket types', async () => {
+  it('rejects the retired Staff Report and Developer ticket types', async () => {
     await publish();
-    for (const retired of ['BUSINESS', 'DEVELOPER']) {
+    for (const retired of ['STAFF_REPORT', 'DEVELOPER']) {
       const view = await open(MANAGER, retired);
       expect(lastText(view.editReply)).toContain('listed ticket categories');
     }
     expect(ticketChannelsCreated()).toBe(0);
     expect(created(ChannelType.GuildCategory).map((options) => options.name)).not.toEqual(
-      expect.arrayContaining(['Business / Organization Tickets', 'Developer Task Tickets']),
+      expect.arrayContaining(['Staff Report Tickets', 'Developer Task Tickets']),
     );
   });
 

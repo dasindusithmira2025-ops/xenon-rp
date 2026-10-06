@@ -49,7 +49,7 @@ export const TICKET_CATEGORIES = [
   { value: 'CHARACTER', emoji: '🎭', label: 'Character Issue', summary: 'Problems involving your character or character data', menu: 'Character-related problems' },
   { value: 'WHITELIST', emoji: '📜', label: 'Whitelist Support', summary: 'Whitelist, application or interview assistance', menu: 'Application or whitelist assistance' },
   { value: 'PLAYER_REPORT', emoji: '🚩', label: 'Player Report', summary: 'Report a player or rule violation', menu: 'Report a player or rule violation' },
-  { value: 'STAFF_REPORT', emoji: '⚖️', label: 'Staff Report', summary: 'Report a Xenon staff member privately', menu: 'Privately report a staff member' },
+  { value: 'BUSINESS', emoji: '💼', label: 'Business / Organization', summary: 'Business, gang or organization assistance', menu: 'Organization or business assistance' },
 ] as const;
 
 const OWNER_ALLOW = [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles];
