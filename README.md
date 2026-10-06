@@ -94,6 +94,13 @@ assets and support tickets (`/xenon tickets publish`) continue to use Discord an
 its API. Closed ticket channels are deleted after a log entry and plain-text
 transcript are posted to the configured ticket log channel.
 
+Discord-only member welcomes (`/xenon welcome configure|status|preview|enable`)
+post one public message with a generated Xenon card (`welcome.png`, rendered by
+sharp with the bundled OFL Rajdhani fonts in `apps/bot/assets/fonts`), and can
+assign a non-privileged starter role and send a DM. `delete_after` uses an
+in-process timer: a welcome whose deletion is still pending when the bot
+restarts stays posted.
+
 The integrated runtime keeps its existing service-specific production checks
 for PostgreSQL, Redis, object storage, Turnstile and FiveM. Discord-only bot mode
 uses only the Discord environment listed above; the web runtime's requirements

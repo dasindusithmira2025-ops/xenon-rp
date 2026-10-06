@@ -877,7 +877,7 @@ describe('discord-only tickets', () => {
     );
 
     const state = await store.getGuild(GUILD);
-    expect(state.welcomeEnabled).toBe(false);
+    expect(state.welcome.enabled).toBe(false);
     expect(state.features).toEqual({ tempVoice: true });
     expect(state.ticketConfig).toEqual({
       ticketPanelChannelId: PANEL,

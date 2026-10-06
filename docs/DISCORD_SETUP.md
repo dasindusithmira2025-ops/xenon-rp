@@ -104,7 +104,9 @@ bot’s highest role.
 When enabling public or DM join welcomes, open the same application in the
 Discord Developer Portal and enable **Bot → Privileged Gateway Intents → Server
 Members Intent**. This portal switch is required in addition to the conditional
-`GuildMembers` intent in bot code.
+`GuildMembers` intent in bot code. The Discord-only runtime always requests it;
+it logs a startup warning when the portal switch is off, and `/xenon welcome
+status` reports NOT READY until it is enabled.
 
 Discord-only support tickets save a plain-text transcript to the ticket log
 before deleting a closed ticket channel. Discord only returns message text and

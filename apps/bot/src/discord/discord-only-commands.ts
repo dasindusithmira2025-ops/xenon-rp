@@ -1,5 +1,7 @@
 import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 
+import { MAX_WELCOME_DELETE_SECONDS, MAX_WELCOME_MESSAGE_LENGTH } from './runtime-store';
+
 /** Channels a server owner may bind explicitly with `/xenon setup adopt`. */
 export const ADOPT_CHANNEL_OPTIONS = [
   { option: 'announcements', logicalKey: 'channel.announcements', label: 'Announcements' },
@@ -84,7 +86,54 @@ const xenon = new SlashCommandBuilder()
       .addSubcommand((sub) => sub.setName('enable').setDescription('Enable welcome messages'))
       .addSubcommand((sub) => sub.setName('disable').setDescription('Disable welcome messages'))
       .addSubcommand((sub) => sub.setName('dm-enable').setDescription('Send new members a welcome DM'))
-      .addSubcommand((sub) => sub.setName('dm-disable').setDescription('Stop sending welcome DMs')),
+      .addSubcommand((sub) => sub.setName('dm-disable').setDescription('Stop sending welcome DMs'))
+      .addSubcommand((sub) =>
+        sub
+          .setName('configure')
+          .setDescription('Set the welcome channel, links, starter role and card')
+          .addChannelOption((option) =>
+            option
+              .setName('channel')
+              .setDescription('Channel where new members are welcomed')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement)
+              .setRequired(true),
+          )
+          .addChannelOption((option) =>
+            option
+              .setName('rules_channel')
+              .setDescription('Rules channel mentioned in the welcome')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+          )
+          .addChannelOption((option) =>
+            option
+              .setName('roles_channel')
+              .setDescription('Role selection channel mentioned in the welcome')
+              .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
+          )
+          .addRoleOption((option) =>
+            option.setName('initial_role').setDescription('Harmless starter role given on join, such as Citizen'),
+          )
+          .addBooleanOption((option) => option.setName('dm_enabled').setDescription('Also send new members a welcome DM'))
+          .addBooleanOption((option) =>
+            option.setName('show_member_count').setDescription('Show the live member number'),
+          )
+          .addBooleanOption((option) => option.setName('generate_card').setDescription('Attach the Xenon welcome card image'))
+          .addIntegerOption((option) =>
+            option
+              .setName('delete_after')
+              .setDescription('Delete the welcome after N seconds (0 = never, max 7 days)')
+              .setMinValue(0)
+              .setMaxValue(MAX_WELCOME_DELETE_SECONDS),
+          )
+          .addStringOption((option) =>
+            option
+              .setName('message')
+              .setDescription('Custom text. Tokens: {mention} {displayName} {memberCount} {rulesChannel} {rolesChannel}')
+              .setMaxLength(MAX_WELCOME_MESSAGE_LENGTH),
+          ),
+      )
+      .addSubcommand((sub) => sub.setName('status').setDescription('Show welcome configuration and readiness'))
+      .addSubcommand((sub) => sub.setName('preview').setDescription('Privately preview the welcome using yourself')),
   )
   .addSubcommandGroup((group) =>
     group

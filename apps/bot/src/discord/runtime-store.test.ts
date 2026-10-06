@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { JsonDiscordRuntimeStore } from './runtime-store';
+import { DEFAULT_WELCOME, JsonDiscordRuntimeStore } from './runtime-store';
 
 const guildId = '12345678901234567';
 const roomId = '22345678901234567';
@@ -22,7 +22,7 @@ describe('Discord-only runtime persistence', () => {
     const file = join(directory, 'discord-runtime.json');
     const first = new JsonDiscordRuntimeStore(file);
     await first.saveFeatures(guildId, { tempVoice: false, automod: true });
-    await first.saveWelcome(guildId, { welcomeEnabled: true, welcomeDmEnabled: true });
+    await first.saveWelcomeConfig(guildId, { ...DEFAULT_WELCOME, dmEnabled: true, channelId: roomId });
     await first.registry(guildId).upsert({
       logicalKey: 'panel.welcome',
       resourceType: 'PANEL',
@@ -44,7 +44,7 @@ describe('Discord-only runtime persistence', () => {
     const restarted = new JsonDiscordRuntimeStore(file);
     const state = await restarted.getGuild(guildId);
     expect(state.features).toMatchObject({ tempVoice: false, automod: true });
-    expect(state.welcomeDmEnabled).toBe(true);
+    expect(state.welcome).toMatchObject({ dmEnabled: true, channelId: roomId, enabled: true });
     expect(state.entries[0]?.logicalKey).toBe('panel.welcome');
     expect(state.rooms[roomId]?.ownerId).toBe('42345678901234567');
   });
@@ -64,7 +64,7 @@ describe('Discord-only runtime persistence', () => {
       createdByRunId: null,
       metadata: { token: 'must-never-be-written' },
     })).rejects.toThrow(/Sensitive field/);
-    await store.saveWelcome(guildId, { welcomeEnabled: true, welcomeDmEnabled: false });
+    await store.saveWelcomeConfig(guildId, DEFAULT_WELCOME);
     const contents = await readFile(file, 'utf8');
     expect(contents).not.toMatch(/token|secret|password|database|redis|auth/i);
     expect(contents).not.toContain('must-never-be-written');

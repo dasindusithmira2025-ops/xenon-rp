@@ -42,11 +42,45 @@ export interface TicketConfig {
   readonly ticketPanelMessageId: string | null;
 }
 
+/** Longest welcome auto-delete delay accepted: seven days. */
+export const MAX_WELCOME_DELETE_SECONDS = 7 * 24 * 60 * 60;
+/** Longest custom welcome message accepted. */
+export const MAX_WELCOME_MESSAGE_LENGTH = 1_000;
+
+/** Discord-only welcome behaviour, configured with `/xenon welcome …`. */
+export interface WelcomeConfig {
+  readonly enabled: boolean;
+  /** Explicit public welcome channel; the adopted `channel.welcome` is only a fallback. */
+  readonly channelId: string | null;
+  readonly dmEnabled: boolean;
+  readonly rulesChannelId: string | null;
+  readonly rolesChannelId: string | null;
+  readonly initialRoleId: string | null;
+  readonly showMemberCount: boolean;
+  readonly generateCard: boolean;
+  /** 0 keeps the welcome message forever. */
+  readonly deleteAfterSeconds: number;
+  /** null uses the Xenon default text. */
+  readonly customMessage: string | null;
+}
+
+export const DEFAULT_WELCOME: WelcomeConfig = {
+  enabled: true,
+  channelId: null,
+  dmEnabled: false,
+  rulesChannelId: null,
+  rolesChannelId: null,
+  initialRoleId: null,
+  showMemberCount: true,
+  generateCard: true,
+  deleteAfterSeconds: 0,
+  customMessage: null,
+};
+
 export interface DiscordGuildRuntimeState {
   readonly entries: readonly RegistryEntry[];
   readonly features: Partial<BlueprintFeatures>;
-  readonly welcomeEnabled: boolean;
-  readonly welcomeDmEnabled: boolean;
+  readonly welcome: WelcomeConfig;
   readonly rooms: Readonly<Record<string, TemporaryRoomRecord>>;
   readonly ticketConfig: TicketConfig | null;
   /** Ticket type value → id of the Discord category Xenon created for it. */
@@ -65,10 +99,7 @@ export interface DiscordRuntimeStore {
   ): Promise<void>;
   registry(guildId: string): RegistryStore;
   saveFeatures(guildId: string, features: Partial<BlueprintFeatures>): Promise<void>;
-  saveWelcome(
-    guildId: string,
-    settings: Pick<DiscordGuildRuntimeState, 'welcomeEnabled' | 'welcomeDmEnabled'>,
-  ): Promise<void>;
+  saveWelcomeConfig(guildId: string, config: WelcomeConfig): Promise<void>;
   saveRoom(room: TemporaryRoomRecord): Promise<void>;
   removeRoom(guildId: string, channelId: string): Promise<void>;
   saveTicketConfig(guildId: string, config: TicketConfig): Promise<void>;
@@ -97,8 +128,7 @@ interface RuntimeDocument {
 const EMPTY_GUILD: DiscordGuildRuntimeState = {
   entries: [],
   features: {},
-  welcomeEnabled: true,
-  welcomeDmEnabled: false,
+  welcome: DEFAULT_WELCOME,
   rooms: {},
   ticketConfig: null,
   tickets: {},
@@ -190,11 +220,8 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
     await this.updateGuild(guildId, (state) => ({ ...state, features }));
   }
 
-  public async saveWelcome(
-    guildId: string,
-    settings: Pick<DiscordGuildRuntimeState, 'welcomeEnabled' | 'welcomeDmEnabled'>,
-  ): Promise<void> {
-    await this.updateGuild(guildId, (state) => ({ ...state, ...settings }));
+  public async saveWelcomeConfig(guildId: string, config: WelcomeConfig): Promise<void> {
+    await this.updateGuild(guildId, (state) => ({ ...state, welcome: config }));
   }
 
   public async saveRoom(room: TemporaryRoomRecord): Promise<void> {
@@ -347,10 +374,7 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
       throw new Error('Invalid Discord feature configuration.');
     features[key as keyof BlueprintFeatures] = enabled;
   }
-  const welcomeEnabled = value.welcomeEnabled ?? true;
-  const welcomeDmEnabled = value.welcomeDmEnabled ?? false;
-  if (typeof welcomeEnabled !== 'boolean' || typeof welcomeDmEnabled !== 'boolean')
-    throw new Error('Invalid Discord welcome configuration.');
+  const welcome = parseWelcome(value, strict);
   const rooms: Record<string, TemporaryRoomRecord> = {};
   if (value.rooms !== undefined) {
     if (!isRecord(value.rooms)) throw new Error('Invalid temporary voice room registry.');
@@ -401,13 +425,55 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
   return {
     entries,
     features,
-    welcomeEnabled,
-    welcomeDmEnabled,
+    welcome,
     rooms,
     ticketConfig: ticketConfig ?? null,
     ticketCategories,
     tickets,
     ticketSequence,
+  };
+}
+
+/**
+ * Documents written before WelcomeConfig carry `welcomeEnabled` and
+ * `welcomeDmEnabled`; those become the new config's enabled/dmEnabled.
+ */
+function parseWelcome(value: Record<string, unknown>, strict: boolean): WelcomeConfig {
+  const legacyEnabled = value.welcomeEnabled ?? DEFAULT_WELCOME.enabled;
+  const legacyDm = value.welcomeDmEnabled ?? DEFAULT_WELCOME.dmEnabled;
+  if (typeof legacyEnabled !== 'boolean' || typeof legacyDm !== 'boolean')
+    throw new Error('Invalid Discord welcome configuration.');
+  const base: WelcomeConfig = { ...DEFAULT_WELCOME, enabled: legacyEnabled, dmEnabled: legacyDm };
+  if (value.welcome === undefined) return base;
+  if (!isRecord(value.welcome)) {
+    if (strict) throw new Error('Invalid Discord welcome configuration.');
+    return base;
+  }
+  const raw = value.welcome;
+  const pick = <T>(key: keyof WelcomeConfig, valid: (candidate: unknown) => candidate is T, fallback: T): T => {
+    if (valid(raw[key])) return raw[key];
+    if (strict) throw new Error(`Invalid welcome setting ${key}.`);
+    return fallback;
+  };
+  const isBoolean = (candidate: unknown): candidate is boolean => typeof candidate === 'boolean';
+  const isOptionalSnowflake = (candidate: unknown): candidate is string | null =>
+    candidate === null || isSnowflake(candidate);
+  const isDelay = (candidate: unknown): candidate is number =>
+    typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0 && candidate <= MAX_WELCOME_DELETE_SECONDS;
+  const isMessage = (candidate: unknown): candidate is string | null =>
+    candidate === null ||
+    (typeof candidate === 'string' && candidate.trim().length > 0 && candidate.length <= MAX_WELCOME_MESSAGE_LENGTH);
+  return {
+    enabled: pick('enabled', isBoolean, base.enabled),
+    channelId: pick('channelId', isOptionalSnowflake, null),
+    dmEnabled: pick('dmEnabled', isBoolean, base.dmEnabled),
+    rulesChannelId: pick('rulesChannelId', isOptionalSnowflake, null),
+    rolesChannelId: pick('rolesChannelId', isOptionalSnowflake, null),
+    initialRoleId: pick('initialRoleId', isOptionalSnowflake, null),
+    showMemberCount: pick('showMemberCount', isBoolean, DEFAULT_WELCOME.showMemberCount),
+    generateCard: pick('generateCard', isBoolean, DEFAULT_WELCOME.generateCard),
+    deleteAfterSeconds: pick('deleteAfterSeconds', isDelay, 0),
+    customMessage: pick('customMessage', isMessage, null),
   };
 }
 

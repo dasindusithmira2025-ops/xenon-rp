@@ -52,6 +52,7 @@ import {
   publishTicketPanel,
   ticketStatus,
 } from './discord-only-tickets';
+import { handleWelcomeCommand, handleWelcomeJoin, membersIntentAvailable } from './discord-only-welcome';
 import { discordGuildAdapter } from './provisioning/guild-adapter';
 import { JsonDiscordRuntimeStore, type DiscordGuildRuntimeState, type DiscordRuntimeStore } from './runtime-store';
 
@@ -108,7 +109,7 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
   });
   client.on(Events.GuildMemberAdd, (member) => {
     if (member.guild.id !== guildId) return;
-    void handleMemberJoin(member, runtimeStore).catch((error: unknown) => {
+    void handleWelcomeJoin(member, runtimeStore).catch((error: unknown) => {
       logger.warn({ err: error, guildId: member.guild.id }, 'Discord welcome handler failed');
     });
   });
@@ -125,7 +126,15 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
       resolveReady();
     });
   });
-  await client.login(token);
+  try {
+    await client.login(token);
+  } catch (error) {
+    if (error instanceof Error && /disallowed intents/i.test(error.message))
+      logger.error(
+        'Discord rejected the Server Members Intent. Enable Bot → Privileged Gateway Intents → Server Members Intent in the Discord Developer Portal.',
+      );
+    throw error;
+  }
   if (!client.isReady()) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
@@ -149,6 +158,8 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
     throw new Error('DISCORD_APPLICATION_ID does not match the bot account token.');
   }
   logger.info({ user: client.user.tag }, 'Discord connected');
+  if (!membersIntentAvailable(client))
+    logger.warn('Server Members Intent is not enabled for this application; Xenon welcomes and starter roles will not run.');
 
   const guild = await client.guilds.fetch(guildId);
   logger.info({ guildId: guild.id, name: guild.name }, 'Guild resolved');
@@ -302,12 +313,7 @@ async function handleXenon(
   const subcommand = interaction.options.getSubcommand(true);
 
   if (group === 'welcome') {
-    const current = await runtimeStore.getGuild(guild.id);
-    await runtimeStore.saveWelcome(guild.id, {
-      welcomeEnabled: subcommand === 'enable' ? true : subcommand === 'disable' ? false : current.welcomeEnabled,
-      welcomeDmEnabled: subcommand === 'dm-enable' ? true : subcommand === 'dm-disable' ? false : current.welcomeDmEnabled,
-    });
-    await ephemeral(interaction, 'Discord welcome settings saved.');
+    await handleWelcomeCommand(interaction, guild, runtimeStore, subcommand);
     return;
   }
 
@@ -552,24 +558,6 @@ export async function handleSelect(
     return;
   }
   await interaction.reply({ content: DISABLED_PLATFORM_RESPONSE, flags: MessageFlags.Ephemeral });
-}
-
-async function handleMemberJoin(member: GuildMember, runtimeStore: DiscordRuntimeStore): Promise<void> {
-  const settings = await runtimeStore.getGuild(member.guild.id);
-  if (!settings.welcomeEnabled) return;
-  const welcome = settings.entries.find((entry) => entry.logicalKey === 'channel.welcome' && entry.resourceType === 'CHANNEL');
-  if (welcome?.discordId !== null && welcome?.discordId !== undefined) {
-    const channel = await member.guild.channels.fetch(welcome.discordId).catch(() => null);
-    if (channel?.isSendable()) {
-      await channel.send({
-        content: `Welcome to XenonRP, <@${member.id}>! Read #rules and check #how-to-join to get started.`,
-        allowedMentions: { users: [member.id], roles: [], parse: [] },
-      });
-    }
-  }
-  if (settings.welcomeDmEnabled) {
-    await member.send('Welcome to XenonRP! Read the rules in Discord and ask the staff team if you need help.').catch(() => undefined);
-  }
 }
 
 async function handleVoiceState(
