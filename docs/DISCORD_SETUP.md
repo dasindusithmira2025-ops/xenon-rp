@@ -95,7 +95,7 @@ The implemented bot needs these guild permissions:
 Do not grant Administrator. Xenon uses the `Guilds` and `GuildVoiceStates`
 (temporary voice rooms, not privileged) Gateway intents. `GuildMembers` is
 added only when a Xenon welcome setting that needs join events is enabled.
-Message Content and Guild Presences are never enabled. Membership checks use a
+Guild Presences is never enabled, and no Gateway intent requests message content. Membership checks use a
 targeted server-side REST lookup for a known Discord user ID. Install the bot to
 the Xenon guild and move the Xenon bot role above every Discord role that Xenon
 is configured to manage. Discord cannot grant or remove roles at or above the
@@ -104,7 +104,14 @@ bot’s highest role.
 When enabling public or DM join welcomes, open the same application in the
 Discord Developer Portal and enable **Bot → Privileged Gateway Intents → Server
 Members Intent**. This portal switch is required in addition to the conditional
-`GuildMembers` intent in bot code. Do not enable Message Content Intent.
+`GuildMembers` intent in bot code.
+
+Discord-only support tickets save a plain-text transcript to the ticket log
+before deleting a closed ticket channel. Discord only returns message text and
+attachments to a bot whose **Message Content Intent** portal switch is enabled,
+so enable it for the Xenon application when running tickets. Without it,
+transcripts contain authors and timestamps only, `/xenon tickets publish` warns
+about it, and each close log is marked "Transcript incomplete".
 
 ## 4. Configure Xenon guild, channels, and roles
 

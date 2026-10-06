@@ -1,7 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, parse, resolve } from 'node:path';
-import { randomUUID } from 'node:crypto';
+import { dirname, join, resolve } from 'node:path';
 
 import type { BlueprintFeatures, RegistryEntry, RegistryStore } from '@xenon/discord/provisioning/pure';
 
@@ -25,6 +25,8 @@ export interface TicketRecord {
   readonly closedAt: string | null;
   /** Member who closed it; null when the system closed a ticket whose channel vanished. */
   readonly closedBy: string | null;
+  /** Staff member who claimed the ticket; absent in records written before claiming existed. */
+  readonly claimedBy: string | null;
   readonly status: TicketStatus;
 }
 
@@ -83,6 +85,8 @@ export interface DiscordRuntimeStore {
     closedBy: string | null,
     closedAt: string,
   ): Promise<TicketRecord | null>;
+  /** Records the first staff claim on an OPEN ticket; null when closed or already claimed. */
+  claimTicket(guildId: string, ticketId: string, staffId: string): Promise<TicketRecord | null>;
 }
 
 interface RuntimeDocument {
@@ -204,11 +208,10 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
   }
 
   public async removeRoom(guildId: string, channelId: string): Promise<void> {
-    await this.updateGuild(guildId, (state) => {
-      const rooms = { ...state.rooms };
-      delete rooms[channelId];
-      return { ...state, rooms };
-    });
+    await this.updateGuild(guildId, (state) => ({
+      ...state,
+      rooms: Object.fromEntries(Object.entries(state.rooms).filter(([id]) => id !== channelId)),
+    }));
   }
 
   public async saveTicketConfig(guildId: string, config: TicketConfig): Promise<void> {
@@ -262,6 +265,18 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
       return { ...state, tickets: { ...state.tickets, [ticketId]: closed } };
     });
     return closed;
+  }
+
+  public async claimTicket(guildId: string, ticketId: string, staffId: string): Promise<TicketRecord | null> {
+    assertSnowflake(staffId, 'staffId');
+    let claimed: TicketRecord | null = null;
+    await this.updateGuild(guildId, (state) => {
+      const current = state.tickets[ticketId];
+      if (current?.status !== 'OPEN' || current.claimedBy !== null) return state;
+      claimed = { ...current, claimedBy: staffId };
+      return { ...state, tickets: { ...state.tickets, [ticketId]: claimed } };
+    });
+    return claimed;
   }
 
   private enqueue(operation: () => Promise<void>): Promise<void> {
@@ -423,6 +438,7 @@ function parseTicket(ticketId: string, value: unknown): TicketRecord | null {
     typeof value.createdAt !== 'string' ||
     !(value.closedAt === null || typeof value.closedAt === 'string') ||
     !(value.closedBy === null || isSnowflake(value.closedBy)) ||
+    !(value.claimedBy === undefined || value.claimedBy === null || isSnowflake(value.claimedBy)) ||
     (value.status !== 'OPEN' && value.status !== 'CLOSED')
   )
     return null;
@@ -435,6 +451,7 @@ function parseTicket(ticketId: string, value: unknown): TicketRecord | null {
     createdAt: value.createdAt,
     closedAt: value.closedAt,
     closedBy: value.closedBy,
+    claimedBy: value.claimedBy ?? null,
     status: value.status,
   };
 }

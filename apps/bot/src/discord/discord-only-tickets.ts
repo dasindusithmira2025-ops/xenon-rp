@@ -1,5 +1,9 @@
+import { setTimeout as sleep } from 'node:timers/promises';
+
 import {
   ActionRowBuilder,
+  ApplicationFlags,
+  AttachmentBuilder,
   ButtonBuilder,
   ButtonStyle,
   ChannelType,
@@ -8,39 +12,46 @@ import {
   PermissionFlagsBits as P,
   RESTJSONErrorCodes,
   StringSelectMenuBuilder,
+  type APIActionRowComponent,
+  type APIComponentInMessageActionRow,
   type ButtonInteraction,
+  type Client,
   type CategoryChannel,
   type ChatInputCommandInteraction,
   type Guild,
   type GuildMember,
   type Message,
-  type TextChannel,
   type StringSelectMenuInteraction,
+  type TextChannel,
 } from 'discord.js';
 
 import { xenonIds } from '@xenon/discord/interaction-ids';
 import { XenonBasePanel } from '@xenon/discord/panels';
 
-import { logger } from '../runtime';
+import { botEnv, logger } from '../runtime';
 
-import type { DiscordRuntimeStore, TicketConfig, TicketRecord } from './runtime-store';
+import type { DiscordGuildRuntimeState, DiscordRuntimeStore, TicketConfig, TicketRecord } from './runtime-store';
 
 /**
  * Discord-only support tickets.
  *
- * Every infrastructure resource (panel channel, category, log channel, staff
- * role) already exists and is chosen by management with `/xenon tickets
- * publish`; this module only stores their ids. The only things it ever creates
- * are the panel message and one private text channel per ticket.
+ * Management picks the existing panel channel, log channel and staff role with
+ * `/xenon tickets publish`; this module only stores their ids. Xenon creates
+ * and owns exactly: one private Discord category per ticket type, the panel
+ * message, and one private text channel per ticket. Ticket channels are
+ * deleted after closing, once the log entry and transcript are posted.
  */
 
 /** Each type gets its own Xenon-created Discord category, named `<label> Tickets`. */
 export const TICKET_CATEGORIES = [
-  { value: 'GENERAL', label: 'General Support', description: 'Questions and general help' },
-  { value: 'TECHNICAL', label: 'Technical Support', description: 'Connection, game or Discord problems' },
-  { value: 'WHITELIST', label: 'Whitelist Support', description: 'Whitelist or application help' },
-  { value: 'PLAYER_REPORT', label: 'Player Report', description: 'Report a player or rule violation' },
-  { value: 'STAFF_REPORT', label: 'Staff Report', description: 'Report a Xenon staff member' },
+  { value: 'GENERAL', emoji: '🎫', label: 'General Support', summary: 'General questions and assistance', menu: 'General questions and assistance', staffOnly: false },
+  { value: 'TECHNICAL', emoji: '🔧', label: 'Technical Support', summary: 'Discord, FiveM, launcher or server issues', menu: 'Discord, FiveM or server issues', staffOnly: false },
+  { value: 'CHARACTER', emoji: '👤', label: 'Character Issue', summary: 'Problems involving your character or character data', menu: 'Character-related problems', staffOnly: false },
+  { value: 'WHITELIST', emoji: '📝', label: 'Whitelist Support', summary: 'Whitelist, application or interview assistance', menu: 'Application or whitelist assistance', staffOnly: false },
+  { value: 'PLAYER_REPORT', emoji: '🛡️', label: 'Player Report', summary: 'Report a player or rule violation', menu: 'Report a player or rule violation', staffOnly: false },
+  { value: 'STAFF_REPORT', emoji: '🚨', label: 'Staff Report', summary: 'Report a Xenon staff member privately', menu: 'Privately report a staff member', staffOnly: false },
+  { value: 'BUSINESS', emoji: '💼', label: 'Business / Organization', summary: 'Business, gang or organization assistance', menu: 'Organization or business assistance', staffOnly: false },
+  { value: 'DEVELOPER', emoji: '👨‍💻', label: 'Developer Task', summary: 'Developer tasks and technical reports · Staff only', menu: 'Developer issues · Staff only', staffOnly: true },
 ] as const;
 
 const OWNER_ALLOW = [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles];
@@ -60,13 +71,20 @@ const BOT_ALLOW = [
  */
 const GUILD_REQUIRED = [...new Set([...OWNER_ALLOW, ...STAFF_ALLOW, ...BOT_ALLOW, P.ManageRoles])];
 const MESSAGE_CHANNEL_REQUIRED = [P.ViewChannel, P.SendMessages, P.EmbedLinks, P.ReadMessageHistory];
+/** Transcripts are uploaded as files. */
+const LOG_CHANNEL_REQUIRED = [...MESSAGE_CHANNEL_REQUIRED, P.AttachFiles];
 
 const CREATE_COOLDOWN_MS = 60_000;
+/** Bounded transcript: newest messages win when a ticket is longer than this. */
+const TRANSCRIPT_MESSAGE_LIMIT = 500;
 export const RERUN_PUBLISH =
   'Tickets are temporarily unavailable. Xenon management must rerun /xenon tickets publish.';
+export const ALREADY_CLOSING = 'This ticket is already closing or closed.';
+export const STAFF_ONLY_CATEGORY = 'This ticket category is available to Xenon staff only.';
 
 const lastCreation = new Map<string, number>();
 const creating = new Set<string>();
+let deleteDelayMs = 5_000;
 
 /** Test seam: the per-user creation cooldown is process memory. */
 export function resetTicketCooldowns(): void {
@@ -74,26 +92,64 @@ export function resetTicketCooldowns(): void {
   creating.clear();
 }
 
-export function ticketCenterPanel() {
+/** Test seam: the pause between the closed notice and channel deletion. */
+export function setTicketDeleteDelay(ms: number): void {
+  deleteDelayMs = ms;
+}
+
+/** A public https URL only; localhost and placeholder hosts never become buttons. */
+function publicUrl(value: string | null | undefined): string | null {
+  if (value == null) return null;
+  try {
+    const url = new URL(value);
+    const host = url.hostname.toLowerCase();
+    if (url.protocol !== 'https:') return null;
+    if (host === 'localhost' || host.endsWith('.local') || host.endsWith('.localhost')) return null;
+    if (/^(?:127\.|10\.|192\.168\.|0\.0\.0\.0)/.test(host) || /(?:^|\.)example\.(?:com|org|net)$/.test(host)) return null;
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export function ticketCenterPanel(options: { readonly siteUrl?: string | null; readonly thumbnailUrl?: string | null } = {}) {
   const select = new StringSelectMenuBuilder()
-    .setCustomId(xenonIds.ticketOpen())
-    .setPlaceholder('Choose a category to open a ticket')
+    .setCustomId(xenonIds.ticketCreate())
+    .setPlaceholder('🎟️ Select a support category')
     .setMinValues(1)
     .setMaxValues(1)
-    .addOptions(TICKET_CATEGORIES.map(({ value, label, description }) => ({ value, label, description })));
-  return {
-    embeds: [
-      XenonBasePanel({
-        title: 'XENON SUPPORT CENTER',
-        description:
-          'Need assistance? Open a private support ticket below.\nA member of the Xenon staff team will respond as soon as possible.',
-        footer: 'XenonRP • Support',
-      })
-        .addFields({ name: 'CATEGORIES', value: TICKET_CATEGORIES.map((category) => `• ${category.label}`).join('\n') })
+    .addOptions(
+      TICKET_CATEGORIES.map(({ value, emoji, label, menu }) => ({ value, label, description: menu, emoji: { name: emoji } })),
+    );
+  const embed = XenonBasePanel({
+    title: '🎫 XENON SUPPORT CENTER',
+    description: [
+      'Welcome to the **Xenon Roleplay Support Center**.',
+      '',
+      'Need help with something? Select the category that best matches your issue below and Xenon will create a private ticket for you.',
+      '',
+      '> Please describe your issue clearly after opening the ticket.',
+      '> A staff member will assist you as soon as possible.',
+    ].join('\n'),
+    footer: 'Xenon Support • Xenon Roleplay',
+    timestamp: new Date(),
+  }).addFields({
+    name: '📊 AVAILABLE CATEGORIES',
+    value: TICKET_CATEGORIES.map(({ emoji, label, summary }) => `${emoji} **${label}**\n└ ${summary}`).join('\n\n'),
+  });
+  if (options.thumbnailUrl != null) embed.setThumbnail(options.thumbnailUrl);
+
+  const components: APIActionRowComponent<APIComponentInMessageActionRow>[] = [
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select).toJSON(),
+  ];
+  const website = publicUrl(options.siteUrl);
+  if (website !== null)
+    components.push(
+      new ActionRowBuilder<ButtonBuilder>()
+        .addComponents(new ButtonBuilder().setStyle(ButtonStyle.Link).setLabel('WEBSITE').setEmoji('🌐').setURL(website))
         .toJSON(),
-    ],
-    components: [new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(select).toJSON()],
-  };
+    );
+  return { embeds: [embed.toJSON()], components };
 }
 
 function categoryLabel(value: string): string {
@@ -101,34 +157,101 @@ function categoryLabel(value: string): string {
   return TICKET_CATEGORIES.find((category) => category.value === value)?.label ?? value;
 }
 
-function openedEmbed(ticket: TicketRecord) {
-  return XenonBasePanel({
-    title: 'XENON SUPPORT · TICKET OPENED',
-    description:
-      'A member of the Xenon staff team will respond as soon as possible. Describe your issue in as much detail as you can.',
-    footer: 'XenonRP • Support',
-    timestamp: new Date(ticket.createdAt),
-  })
-    .addFields(
-      { name: 'Ticket', value: ticket.ticketId, inline: true },
-      { name: 'Category', value: categoryLabel(ticket.category), inline: true },
-      { name: 'Opened by', value: `<@${ticket.ownerId}>`, inline: true },
-    )
-    .toJSON();
+function relativeTime(iso: string): string {
+  return `<t:${String(Math.floor(new Date(iso).getTime() / 1000))}:R>`;
 }
 
-function unixTime(iso: string | null): string {
+function fullTime(iso: string | null): string {
   return iso === null ? 'Unknown' : `<t:${String(Math.floor(new Date(iso).getTime() / 1000))}:F>`;
 }
 
-function memberMention(id: string | null): string {
-  return id === null ? 'Xenon (channel missing)' : `<@${id}> (${id})`;
+/** `3d 4h`, `2h 14m`, `5m 3s`, `42s`. */
+export function formatDuration(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  const rest = seconds % 60;
+  if (days > 0) return `${String(days)}d ${String(hours)}h`;
+  if (hours > 0) return `${String(hours)}h ${String(minutes)}m`;
+  if (minutes > 0) return `${String(minutes)}m ${String(rest)}s`;
+  return `${String(rest)}s`;
+}
+
+function openedEmbed(ticket: TicketRecord) {
+  const embed = XenonBasePanel({
+    title: '🎫 XENON SUPPORT · TICKET OPENED',
+    description: [
+      `Welcome <@${ticket.ownerId}>.`,
+      '',
+      'Your private support ticket has been created successfully.',
+      'Explain your issue below with as much useful information as possible.',
+      '',
+      'Staff will respond when available.',
+      '',
+      '### What happens next?',
+      '• Describe the issue clearly',
+      '• Attach screenshots/video when useful',
+      '• Avoid repeatedly pinging staff',
+      '• Wait for a support member to respond',
+    ].join('\n'),
+    footer: `Xenon Support • ${ticket.ticketId}`,
+    timestamp: new Date(ticket.createdAt),
+  }).addFields(
+    { name: '🎟️ Ticket', value: ticket.ticketId, inline: true },
+    { name: '📂 Category', value: categoryLabel(ticket.category), inline: true },
+    { name: '👤 Opened By', value: `<@${ticket.ownerId}>`, inline: true },
+    { name: '🕒 Created', value: relativeTime(ticket.createdAt), inline: true },
+  );
+  if (ticket.claimedBy !== null) embed.addFields({ name: '🙋 Claimed By', value: `<@${ticket.claimedBy}>`, inline: true });
+  return embed.toJSON();
+}
+
+function ticketButtons(ticket: TicketRecord, disabled: boolean) {
+  return new ActionRowBuilder<ButtonBuilder>()
+    .addComponents(
+      new ButtonBuilder()
+        .setCustomId(xenonIds.ticketClose(ticket.ticketId))
+        .setLabel('CLOSE TICKET')
+        .setEmoji('🔒')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(disabled),
+      new ButtonBuilder()
+        .setCustomId(xenonIds.ticketClaim(ticket.ticketId))
+        .setLabel(ticket.claimedBy === null ? 'CLAIM TICKET' : 'CLAIMED')
+        .setEmoji('🙋')
+        .setStyle(ButtonStyle.Secondary)
+        .setDisabled(disabled || ticket.claimedBy !== null),
+    )
+    .toJSON();
 }
 
 /** Discord's "resource is gone" answers; any other failure means "unknown", never "missing". */
 function isUnknownResource(error: unknown): boolean {
   const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
   return code === RESTJSONErrorCodes.UnknownChannel || code === RESTJSONErrorCodes.UnknownMessage;
+}
+
+/** Error code and message only: Discord API errors can carry request bodies. */
+function safeError(error: unknown): { readonly code: string | number | null; readonly message: string } {
+  const code = typeof error === 'object' && error !== null && 'code' in error ? error.code : null;
+  return {
+    code: typeof code === 'string' || typeof code === 'number' ? code : null,
+    message: error instanceof Error ? error.message.slice(0, 200) : 'Unknown error',
+  };
+}
+
+/** Staff for tickets: guild owner, ManageGuild, or the configured ticket staff role. */
+async function isTicketStaff(
+  interaction: ButtonInteraction | StringSelectMenuInteraction,
+  guild: Guild,
+  config: TicketConfig | null,
+): Promise<boolean> {
+  const userId = interaction.user.id;
+  if (guild.ownerId === userId || interaction.memberPermissions?.has(P.ManageGuild) === true) return true;
+  if (config === null) return false;
+  const member: GuildMember | null = await guild.members.fetch(userId).catch(() => null);
+  return member?.roles.cache.has(config.ticketStaffRoleId) === true;
 }
 
 // ── /xenon tickets publish ──────────────────────────────────────────────────
@@ -181,7 +304,7 @@ async function publishSerialized(
   const missing = [
     ...missingPermissions(me.permissions.missing(GUILD_REQUIRED), 'server'),
     ...missingPermissions(panelChannel.permissionsFor(me).missing(MESSAGE_CHANNEL_REQUIRED), `#${panelChannel.name}`),
-    ...missingPermissions(logChannel.permissionsFor(me).missing(MESSAGE_CHANNEL_REQUIRED), `#${logChannel.name}`),
+    ...missingPermissions(logChannel.permissionsFor(me).missing(LOG_CHANNEL_REQUIRED), `#${logChannel.name}`),
   ];
   if (missing.length > 0) {
     await interaction.editReply(`Xenon is missing permissions. Nothing was saved.\n${missing.join('\n')}`);
@@ -218,7 +341,7 @@ async function publishSerialized(
     return;
   }
 
-  const payload = ticketCenterPanel();
+  const payload = ticketCenterPanel({ siteUrl: botEnv.NEXT_PUBLIC_SITE_URL, thumbnailUrl: guild.iconURL({ size: 256 }) });
   let panelMessageId: string | null = null;
   if (saved?.ticketPanelMessageId != null) {
     let previous: Message | null;
@@ -269,18 +392,13 @@ async function publishSerialized(
   }
   await interaction.editReply(
     [
-      'XENON TICKETS PUBLISHED',
-      '',
-      `Panel: <#${panelChannel.id}>`,
-      `Log channel: <#${logChannel.id}>`,
-      `Staff role: <@&${staffRole.id}>`,
-      '',
-      'Ticket categories:',
-      ...categories.lines,
-      '',
-      categories.created === 0
-        ? 'No channels or roles were created.'
-        : `Created ${String(categories.created)} private ticket categor${categories.created === 1 ? 'y' : 'ies'}. No other channels or roles were modified.`,
+      `✅ Xenon Support Center published in <#${panelChannel.id}>`,
+      ...(messageContentAvailable(interaction)
+        ? []
+        : ['⚠️ Message Content Intent is disabled for this bot, so ticket transcripts will not include message text or attachments. Enable it in the Discord Developer Portal.']),
+      ...(categories.created === 0
+        ? []
+        : [`Created ${String(categories.created)} private ticket categor${categories.created === 1 ? 'y' : 'ies'}: ${categories.createdNames.join(', ')}`]),
     ].join('\n'),
   );
 }
@@ -296,10 +414,9 @@ async function ensureTicketCategories(
   staffRoleId: string,
   previousStaffRoleId: string | null,
   store: DiscordRuntimeStore,
-): Promise<{ readonly lines: string[]; readonly created: number } | string> {
+): Promise<{ readonly created: number; readonly createdNames: string[] } | string> {
   const stored = (await store.getGuild(guild.id)).ticketCategories;
-  const lines: string[] = [];
-  let created = 0;
+  const createdNames: string[] = [];
   for (const type of TICKET_CATEGORIES) {
     const storedId = stored[type.value];
     let category: CategoryChannel | null = null;
@@ -326,7 +443,7 @@ async function ensureTicketCategories(
         ],
       });
       await store.saveTicketCategory(guild.id, type.value, category.id);
-      created += 1;
+      createdNames.push(category.name);
     } else if (previousStaffRoleId !== null && previousStaffRoleId !== staffRoleId) {
       // Xenon owns these categories, so it keeps their staff access in step with the configured role.
       await category.permissionOverwrites.delete(previousStaffRoleId, 'Xenon ticket staff role changed');
@@ -336,9 +453,8 @@ async function ensureTicketCategories(
         { type: OverwriteType.Role, reason: 'Xenon ticket staff role changed' },
       );
     }
-    lines.push(`${type.label} → ${category.name}`);
   }
-  return { lines, created };
+  return { created: createdNames.length, createdNames };
 }
 
 function missingPermissions(missing: readonly string[], where: string): string[] {
@@ -438,6 +554,10 @@ export async function openTicketFromSelect(
     await reply('This ticket panel is no longer active. Use the current XENON SUPPORT CENTER panel.');
     return;
   }
+  if (category.staffOnly && !(await isTicketStaff(interaction, guild, config))) {
+    await reply(STAFF_ONLY_CATEGORY);
+    return;
+  }
 
   const userId = interaction.user.id;
   const key = `${guild.id}:${userId}`;
@@ -490,7 +610,10 @@ export async function openTicketFromSelect(
     const me = await guild.members.fetchMe();
     const channel = await guild.channels
       .create({
-        name: ticketChannelName(interaction.user.username, ticketId),
+        name: ticketChannelName(
+          interaction.user.username,
+          new Set([...guild.channels.cache.values()].map((existing) => existing.name)),
+        ),
         type: ChannelType.GuildText,
         parent: parent.id,
         topic: `Xenon support ticket ${ticketId}`,
@@ -520,6 +643,7 @@ export async function openTicketFromSelect(
       createdAt: new Date(now).toISOString(),
       closedAt: null,
       closedBy: null,
+      claimedBy: null,
       status: 'OPEN',
     };
     let opened: boolean;
@@ -543,16 +667,7 @@ export async function openTicketFromSelect(
       await channel.send({
         content: `<@${userId}> <@&${resources.staffRole.id}>`,
         embeds: [openedEmbed(ticket)],
-        components: [
-          new ActionRowBuilder<ButtonBuilder>()
-            .addComponents(
-              new ButtonBuilder()
-                .setCustomId(xenonIds.ticketClose(ticketId))
-                .setLabel('CLOSE TICKET')
-                .setStyle(ButtonStyle.Danger),
-            )
-            .toJSON(),
-        ],
+        components: [ticketButtons(ticket, false)],
         allowedMentions: { users: [userId], roles: [resources.staffRole.id] },
       });
     } catch (error) {
@@ -569,16 +684,24 @@ export async function openTicketFromSelect(
   }
 }
 
-/** `ticket-<username>-<number>`: Discord-safe characters only, unique by ticket number. */
-export function ticketChannelName(username: string, ticketId: string): string {
+/** Longest slug kept so `ticket-<slug>-<n>` always fits Discord's 100-character limit. */
+const MAX_NAME_SLUG = 80;
+
+/** `ticket-<username>`, then `-2`, `-3`… on collision. The reference lives in runtime data. */
+export function ticketChannelName(username: string, taken: ReadonlySet<string>): string {
   const slug =
     username
       .normalize('NFKD')
       .toLowerCase()
       .replace(/[^a-z0-9]+/g, '-')
       .replace(/^-+|-+$/g, '')
-      .slice(0, 32) || 'member';
-  return `ticket-${slug}-${ticketId.slice('XN-TK-'.length)}`;
+      .slice(0, MAX_NAME_SLUG)
+      .replace(/-+$/g, '') || 'member';
+  const base = `ticket-${slug}`;
+  if (!taken.has(base)) return base;
+  let suffix = 2;
+  while (taken.has(`${base}-${String(suffix)}`)) suffix += 1;
+  return `${base}-${String(suffix)}`;
 }
 
 // ── Close ───────────────────────────────────────────────────────────────────
@@ -601,127 +724,313 @@ export async function closeTicketFromButton(
     return;
   }
   if (ticket.status !== 'OPEN') {
-    await deny('This ticket is already closed.');
+    await deny(ALREADY_CLOSING);
     return;
   }
-  if (!(await canClose(interaction, guild, ticket, state.ticketConfig))) {
+  if (ticket.ownerId !== interaction.user.id && !(await isTicketStaff(interaction, guild, state.ticketConfig))) {
     await deny('Only the ticket owner or the Xenon staff team can close this ticket.');
     return;
   }
 
   // Acknowledge first so the remaining Discord calls are not racing the interaction window.
   await interaction.deferUpdate();
-  const followUp = (content: string) => interaction.followUp({ content, flags: MessageFlags.Ephemeral });
-
-  // Revoke the owner's write access before recording CLOSED. If this fails the ticket stays
-  // OPEN and its button keeps working, so closing can simply be retried.
-  let channel: TextChannel;
-  try {
-    const fetched = await guild.channels.fetch(ticket.channelId);
-    if (fetched?.type !== ChannelType.GuildText) throw new Error('Ticket channel is not a text channel');
-    channel = fetched;
-    await channel.permissionOverwrites.edit(
-      ticket.ownerId,
-      {
-        ViewChannel: true,
-        SendMessages: false,
-        SendMessagesInThreads: false,
-        CreatePublicThreads: false,
-        CreatePrivateThreads: false,
-      },
-      { type: OverwriteType.Member, reason: `Xenon ticket ${ticketId} closed` },
-    );
-  } catch (error) {
-    logger.warn({ err: error, guildId: guild.id, ticketId }, 'Could not lock ticket owner on close');
-    await followUp('Xenon could not lock this ticket, so it is still open. Try again or contact Xenon management.');
-    return;
-  }
-
+  // The atomic OPEN → CLOSED transition is the single gate: exactly one close flow passes it,
+  // so a second press can never produce a second log, transcript or delete.
   const closed = await store.closeTicket(guild.id, ticketId, interaction.user.id, new Date().toISOString());
   if (closed === null) {
-    await followUp('This ticket is already closed.');
+    await interaction.followUp({ content: ALREADY_CLOSING, flags: MessageFlags.Ephemeral });
     return;
   }
 
-  const problems: string[] = [];
-  const step = async (label: string, action: () => Promise<unknown>) => {
-    try {
-      await action();
-    } catch (error) {
-      logger.warn({ err: error, guildId: guild.id, ticketId }, `Ticket close step failed: ${label}`);
-      problems.push(label);
-    }
+  const warn = (label: string, error: unknown) => {
+    logger.warn({ guildId: guild.id, ticketId, step: label, error: safeError(error) }, 'Ticket close step failed');
   };
+  await interaction
+    .editReply({ embeds: [openedEmbed(closed)], components: [ticketButtons(closed, true)] })
+    .catch((error: unknown) => {
+      warn('disable buttons', error);
+    });
 
-  // Replace the opening message without its buttons.
-  await step('remove buttons', () => interaction.editReply({ embeds: [openedEmbed(ticket)], components: [] }));
-  await step('closed notice', () =>
-    channel.send({
+  const fetched = await guild.channels.fetch(ticket.channelId).catch(() => null);
+  const channel = fetched?.type === ChannelType.GuildText ? fetched : null;
+  if (channel !== null) {
+    // Nothing the owner writes from here on would make it into the transcript.
+    await channel.permissionOverwrites
+      .edit(
+        ticket.ownerId,
+        { SendMessages: false, SendMessagesInThreads: false, CreatePublicThreads: false, CreatePrivateThreads: false },
+        { type: OverwriteType.Member, reason: `Xenon ticket ${ticketId} closed` },
+      )
+      .catch((error: unknown) => {
+        warn('lock owner', error);
+      });
+    await channel
+      .send({ embeds: [closedNoticeEmbed(closed)], allowedMentions: { parse: [] } })
+      .catch((error: unknown) => {
+        warn('closed notice', error);
+      });
+  }
+  const noticeAt = Date.now();
+
+  const contentAvailable = messageContentAvailable(interaction);
+  let transcript: string | null = null;
+  if (channel !== null) {
+    try {
+      transcript = await buildTranscript(channel, closed, contentAvailable);
+    } catch (error) {
+      warn('transcript', error);
+    }
+  }
+
+  // The log must exist before anything is deleted. A transcript that cannot be uploaded
+  // falls back to a metadata-only log rather than blocking the close.
+  const config = state.ticketConfig;
+  const fetchedLog =
+    config === null ? null : await guild.channels.fetch(config.ticketLogChannelId).catch(() => null);
+  const logChannel = fetchedLog?.type === ChannelType.GuildText ? fetchedLog : null;
+  let logged = false;
+  if (logChannel !== null) {
+    const attempts: (string | null)[] = transcript === null ? [null] : [transcript, null];
+    for (const attached of attempts) {
+      try {
+        await logChannel.send({
+          embeds: [
+            closeLogEmbed(
+              closed,
+              channel?.name ?? null,
+              attached === null ? 'unavailable' : contentAvailable ? 'attached' : 'incomplete',
+            ),
+          ],
+          files:
+            attached === null
+              ? []
+              : [new AttachmentBuilder(Buffer.from(attached, 'utf8'), { name: `${ticketId}-transcript.txt` })],
+          allowedMentions: { parse: [] },
+        });
+        logged = true;
+        break;
+      } catch (error) {
+        warn(attached === null ? 'log' : 'log with transcript', error);
+      }
+    }
+  }
+  if (!logged || logChannel === null) {
+    await interaction
+      .followUp({
+        content: `Ticket ${ticketId} is closed, but the ticket log could not be written, so the channel was kept for staff review. Xenon management should rerun /xenon tickets publish.`,
+        flags: MessageFlags.Ephemeral,
+      })
+      .catch(() => undefined);
+    return;
+  }
+  if (channel === null) return;
+
+  const remaining = deleteDelayMs - (Date.now() - noticeAt);
+  if (remaining > 0) await sleep(remaining);
+
+  // Re-read protection right before deleting: publish or adoption may have bound this
+  // channel as infrastructure while the close was in progress.
+  const latest = await store.getGuild(guild.id);
+  if (publishing.has(guild.id) || !isDeletableTicketChannel(channel, closed, latest)) {
+    logger.warn({ guildId: guild.id, ticketId, channelId: channel.id }, 'Refused to delete a protected channel');
+    await sendDeleteWarning(logChannel, closed, channel, 'This channel is not a Xenon ticket channel, so it was not deleted.');
+    return;
+  }
+  try {
+    await channel.delete(`Xenon ticket ${ticketId} closed`);
+  } catch (error) {
+    // One attempt only: the ticket stays CLOSED and staff clean up by hand.
+    warn('delete channel', error);
+    const { code } = safeError(error);
+    await sendDeleteWarning(
+      logChannel,
+      closed,
+      channel,
+      `Xenon could not delete this ticket channel${code === null ? '' : ` (Discord error ${String(code)})`}. Delete it manually.`,
+    );
+  }
+}
+
+/**
+ * Discord returns message text and attachments over REST only when the
+ * application's Message Content Intent is enabled in the Developer Portal.
+ */
+function messageContentAvailable(interaction: { readonly client: Client }): boolean {
+  return (
+    interaction.client.application?.flags.any([
+      ApplicationFlags.GatewayMessageContent,
+      ApplicationFlags.GatewayMessageContentLimited,
+    ]) === true
+  );
+}
+
+/**
+ * Only the channel Xenon created for this ticket may be deleted, and never one
+ * that is configured or adopted infrastructure, even if runtime data was edited.
+ */
+function isDeletableTicketChannel(
+  channel: TextChannel,
+  ticket: TicketRecord,
+  state: DiscordGuildRuntimeState,
+): boolean {
+  const protectedIds = new Set<string>([
+    ...(state.ticketConfig === null ? [] : [state.ticketConfig.ticketPanelChannelId, state.ticketConfig.ticketLogChannelId]),
+    ...Object.values(state.ticketCategories),
+    ...state.entries.flatMap((entry) => (entry.discordId === null ? [] : [entry.discordId])),
+  ]);
+  return channel.id === ticket.channelId && !protectedIds.has(channel.id);
+}
+
+async function sendDeleteWarning(logChannel: TextChannel, ticket: TicketRecord, channel: TextChannel, message: string) {
+  await logChannel
+    .send({
       embeds: [
         XenonBasePanel({
-          title: 'XENON SUPPORT · TICKET CLOSED',
-          description: 'This ticket is closed. The channel is kept for staff review.',
-          tone: 'neutral',
-          footer: 'XenonRP • Support',
-          timestamp: new Date(closed.closedAt ?? Date.now()),
+          title: '⚠️ TICKET CHANNEL NOT DELETED',
+          description: message,
+          tone: 'warning',
+          footer: 'Xenon Support Logs',
+          timestamp: new Date(),
         })
           .addFields(
-            { name: 'Ticket', value: ticketId, inline: true },
-            { name: 'Closed by', value: `<@${interaction.user.id}>`, inline: true },
+            { name: 'Ticket', value: ticket.ticketId, inline: true },
+            { name: 'Channel', value: `#${channel.name}\n\`${channel.id}\``, inline: true },
+            { name: 'Status', value: 'CLOSED', inline: true },
           )
           .toJSON(),
       ],
       allowedMentions: { parse: [] },
-    }),
-  );
-
-  const logChannel =
-    state.ticketConfig === null
-      ? null
-      : await guild.channels.fetch(state.ticketConfig.ticketLogChannelId).catch(() => null);
-  if (logChannel?.type === ChannelType.GuildText) {
-    await step('log', () => logChannel.send({ embeds: [closeLogEmbed(closed)], allowedMentions: { parse: [] } }));
-  } else {
-    problems.push('log channel missing — rerun /xenon tickets publish');
-  }
-
-  // Renames are heavily rate limited by Discord, so it runs last.
-  await step('rename', () => channel.setName(`closed-${ticketId.toLowerCase()}`, `Xenon ticket ${ticketId} closed`));
-
-  if (problems.length > 0)
-    await followUp(`Ticket ${ticketId} is closed and locked, but some steps failed: ${problems.join('; ')}.`);
+    })
+    .catch((error: unknown) => {
+      logger.warn({ ticketId: ticket.ticketId, error: safeError(error) }, 'Ticket delete warning could not be logged');
+    });
 }
 
-async function canClose(
-  interaction: ButtonInteraction,
-  guild: Guild,
-  ticket: TicketRecord,
-  config: TicketConfig | null,
-): Promise<boolean> {
-  const userId = interaction.user.id;
-  if (ticket.ownerId === userId) return true;
-  if (guild.ownerId === userId || interaction.memberPermissions?.has(P.ManageGuild) === true) return true;
-  if (config === null) return false;
-  const member: GuildMember | null = await guild.members.fetch(userId).catch(() => null);
-  return member?.roles.cache.has(config.ticketStaffRoleId) === true;
-}
-
-function closeLogEmbed(ticket: TicketRecord) {
+function closedNoticeEmbed(ticket: TicketRecord) {
   return XenonBasePanel({
-    title: `TICKET CLOSED · ${ticket.ticketId}`,
-    description: 'A Xenon support ticket was closed. The channel is kept for review.',
+    title: '🔒 XENON SUPPORT · TICKET CLOSED',
+    description: [
+      `Ticket **${ticket.ticketId}** has been closed by <@${ticket.closedBy ?? ticket.ownerId}>.`,
+      '',
+      `This channel will automatically be deleted in **${String(Math.round(deleteDelayMs / 1000))} seconds**.`,
+      '',
+      'Thank you for using Xenon Support.',
+    ].join('\n'),
     tone: 'neutral',
-    footer: 'XenonRP • Ticket Log',
+    footer: `Xenon Support • ${ticket.ticketId}`,
+    timestamp: new Date(ticket.closedAt ?? Date.now()),
+  }).toJSON();
+}
+
+const TRANSCRIPT_STATE = {
+  attached: (ticketId: string) => `Transcript attached: \`${ticketId}-transcript.txt\``,
+  incomplete: (ticketId: string) =>
+    `Transcript incomplete: \`${ticketId}-transcript.txt\` has authors and times only (Message Content Intent disabled)`,
+  unavailable: () => 'Transcript unavailable',
+} as const;
+
+function closeLogEmbed(ticket: TicketRecord, channelName: string | null, transcript: keyof typeof TRANSCRIPT_STATE) {
+  const mention = (id: string | null) => (id === null ? 'Xenon' : `<@${id}>\n\`${id}\``);
+  return XenonBasePanel({
+    title: '📁 XENON TICKET CLOSED',
+    description: TRANSCRIPT_STATE[transcript](ticket.ticketId),
+    tone: 'neutral',
+    footer: 'Xenon Support Logs',
     timestamp: new Date(ticket.closedAt ?? Date.now()),
   })
     .addFields(
       { name: 'Ticket', value: ticket.ticketId, inline: true },
-      { name: 'Owner', value: memberMention(ticket.ownerId), inline: true },
       { name: 'Category', value: categoryLabel(ticket.category), inline: true },
-      { name: 'Opened', value: unixTime(ticket.createdAt), inline: true },
-      { name: 'Closed', value: unixTime(ticket.closedAt), inline: true },
-      { name: 'Closed by', value: memberMention(ticket.closedBy), inline: true },
-      { name: 'Channel', value: `<#${ticket.channelId}> (${ticket.channelId})` },
+      { name: 'Status', value: 'CLOSED', inline: true },
+      { name: 'Owner', value: mention(ticket.ownerId), inline: true },
+      { name: 'Closed By', value: mention(ticket.closedBy), inline: true },
+      ...(ticket.claimedBy === null ? [] : [{ name: 'Claimed By', value: mention(ticket.claimedBy), inline: true }]),
+      { name: 'Opened', value: fullTime(ticket.createdAt), inline: true },
+      { name: 'Closed', value: fullTime(ticket.closedAt), inline: true },
+      {
+        name: 'Duration',
+        value: formatDuration(new Date(ticket.closedAt ?? Date.now()).getTime() - new Date(ticket.createdAt).getTime()),
+        inline: true,
+      },
+      { name: 'Channel', value: `${channelName === null ? 'unknown' : `#${channelName}`}\n\`${ticket.channelId}\`` },
     )
     .toJSON();
+}
+
+/**
+ * Plain-text transcript of the newest {@link TRANSCRIPT_MESSAGE_LIMIT}
+ * messages: timestamp, username, user id, body and attachment URLs only.
+ */
+export async function buildTranscript(
+  channel: TextChannel,
+  ticket: TicketRecord,
+  contentAvailable: boolean,
+): Promise<string> {
+  const messages: Message[] = [];
+  let before: string | undefined;
+  while (messages.length < TRANSCRIPT_MESSAGE_LIMIT) {
+    const page = await channel.messages.fetch({
+      limit: Math.min(100, TRANSCRIPT_MESSAGE_LIMIT - messages.length),
+      ...(before === undefined ? {} : { before }),
+    });
+    messages.push(...page.values());
+    if (page.size < 100) break;
+    before = page.last()?.id;
+    if (before === undefined) break;
+  }
+  messages.sort((left, right) => left.createdTimestamp - right.createdTimestamp);
+
+  const lines = [
+    `Xenon Support transcript — ${ticket.ticketId}`,
+    `Category: ${categoryLabel(ticket.category)}`,
+    `Owner: ${ticket.ownerId}`,
+    `Opened: ${ticket.createdAt}`,
+    `Closed: ${ticket.closedAt ?? 'unknown'} by ${ticket.closedBy ?? 'Xenon'}`,
+    `Messages: ${String(messages.length)}${messages.length >= TRANSCRIPT_MESSAGE_LIMIT ? ` (newest ${String(TRANSCRIPT_MESSAGE_LIMIT)} only)` : ''}`,
+    ...(contentAvailable
+      ? []
+      : ['NOTE: Message Content Intent is disabled for this bot, so Discord withheld message text and attachments.']),
+    '',
+  ];
+  for (const message of messages) {
+    const embedTitles = message.embeds.map((embed) => embed.title).filter((title): title is string => title !== null);
+    const body = message.content.length > 0 ? message.content : embedTitles.length > 0 ? `[embed] ${embedTitles.join(' | ')}` : '';
+    lines.push(`[${new Date(message.createdTimestamp).toISOString()}] ${message.author.username} (${message.author.id}): ${body}`);
+    for (const attachment of message.attachments.values()) lines.push(`    attachment: ${attachment.url}`);
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+// ── Claim ───────────────────────────────────────────────────────────────────
+
+export async function claimTicketFromButton(
+  interaction: ButtonInteraction,
+  ticketId: string,
+  store: DiscordRuntimeStore,
+): Promise<void> {
+  const deny = (content: string) => interaction.reply({ content, flags: MessageFlags.Ephemeral });
+  const guild = interaction.guild;
+  if (guild === null) {
+    await deny('Claim tickets inside the Xenon Discord server.');
+    return;
+  }
+  const state = await store.getGuild(guild.id);
+  const ticket = state.tickets[ticketId];
+  if (ticket?.guildId !== guild.id || ticket.channelId !== interaction.channelId) {
+    await deny('This ticket could not be verified.');
+    return;
+  }
+  if (!(await isTicketStaff(interaction, guild, state.ticketConfig))) {
+    await deny('Only the Xenon staff team can claim tickets.');
+    return;
+  }
+  const claimed = await store.claimTicket(guild.id, ticketId, interaction.user.id);
+  if (claimed === null) {
+    await deny(ticket.status === 'OPEN' ? 'This ticket has already been claimed.' : ALREADY_CLOSING);
+    return;
+  }
+  await interaction.update({ embeds: [openedEmbed(claimed)], components: [ticketButtons(claimed, false)] });
+  await interaction
+    .followUp({ content: `🙋 <@${interaction.user.id}> has claimed this ticket and will assist you.`, allowedMentions: { parse: [] } })
+    .catch(() => undefined);
 }

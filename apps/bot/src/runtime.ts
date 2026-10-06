@@ -4,6 +4,9 @@ import { createLogger, type Logger } from '@xenon/logger';
 // Integrated deployments share the repository's root .env. A Discord-only
 // process receives its complete environment from the host and must not load
 // unrelated database, Redis, Auth.js, storage, or FiveM values from that file.
+// The mode must be known before validated configuration can be read, because it
+// decides whether the root .env is loaded at all.
+// eslint-disable-next-line no-restricted-properties -- intentional pre-config bootstrap read
 if (process.env.BOT_RUNTIME_MODE !== 'discord-only') {
   await import('@xenon/config/load-env');
 }

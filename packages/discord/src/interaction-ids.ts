@@ -16,7 +16,9 @@ export const xenonIds = {
   applicationOpen: () => build('application', 'open'),
   ticketClose: (publicId: string) => build('ticket', 'close', publicId),
   /** Discord-only ticket center category select. */
-  ticketOpen: () => build('ticket', 'open'),
+  ticketCreate: () => build('ticket', 'create'),
+  /** Discord-only staff claim button inside a ticket channel. */
+  ticketClaim: (publicId: string) => build('ticket', 'claim', publicId),
   /** Opens the confirmation modal for an approved plan. */
   setupApprove: (mode: 'apply' | 'repair', runId: string) => build('setup', mode, runId),
   setupConfirm: (mode: 'apply' | 'repair', runId: string) =>

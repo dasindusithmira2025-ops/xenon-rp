@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   ActivityType,
   ChannelType,
@@ -14,7 +16,6 @@ import {
   type StringSelectMenuInteraction,
   type VoiceBasedChannel,
 } from 'discord.js';
-import { randomUUID } from 'node:crypto';
 
 import { assetsRoot, desiredAssets, readAssetData, readManifest } from '@xenon/discord/assets';
 import { parseXenonId } from '@xenon/discord/interaction-ids';
@@ -31,8 +32,9 @@ import {
   type DesiredPanel,
   type EmojiRef,
   type PanelContext,
-  type PlanItem,
 } from '@xenon/discord/provisioning/pure';
+
+import { botEnv, logger } from '../runtime';
 
 import { adoptionReply } from './adoption-reply';
 import {
@@ -44,6 +46,7 @@ import {
   respondPlatformUnavailable,
 } from './discord-only-commands';
 import {
+  claimTicketFromButton,
   closeTicketFromButton,
   openTicketFromSelect,
   publishTicketPanel,
@@ -51,7 +54,6 @@ import {
 } from './discord-only-tickets';
 import { discordGuildAdapter } from './provisioning/guild-adapter';
 import { JsonDiscordRuntimeStore, type DiscordGuildRuntimeState, type DiscordRuntimeStore } from './runtime-store';
-import { botEnv, logger } from '../runtime';
 
 const MAX_TEMP_ROOMS = 25;
 const roomCreationTime = new Map<string, number>();
@@ -84,7 +86,9 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
   });
   const runtimeStore: DiscordRuntimeStore = new JsonDiscordRuntimeStore();
 
-  client.on('error', (error) => logger.error({ err: error }, 'Discord client error'));
+  client.on('error', (error) => {
+    logger.error({ err: error }, 'Discord client error');
+  });
   client.on('shardDisconnect', (event, shardId) => {
     logger.warn({ shardId, code: event.code }, 'Discord shard disconnected; reconnecting');
   });
@@ -98,7 +102,9 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
       } else {
         await handleSelect(interaction, runtimeStore);
       }
-    })().catch((error: unknown) => logger.error({ err: error }, 'Discord-only interaction failed'));
+    })().catch((error: unknown) => {
+      logger.error({ err: error }, 'Discord-only interaction failed');
+    });
   });
   client.on(Events.GuildMemberAdd, (member) => {
     if (member.guild.id !== guildId) return;
@@ -109,10 +115,16 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
   client.on(Events.VoiceStateUpdate, (before, after) => {
     if (after.guild.id !== guildId) return;
     void handleVoiceState(before.member ?? after.member, before.channel, after.channel, runtimeStore)
-      .catch((error: unknown) => logger.warn({ err: error }, 'Temporary voice handling failed'));
+      .catch((error: unknown) => {
+        logger.warn({ err: error }, 'Temporary voice handling failed');
+      });
   });
 
-  const ready = new Promise<void>((resolveReady) => client.once(Events.ClientReady, () => resolveReady()));
+  const ready = new Promise<void>((resolveReady) => {
+    client.once(Events.ClientReady, () => {
+      resolveReady();
+    });
+  });
   await client.login(token);
   if (!client.isReady()) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -120,7 +132,9 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
       await Promise.race([
         ready,
         new Promise<never>((_, reject) => {
-          timeout = setTimeout(() => reject(new Error('Discord gateway did not become ready in time.')), 30_000);
+          timeout = setTimeout(() => {
+            reject(new Error('Discord gateway did not become ready in time.'));
+          }, 30_000);
         }),
       ]);
     } catch (error) {
@@ -155,8 +169,12 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
     logger.info({ signal }, 'Stopping Xenon Discord service');
     void client.destroy();
   };
-  process.once('SIGINT', () => shutdown('SIGINT'));
-  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => {
+    shutdown('SIGINT');
+  });
+  process.once('SIGTERM', () => {
+    shutdown('SIGTERM');
+  });
 }
 
 async function loadContext(guild: Guild, runtimeStore: DiscordRuntimeStore): Promise<StandaloneContext> {
@@ -238,7 +256,8 @@ export async function handleCommand(
   client: Client,
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
-  if (interaction.guild === null) {
+  const guild = interaction.guild;
+  if (guild === null) {
     await ephemeral(interaction, 'Use this command in the Xenon Discord server.');
     return;
   }
@@ -247,23 +266,24 @@ export async function handleCommand(
     return;
   }
   if (interaction.commandName === 'status') {
-    const guild = await client.guilds.fetch(botEnv.DISCORD_GUILD_ID!);
+    const configuredGuildId = botEnv.DISCORD_GUILD_ID;
+    const configured = configuredGuildId === undefined ? guild : await client.guilds.fetch(configuredGuildId);
     await ephemeral(
       interaction,
-      `Discord gateway: ${client.isReady() ? 'READY' : 'CONNECTING'}\nGuild: ${guild.name}\nRuntime: discord-only`,
+      `Discord gateway: ${client.isReady() ? 'READY' : 'CONNECTING'}\nGuild: ${configured.name}\nRuntime: discord-only`,
     );
     return;
   }
   if (interaction.commandName === 'xenon') {
-    await handleXenon(interaction, runtimeStore);
+    await handleXenon(interaction, guild, runtimeStore);
     return;
   }
   if (interaction.commandName === 'room') {
-    await handleRoomCommand(interaction, runtimeStore);
+    await handleRoomCommand(interaction, guild, runtimeStore);
     return;
   }
   if (interaction.commandName === 'announce') {
-    await handleAnnouncement(interaction, runtimeStore);
+    await handleAnnouncement(interaction, guild, runtimeStore);
     return;
   }
   await ephemeral(interaction, 'This Discord command is not available.');
@@ -271,13 +291,13 @@ export async function handleCommand(
 
 async function handleXenon(
   interaction: ChatInputCommandInteraction,
+  guild: Guild,
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
   if (!isGuildManager(interaction)) {
     await ephemeral(interaction, 'Only the Discord server owner or a member with Manage Server can use this command.');
     return;
   }
-  const guild = interaction.guild!;
   const group = interaction.options.getSubcommandGroup(true);
   const subcommand = interaction.options.getSubcommand(true);
 
@@ -315,8 +335,10 @@ async function handleXenon(
       const result = await execute(refreshed, 'apply', keys);
       await ephemeral(interaction, `AutoMod enabled. ${executionSummary(result)}`);
     } else {
-      for (const entry of context.entries.filter((candidate) => candidate.resourceType === 'AUTOMOD' && candidate.discordId !== null))
-        await context.adapter.setAutoModEnabled(entry.discordId!, false);
+      for (const entry of context.entries) {
+        if (entry.resourceType === 'AUTOMOD' && entry.discordId !== null)
+          await context.adapter.setAutoModEnabled(entry.discordId, false);
+      }
       await runtimeStore.saveFeatures(guild.id, nextFeatures);
       await ephemeral(interaction, 'Xenon AutoMod rules are disabled.');
     }
@@ -493,6 +515,10 @@ export async function handleButton(
     await closeTicketFromButton(interaction, xenonId.argument, runtimeStore);
     return;
   }
+  if (xenonId?.namespace === 'ticket' && xenonId.action === 'claim' && xenonId.argument !== null) {
+    await claimTicketFromButton(interaction, xenonId.argument, runtimeStore);
+    return;
+  }
   if (xenonId?.namespace !== 'role' || xenonId.action !== 'toggle' || interaction.guild === null || xenonId.argument === null) {
     await ephemeral(interaction, DISABLED_PLATFORM_RESPONSE);
     return;
@@ -521,7 +547,7 @@ export async function handleSelect(
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
   const xenonId = parseXenonId(interaction.customId);
-  if (xenonId?.namespace === 'ticket' && xenonId.action === 'open') {
+  if (xenonId?.namespace === 'ticket' && xenonId.action === 'create') {
     await openTicketFromSelect(interaction, runtimeStore);
     return;
   }
@@ -629,13 +655,13 @@ async function cleanEmptyRooms(guild: Guild, runtimeStore: DiscordRuntimeStore):
 
 async function handleRoomCommand(
   interaction: ChatInputCommandInteraction,
+  guild: Guild,
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
-  const guild = interaction.guild!;
   const state = await runtimeStore.getGuild(guild.id);
   const saved = Object.values(state.rooms).find((room) => room.ownerId === interaction.user.id);
   const room = saved === undefined ? null : await guild.channels.fetch(saved.channelId).catch(() => null);
-  if (room?.type !== ChannelType.GuildVoice) {
+  if (saved === undefined || room?.type !== ChannelType.GuildVoice) {
     await ephemeral(interaction, 'You do not own an active Xenon temporary voice room.');
     return;
   }
@@ -663,25 +689,26 @@ async function handleRoomCommand(
       await ephemeral(interaction, 'The new owner must be in your room.');
       return;
     }
-    await runtimeStore.saveRoom({ ...saved!, ownerId: target.id });
+    await runtimeStore.saveRoom({ ...saved, ownerId: target.id });
   }
   await ephemeral(interaction, `Room ${action} complete.`);
 }
 
 async function handleAnnouncement(
   interaction: ChatInputCommandInteraction,
+  guild: Guild,
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
   if (!isGuildManager(interaction)) {
     await ephemeral(interaction, 'Only the Discord server owner or a member with Manage Server can post announcements.');
     return;
   }
-  const entry = (await runtimeStore.getGuild(interaction.guild!.id)).entries.find(
+  const entry = (await runtimeStore.getGuild(guild.id)).entries.find(
     (candidate) => candidate.logicalKey === 'channel.announcements' && candidate.resourceType === 'CHANNEL',
   );
   const channel = entry?.discordId === null || entry?.discordId === undefined
     ? null
-    : await interaction.guild!.channels.fetch(entry.discordId).catch(() => null);
+    : await guild.channels.fetch(entry.discordId).catch(() => null);
   if (channel?.isTextBased() !== true || !('send' in channel)) {
     await ephemeral(interaction, 'The announcements channel is not mapped. Run /xenon setup adopt and select an announcements channel.');
     return;
@@ -726,6 +753,6 @@ function executionSummary(result: Awaited<ReturnType<typeof executePlan>>): stri
   return messages.join('\n');
 }
 
-function ephemeral(interaction: ChatInputCommandInteraction | import('discord.js').ButtonInteraction, content: string) {
+function ephemeral(interaction: ChatInputCommandInteraction | ButtonInteraction, content: string) {
   return interaction.reply({ content: content.slice(0, 1900), flags: MessageFlags.Ephemeral });
 }

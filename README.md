@@ -83,13 +83,16 @@ Redis, website, application, ticket, identity and FiveM integrations.
 `BOT_RUNTIME_MODE=discord-only` runs Discord server features without initializing
 those platform services. Its production environment requires `NODE_ENV=production`,
 `LOG_LEVEL=info`, `DISCORD_MODE=enabled`, `DISCORD_APPLICATION_ID`,
-`DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID` and `DISCORD_INVITE_URL`. Discord-native
-setup state is stored atomically in the ignored `.data/discord-runtime.json` file.
+`DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID` and `DISCORD_INVITE_URL`; an optional
+public `NEXT_PUBLIC_SITE_URL` adds a website button to the ticket panel. Discord-native
+setup and ticket state is stored atomically in the ignored `.data/discord-runtime.json` file.
 
 In Discord-only mode, profile, application, review, identity-link, player and
 queue commands report that Xenon Platform integration is disabled. Server setup,
-panels, welcome messages, moderation, temporary voice rooms and curated image
-assets continue to use Discord and its API.
+panels, welcome messages, moderation, temporary voice rooms, curated image
+assets and support tickets (`/xenon tickets publish`) continue to use Discord and
+its API. Closed ticket channels are deleted after a log entry and plain-text
+transcript are posted to the configured ticket log channel.
 
 The integrated runtime keeps its existing service-specific production checks
 for PostgreSQL, Redis, object storage, Turnstile and FiveM. Discord-only bot mode

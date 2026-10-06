@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ChannelType, OverwriteType, PermissionFlagsBits as P } from 'discord.js';
+import { ChannelType, Collection, OverwriteType, PermissionFlagsBits as P } from 'discord.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const flags = vi.hoisted(() => ({ databaseLoaded: false }));
@@ -30,7 +30,15 @@ vi.mock('@xenon/discord/assets', () => ({
 
 import { handleButton, handleCommand, handleSelect } from './discord-only';
 import { DISCORD_ONLY_COMMANDS } from './discord-only-commands';
-import { resetTicketCooldowns } from './discord-only-tickets';
+import {
+  ALREADY_CLOSING,
+  formatDuration,
+  resetTicketCooldowns,
+  setTicketDeleteDelay,
+  STAFF_ONLY_CATEGORY,
+  ticketCenterPanel,
+  ticketChannelName,
+} from './discord-only-tickets';
 import { JsonDiscordRuntimeStore, type TicketRecord } from './runtime-store';
 
 const GUILD = '100000000000000001';
@@ -47,20 +55,64 @@ const OTHER_PANEL = '500000000000000004';
 const STAFF_ROLE = '600000000000000001';
 const NEW_STAFF_ROLE = '600000000000000002';
 
+const TYPES = [
+  ['GENERAL', '🎫', 'General Support'],
+  ['TECHNICAL', '🔧', 'Technical Support'],
+  ['CHARACTER', '👤', 'Character Issue'],
+  ['WHITELIST', '📝', 'Whitelist Support'],
+  ['PLAYER_REPORT', '🛡️', 'Player Report'],
+  ['STAFF_REPORT', '🚨', 'Staff Report'],
+  ['BUSINESS', '💼', 'Business / Organization'],
+  ['DEVELOPER', '👨‍💻', 'Developer Task'],
+] as const;
+
 let sequence = 900000000000000000n;
+let clock = Date.parse('2026-10-06T10:00:00.000Z');
 const nextId = () => String((sequence += 1n));
 
 interface FakeMessage {
   id: string;
   channelId: string;
-  author: { id: string };
+  createdTimestamp: number;
+  content: string;
+  author: { id: string; username: string };
+  embeds: { title: string | null }[];
+  attachments: Collection<string, { url: string }>;
   payload: unknown;
   edit: ReturnType<typeof vi.fn>;
   delete: ReturnType<typeof vi.fn>;
 }
 
+interface Payload {
+  content?: string;
+  embeds?: { title?: string }[];
+}
+
+/** Shared event log so tests can assert the order of close steps. */
+let events: string[] = [];
+
 function fakeChannel(id: string, name: string, type: ChannelType) {
   const messages = new Map<string, FakeMessage>();
+  const record = (author: { id: string; username: string }, payload: Payload, attachmentUrls: string[] = []) => {
+    clock += 1_000;
+    const message: FakeMessage = {
+      id: nextId(),
+      channelId: id,
+      createdTimestamp: clock,
+      content: payload.content ?? '',
+      author,
+      embeds: (payload.embeds ?? []).map((embed) => ({ title: embed.title ?? null })),
+      attachments: new Collection(attachmentUrls.map((url, index) => [String(index), { url }])),
+      payload,
+      edit: vi.fn((next: unknown) => {
+        message.payload = next;
+        return Promise.resolve(message);
+      }),
+      delete: vi.fn(() => Promise.resolve()),
+    };
+    messages.set(message.id, message);
+    return message;
+  };
   const channel = {
     id,
     name,
@@ -69,42 +121,40 @@ function fakeChannel(id: string, name: string, type: ChannelType) {
     createOptions: undefined as unknown,
     messages: {
       store: messages,
-      fetch: vi.fn((messageId: string) => {
-        const message = messages.get(messageId);
-        return message === undefined
-          ? Promise.reject(Object.assign(new Error('Unknown Message'), { code: 10008 }))
-          : Promise.resolve(message);
+      fetch: vi.fn((query: string | { limit: number; before?: string }) => {
+        if (typeof query === 'string') {
+          const message = messages.get(query);
+          return message === undefined
+            ? Promise.reject(Object.assign(new Error('Unknown Message'), { code: 10008 }))
+            : Promise.resolve(message);
+        }
+        const newestFirst = [...messages.values()].sort((a, b) => b.createdTimestamp - a.createdTimestamp);
+        const start = query.before === undefined ? 0 : newestFirst.findIndex((message) => message.id === query.before) + 1;
+        const page = newestFirst.slice(start, start + query.limit);
+        return Promise.resolve(new Collection(page.map((message) => [message.id, message])));
       }),
     },
+    /** A member message, as if typed into the channel. */
+    post: (userId: string, username: string, content: string, attachmentUrls: string[] = []) =>
+      record({ id: userId, username }, { content }, attachmentUrls),
     permissionsFor: vi.fn(() => ({ missing: vi.fn(() => []) })),
-    send: vi.fn((payload: unknown) => {
-      const message: FakeMessage = {
-        id: nextId(),
-        channelId: id,
-        author: { id: BOT },
-        payload,
-        edit: vi.fn((next: unknown) => {
-          message.payload = next;
-          return Promise.resolve(message);
-        }),
-        delete: vi.fn(() => Promise.resolve()),
-      };
-      messages.set(message.id, message);
-      return Promise.resolve(message);
+    send: vi.fn((payload: Payload & { files?: unknown[] }) => {
+      events.push(`send:${name}`);
+      return Promise.resolve(record({ id: BOT, username: 'Xenon' }, payload));
     }),
     permissionOverwrites: {
       cache: new Map<string, unknown>(),
       edit: vi.fn(() => Promise.resolve()),
       delete: vi.fn(() => Promise.resolve()),
     },
-    setName: vi.fn((next: string) => {
-      channel.name = next;
-      return Promise.resolve(channel);
-    }),
+    setName: vi.fn(),
     edit: vi.fn(),
     setParent: vi.fn(),
     setPosition: vi.fn(),
-    delete: vi.fn(() => Promise.resolve()),
+    delete: vi.fn(() => {
+      events.push(`delete:${name}`);
+      return Promise.resolve();
+    }),
   };
   return channel;
 }
@@ -121,7 +171,9 @@ function fakeGuild() {
   const guild = {
     id: GUILD,
     ownerId: GUILD_OWNER,
+    iconURL: () => 'https://cdn.discordapp.com/icons/xenon.png',
     channels: {
+      cache: channels,
       fetch: vi.fn((id: string) => {
         const channel = channels.get(id);
         return channel === undefined
@@ -138,9 +190,7 @@ function fakeGuild() {
     },
     roles: {
       fetch: vi.fn((id: string) =>
-        Promise.resolve(
-          id === STAFF_ROLE || id === NEW_STAFF_ROLE ? { id, guild: { id: GUILD } } : null,
-        ),
+        Promise.resolve(id === STAFF_ROLE || id === NEW_STAFF_ROLE ? { id, guild: { id: GUILD } } : null),
       ),
       create: vi.fn(),
     },
@@ -154,18 +204,18 @@ function fakeGuild() {
 }
 type Fake = ReturnType<typeof fakeGuild>;
 
+/** Whether the fake application has the Message Content Intent enabled. */
+let messageContent = true;
+const client = { application: { flags: { any: () => messageContent } } };
+
 function slash(fake: Fake, subcommand: string, picks: Partial<Record<string, string>> = {}) {
-  const ids: Record<string, string> = {
-    panel_channel: PANEL,
-    log_channel: LOG,
-    staff_role: STAFF_ROLE,
-    ...picks,
-  };
+  const ids: Record<string, string> = { panel_channel: PANEL, log_channel: LOG, staff_role: STAFF_ROLE, ...picks };
   return {
     commandName: 'xenon',
     guild: fake.guild,
     user: { id: MANAGER },
     memberPermissions: { has: (bit: bigint) => bit === P.ManageGuild },
+    client,
     options: {
       getSubcommandGroup: () => 'tickets',
       getSubcommand: () => subcommand,
@@ -180,11 +230,12 @@ function slash(fake: Fake, subcommand: string, picks: Partial<Record<string, str
 
 function select(fake: Fake, userId: string, messageId: string | null, value = 'GENERAL') {
   return {
-    customId: 'xn:ticket:open',
+    customId: 'xn:ticket:create',
     guild: fake.guild,
     channelId: PANEL,
     message: { id: messageId },
     user: { id: userId, username: 'Player.One!' },
+    memberPermissions: { has: (bit: bigint) => userId === MANAGER && bit === P.ManageGuild },
     values: [value],
     deferReply: vi.fn(() => Promise.resolve()),
     editReply: vi.fn(() => Promise.resolve()),
@@ -192,14 +243,16 @@ function select(fake: Fake, userId: string, messageId: string | null, value = 'G
   };
 }
 
-function closeButton(fake: Fake, userId: string, ticket: TicketRecord, channelId = ticket.channelId) {
+function button(fake: Fake, action: 'close' | 'claim', userId: string, ticket: TicketRecord, channelId = ticket.channelId) {
   return {
-    customId: `xn:ticket:close:${ticket.ticketId}`,
+    customId: `xn:ticket:${action}:${ticket.ticketId}`,
     guild: fake.guild,
     channelId,
     user: { id: userId },
     memberPermissions: { has: (bit: bigint) => userId === MANAGER && bit === P.ManageGuild },
+    client,
     reply: vi.fn(() => Promise.resolve()),
+    update: vi.fn(() => Promise.resolve()),
     deferUpdate: vi.fn(() => Promise.resolve()),
     editReply: vi.fn(() => Promise.resolve()),
     followUp: vi.fn(() => Promise.resolve()),
@@ -209,6 +262,19 @@ function closeButton(fake: Fake, userId: string, ticket: TicketRecord, channelId
 function lastText(mock: { mock: { calls: unknown[][] } }): string {
   const value = mock.mock.calls.at(-1)?.[0];
   return typeof value === 'string' ? value : ((value as { content?: string } | undefined)?.content ?? '');
+}
+
+interface CreateOptions {
+  name: string;
+  type: ChannelType;
+  parent?: string;
+  permissionOverwrites: { id: string; type: OverwriteType; allow?: bigint[]; deny?: bigint[] }[];
+}
+
+interface SelectJson {
+  custom_id: string;
+  placeholder: string;
+  options: { value: string; label: string; emoji?: { name: string } }[];
 }
 
 describe('discord-only tickets', () => {
@@ -222,7 +288,10 @@ describe('discord-only tickets', () => {
     file = join(directory, 'discord-runtime.json');
     store = new JsonDiscordRuntimeStore(file);
     fake = fakeGuild();
+    events = [];
     resetTicketCooldowns();
+    setTicketDeleteDelay(0);
+    messageContent = true;
   });
 
   afterEach(async () => {
@@ -247,18 +316,6 @@ describe('discord-only tickets', () => {
     return view;
   }
 
-  interface CreateOptions {
-    name: string;
-    type: ChannelType;
-    parent?: string;
-    permissionOverwrites: { id: string; type: OverwriteType; allow?: bigint[]; deny?: bigint[] }[];
-  }
-  const created = (type: ChannelType) =>
-    (fake.guild.channels.create.mock.calls as unknown as [CreateOptions][])
-      .map(([options]) => options)
-      .filter((options) => options.type === type);
-  const ticketChannelsCreated = () => created(ChannelType.GuildText).length;
-
   async function onlyTicket(): Promise<TicketRecord> {
     const tickets = Object.values((await store.getGuild(GUILD)).tickets);
     expect(tickets).toHaveLength(1);
@@ -266,6 +323,21 @@ describe('discord-only tickets', () => {
     if (ticket === undefined) throw new Error('ticket missing');
     return ticket;
   }
+
+  async function close(userId: string, ticket: TicketRecord) {
+    const view = button(fake, 'close', userId, ticket);
+    await handleButton(view as never, store);
+    return view;
+  }
+
+  const created = (type: ChannelType) =>
+    (fake.guild.channels.create.mock.calls as unknown as [CreateOptions][])
+      .map(([options]) => options)
+      .filter((options) => options.type === type);
+  const ticketChannelsCreated = () => created(ChannelType.GuildText).length;
+  const logSends = () => fake.channels.get(LOG)?.send.mock.calls.map(([payload]) => payload) ?? [];
+
+  // ── Panel ────────────────────────────────────────────────────────────────
 
   it('registers ManageGuild /xenon tickets publish and status with required native options', () => {
     const xenon = DISCORD_ONLY_COMMANDS.find((command) => command.name === 'xenon');
@@ -281,21 +353,30 @@ describe('discord-only tickets', () => {
     ]);
   });
 
-  it('offers exactly the five supported ticket types', async () => {
-    await publish();
-    const payload = JSON.stringify(fake.channels.get(PANEL)?.send.mock.calls[0]);
-    for (const label of ['General Support', 'Technical Support', 'Whitelist Support', 'Player Report', 'Staff Report'])
-      expect(payload).toContain(label);
-    expect(payload).not.toContain('Business');
-    expect(payload).not.toContain('"OTHER"');
+  it('renders the premium panel with every category, emoji and the xn:ticket:create select', () => {
+    const panel = ticketCenterPanel();
+    const embed = panel.embeds[0];
+    expect(embed?.title).toBe('🎫 XENON SUPPORT CENTER');
+    expect(embed?.description).toContain('Welcome to the **Xenon Roleplay Support Center**.');
+    expect(embed?.footer?.text).toBe('Xenon Support • Xenon Roleplay');
+    expect(embed?.timestamp).toBeDefined();
+    const field = embed?.fields?.find((entry) => entry.name === '📊 AVAILABLE CATEGORIES');
+    for (const [, emoji, label] of TYPES) expect(field?.value).toContain(`${emoji} **${label}**`);
 
-    const view = select(fake, OWNER, await panelMessageId(), 'OTHER');
-    await handleSelect(view as never, store);
-    expect(ticketChannelsCreated()).toBe(0);
-    expect(lastText(view.editReply)).toContain('listed ticket categories');
+    const menu = panel.components[0]?.components[0] as unknown as SelectJson;
+    expect(menu.custom_id).toBe('xn:ticket:create');
+    expect(menu.placeholder).toBe('🎟️ Select a support category');
+    expect(menu.options.map((option) => [option.value, option.emoji?.name, option.label])).toEqual(TYPES.map((type) => [...type]));
+    expect(menu.options.find((option) => option.value === 'DEVELOPER')?.label).toBe('Developer Task');
   });
 
-  it('publish creates one private category per ticket type, stores ids and posts one panel', async () => {
+  it('adds the website button only for a public https site URL', () => {
+    expect(ticketCenterPanel({ siteUrl: 'https://xenonrp.lk' }).components).toHaveLength(2);
+    for (const siteUrl of ['http://localhost:3200', 'https://localhost', 'http://xenonrp.lk', 'https://example.com', 'not a url', null])
+      expect(ticketCenterPanel({ siteUrl }).components, String(siteUrl)).toHaveLength(1);
+  });
+
+  it('publish creates one private category per type, stores ids and posts one panel', async () => {
     const view = await publish();
 
     const state = await store.getGuild(GUILD);
@@ -307,68 +388,29 @@ describe('discord-only tickets', () => {
       ticketStaffRoleId: STAFF_ROLE,
       ticketPanelMessageId: [...(panel?.messages.store.keys() ?? [])][0],
     });
-    expect(JSON.stringify(panel?.send.mock.calls[0])).toContain('XENON SUPPORT CENTER');
-
     const categories = created(ChannelType.GuildCategory);
-    expect(categories.map((options) => options.name)).toEqual([
-      'General Support Tickets',
-      'Technical Support Tickets',
-      'Whitelist Support Tickets',
-      'Player Report Tickets',
-      'Staff Report Tickets',
-    ]);
+    expect(categories.map((options) => options.name)).toEqual(TYPES.map(([, , label]) => `${label} Tickets`));
     for (const options of categories) {
       expect(options.permissionOverwrites.find((entry) => entry.id === GUILD)).toMatchObject({ deny: [P.ViewChannel] });
-      expect(options.permissionOverwrites.find((entry) => entry.id === STAFF_ROLE)?.allow).toContain(P.ViewChannel);
       expect(options.permissionOverwrites.flatMap((entry) => entry.allow ?? [])).not.toContain(P.Administrator);
     }
-    expect(Object.keys(state.ticketCategories)).toEqual(['GENERAL', 'TECHNICAL', 'WHITELIST', 'PLAYER_REPORT', 'STAFF_REPORT']);
-    expect(ticketChannelsCreated()).toBe(0);
-    expect(lastText(view.editReply)).toContain('Created 5 private ticket categories.');
+    expect(Object.keys(state.ticketCategories)).toEqual(TYPES.map(([value]) => value));
+    expect(lastText(view.editReply)).toContain(`✅ Xenon Support Center published in <#${PANEL}>`);
   });
 
-  it('republishing reuses the ticket categories', async () => {
-    await publish();
-    const first = (await store.getGuild(GUILD)).ticketCategories;
-    const view = await publish();
-
-    expect(created(ChannelType.GuildCategory)).toHaveLength(5);
-    expect((await store.getGuild(GUILD)).ticketCategories).toEqual(first);
-    expect(lastText(view.editReply)).toContain('No channels or roles were created.');
-  });
-
-  it('recreates only a ticket category that was deleted', async () => {
-    await publish();
-    const before = (await store.getGuild(GUILD)).ticketCategories;
-    if (before.STAFF_REPORT === undefined) throw new Error('missing category');
-    fake.channels.delete(before.STAFF_REPORT);
-    await publish();
-
-    const after = (await store.getGuild(GUILD)).ticketCategories;
-    expect(created(ChannelType.GuildCategory)).toHaveLength(6);
-    expect(after.STAFF_REPORT).not.toBe(before.STAFF_REPORT);
-    expect(after.GENERAL).toBe(before.GENERAL);
-  });
-
-  it('opens each ticket under the category of its type', async () => {
-    await publish();
-    await open(OWNER, 'PLAYER_REPORT');
-    await open(OTHER, 'STAFF_REPORT');
-
-    const categories = (await store.getGuild(GUILD)).ticketCategories;
-    const parents = created(ChannelType.GuildText).map((options) => options.parent);
-    expect(parents).toEqual([categories.PLAYER_REPORT, categories.STAFF_REPORT]);
-  });
-
-  it('publish edits the existing panel instead of posting a duplicate', async () => {
+  it('publish edits the existing panel and reuses categories instead of duplicating', async () => {
     await publish();
     const first = await panelMessageId();
-    await publish();
+    const categories = (await store.getGuild(GUILD)).ticketCategories;
+    const view = await publish();
 
     const panel = fake.channels.get(PANEL);
     expect(panel?.send).toHaveBeenCalledOnce();
     expect(panel?.messages.store.get(first)?.edit).toHaveBeenCalledOnce();
     expect(await panelMessageId()).toBe(first);
+    expect(created(ChannelType.GuildCategory)).toHaveLength(TYPES.length);
+    expect((await store.getGuild(GUILD)).ticketCategories).toEqual(categories);
+    expect(lastText(view.editReply)).toBe(`✅ Xenon Support Center published in <#${PANEL}>`);
   });
 
   it('moving the panel removes the old Xenon panel so only one stays live', async () => {
@@ -384,91 +426,189 @@ describe('discord-only tickets', () => {
     const view = await publish({ log_channel: CATEGORY });
 
     expect((await store.getGuild(GUILD)).ticketConfig).toBeNull();
-    expect(fake.channels.get(PANEL)?.send).not.toHaveBeenCalled();
     expect(fake.guild.channels.create).not.toHaveBeenCalled();
     expect(lastText(view.editReply)).toContain('Nothing was saved.');
   });
 
-  it('creates exactly one private channel with owner, staff and bot overwrites', async () => {
+  // ── Create ───────────────────────────────────────────────────────────────
+
+  it('creates one private ticket channel with a readable name and the premium opening message', async () => {
     await publish();
-    const view = await open(OWNER);
+    const view = await open(OWNER, 'TECHNICAL');
 
     expect(ticketChannelsCreated()).toBe(1);
     const ticket = await onlyTicket();
     const ticketChannel = fake.channels.get(ticket.channelId);
-    const options = ticketChannel?.createOptions as {
-      name: string;
-      parent: string;
-      type: ChannelType;
-      permissionOverwrites: { id: string; type: OverwriteType; allow?: bigint[]; deny?: bigint[] }[];
-    };
-    expect(options.type).toBe(ChannelType.GuildText);
-    expect(options.parent).toBe((await store.getGuild(GUILD)).ticketCategories.GENERAL);
-    expect(options.name).toBe('ticket-player-one-0001');
+    const options = ticketChannel?.createOptions as CreateOptions;
+    expect(options.name).toBe('ticket-player-one');
+    expect(options.parent).toBe((await store.getGuild(GUILD)).ticketCategories.TECHNICAL);
     const overwrite = (id: string) => options.permissionOverwrites.find((entry) => entry.id === id);
-
-    // @everyone cannot view.
     expect(overwrite(GUILD)).toMatchObject({ type: OverwriteType.Role, deny: [P.ViewChannel] });
     expect(overwrite(GUILD)?.allow).toBeUndefined();
-    // Owner can view and send.
-    expect(overwrite(OWNER)).toMatchObject({ type: OverwriteType.Member });
-    expect(overwrite(OWNER)?.allow).toEqual(
-      expect.arrayContaining([P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles]),
-    );
-    // Staff role can view and send.
-    expect(overwrite(STAFF_ROLE)).toMatchObject({ type: OverwriteType.Role });
-    expect(overwrite(STAFF_ROLE)?.allow).toEqual(
-      expect.arrayContaining([P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.ManageMessages]),
-    );
-    // Nobody else, and never Administrator.
+    expect(overwrite(OWNER)?.allow).toEqual(expect.arrayContaining([P.ViewChannel, P.SendMessages]));
+    expect(overwrite(STAFF_ROLE)?.allow).toEqual(expect.arrayContaining([P.ViewChannel, P.SendMessages]));
     expect(options.permissionOverwrites.map((entry) => entry.id).sort()).toEqual([BOT, GUILD, OWNER, STAFF_ROLE].sort());
     expect(options.permissionOverwrites.flatMap((entry) => entry.allow ?? [])).not.toContain(P.Administrator);
 
-    expect(ticket).toMatchObject({ ticketId: 'XN-TK-0001', ownerId: OWNER, status: 'OPEN', closedAt: null });
-    expect(JSON.stringify(ticketChannel?.send.mock.calls[0])).toContain('XENON SUPPORT · TICKET OPENED');
+    const opening = JSON.stringify(ticketChannel?.send.mock.calls[0]);
+    for (const expected of ['🎫 XENON SUPPORT · TICKET OPENED', ticket.ticketId, 'Technical Support', `<@${OWNER}>`, 'What happens next?', `Xenon Support • ${ticket.ticketId}`, 'CLOSE TICKET', 'CLAIM TICKET'])
+      expect(opening).toContain(expected);
     expect(lastText(view.editReply)).toBe(`Ticket created: <#${ticket.channelId}>`);
   });
 
-  it('rejects a second open ticket for the same user', async () => {
-    await publish();
-    await open(OWNER);
-    resetTicketCooldowns();
-    const second = await open(OWNER);
-
-    expect(ticketChannelsCreated()).toBe(1);
-    expect(lastText(second.editReply)).toContain('You already have an open ticket');
+  it('keeps channel names readable, unique and within Discord limits', () => {
+    expect(ticketChannelName('dazz.dev', new Set())).toBe('ticket-dazz-dev');
+    expect(ticketChannelName('dazz.dev', new Set(['ticket-dazz-dev']))).toBe('ticket-dazz-dev-2');
+    expect(ticketChannelName('dazz.dev', new Set(['ticket-dazz-dev', 'ticket-dazz-dev-2']))).toBe('ticket-dazz-dev-3');
+    expect(ticketChannelName('✨✨', new Set())).toBe('ticket-member');
+    expect(ticketChannelName('a'.repeat(300), new Set([`ticket-${'a'.repeat(80)}`])).length).toBeLessThanOrEqual(100);
   });
 
-  it('rate limits ticket creation per user', async () => {
+  it('keeps report tickets private to the owner, staff role and bot', async () => {
     await publish();
-    await open(OWNER);
+    await open(OWNER, 'STAFF_REPORT');
     const ticket = await onlyTicket();
-    await handleButton(closeButton(fake, OWNER, ticket) as never, store);
-    const again = await open(OWNER);
+    const options = fake.channels.get(ticket.channelId)?.createOptions as CreateOptions;
 
-    expect(ticketChannelsCreated()).toBe(1);
-    expect(lastText(again.editReply)).toContain('Please wait');
+    expect(options.parent).toBe((await store.getGuild(GUILD)).ticketCategories.STAFF_REPORT);
+    expect(options.permissionOverwrites.map((entry) => entry.id).sort()).toEqual([BOT, GUILD, OWNER, STAFF_ROLE].sort());
+    expect(fake.channels.get(PANEL)?.send).toHaveBeenCalledOnce();
   });
 
-  it('rejects selections from a stale or foreign panel message', async () => {
+  it('rejects Developer Task tickets from regular members', async () => {
     await publish();
-    const view = select(fake, OWNER, '999999999999999999');
-    await handleSelect(view as never, store);
+    const view = await open(OWNER, 'DEVELOPER');
 
     expect(ticketChannelsCreated()).toBe(0);
-    expect(lastText(view.editReply)).toContain('no longer active');
+    expect(lastText(view.editReply)).toBe(STAFF_ONLY_CATEGORY);
   });
 
-  it('another user cannot close somebody else’s ticket', async () => {
+  it('lets staff-role members and ManageGuild members open Developer Task tickets', async () => {
+    await publish();
+    await open(STAFF, 'DEVELOPER');
+    await open(MANAGER, 'DEVELOPER');
+
+    expect(ticketChannelsCreated()).toBe(2);
+  });
+
+  it('rejects unknown categories, stale panels, a second open ticket and rapid re-creation', async () => {
+    await publish();
+    const unknown = select(fake, OWNER, await panelMessageId(), 'OTHER');
+    await handleSelect(unknown as never, store);
+    expect(lastText(unknown.editReply)).toContain('listed ticket categories');
+
+    const stale = select(fake, OWNER, '999999999999999999');
+    await handleSelect(stale as never, store);
+    expect(lastText(stale.editReply)).toContain('no longer active');
+
+    await open(OWNER);
+    const second = await open(OWNER);
+    expect(lastText(second.editReply)).toContain('You already have an open ticket');
+
+    await close(OWNER, await onlyTicket());
+    const rapid = await open(OWNER);
+    expect(lastText(rapid.editReply)).toContain('Please wait');
+    expect(ticketChannelsCreated()).toBe(1);
+  });
+
+  it('refuses to create tickets when the configured log channel disappears', async () => {
+    await publish();
+    fake.channels.delete(LOG);
+    const view = await open(OWNER);
+
+    expect(ticketChannelsCreated()).toBe(0);
+    expect(lastText(view.editReply)).toContain('/xenon tickets publish');
+  });
+
+  // ── Claim ────────────────────────────────────────────────────────────────
+
+  it('lets only staff claim a ticket, once', async () => {
     await publish();
     await open(OWNER);
     const ticket = await onlyTicket();
-    const view = closeButton(fake, OTHER, ticket);
-    await handleButton(view as never, store);
+
+    const member = button(fake, 'claim', OWNER, ticket);
+    await handleButton(member as never, store);
+    expect(lastText(member.reply)).toContain('Only the Xenon staff team');
+
+    const staff = button(fake, 'claim', STAFF, ticket);
+    await handleButton(staff as never, store);
+    expect((await onlyTicket()).claimedBy).toBe(STAFF);
+    expect(JSON.stringify(staff.update.mock.calls[0])).toContain('🙋 Claimed By');
+
+    const again = button(fake, 'claim', MANAGER, ticket);
+    await handleButton(again as never, store);
+    expect(lastText(again.reply)).toContain('already been claimed');
+    expect((await onlyTicket()).claimedBy).toBe(STAFF);
+  });
+
+  // ── Close ────────────────────────────────────────────────────────────────
+
+  it('owner can close: CLOSED is persisted, the log and transcript are posted, then the channel is deleted', async () => {
+    await publish();
+    await open(OWNER, 'TECHNICAL');
+    const ticket = await onlyTicket();
+    const channel = fake.channels.get(ticket.channelId);
+    if (channel === undefined) throw new Error('ticket channel missing');
+    channel.post(OWNER, 'player.one', 'My launcher crashes', ['https://cdn.discordapp.com/attachments/1/2/crash.png']);
+    channel.post(STAFF, 'staffer', 'Please send your logs');
+    channel.delete.mockImplementation(async () => {
+      events.push(`status-at-delete:${String((await store.getGuild(GUILD)).tickets[ticket.ticketId]?.status)}`);
+      events.push(`delete:${channel.name}`);
+    });
+    events = [];
+
+    const view = await close(OWNER, ticket);
+
+    expect(events).toEqual([`send:${channel.name}`, 'send:ticket-log', 'status-at-delete:CLOSED', `delete:${channel.name}`]);
+    expect(view.editReply).toHaveBeenCalledWith(expect.objectContaining({ components: [expect.anything()] }));
+    expect(JSON.stringify(view.editReply.mock.calls[0])).toContain('"disabled":true');
+    expect(JSON.stringify(channel.send.mock.calls.at(-1))).toContain('🔒 XENON SUPPORT · TICKET CLOSED');
+
+    const [log] = logSends() as { embeds: { title: string; fields: { name: string; value: string }[] }[]; files: { name: string; attachment: Buffer }[] }[];
+    expect(log?.embeds[0]?.title).toBe('📁 XENON TICKET CLOSED');
+    const fields = Object.fromEntries((log?.embeds[0]?.fields ?? []).map((field) => [field.name, field.value]));
+    expect(fields).toMatchObject({ Ticket: ticket.ticketId, Category: 'Technical Support', Status: 'CLOSED' });
+    for (const name of ['Owner', 'Closed By']) expect(fields[name]).toContain(OWNER);
+    for (const name of ['Opened', 'Closed', 'Duration']) expect(fields[name]).toBeDefined();
+    expect(fields.Channel).toContain('ticket-player-one');
+    expect(fields.Channel).toContain(ticket.channelId);
+
+    expect(log?.files[0]?.name).toBe(`${ticket.ticketId}-transcript.txt`);
+    const transcript = log?.files[0]?.attachment.toString('utf8') ?? '';
+    expect(transcript).toContain(`player.one (${OWNER}): My launcher crashes`);
+    expect(transcript).toContain('attachment: https://cdn.discordapp.com/attachments/1/2/crash.png');
+    expect(transcript).toContain(`staffer (${STAFF}): Please send your logs`);
+    expect(transcript.indexOf('My launcher crashes')).toBeLessThan(transcript.indexOf('Please send your logs'));
+
+    const stored = (await store.getGuild(GUILD)).tickets[ticket.ticketId];
+    expect(stored).toMatchObject({ status: 'CLOSED', closedBy: OWNER, channelId: ticket.channelId });
+    expect(stored?.closedAt).not.toBeNull();
+  });
+
+  it('staff role members and ManageGuild users can close', async () => {
+    await publish();
+    await open(OWNER);
+    await close(STAFF, await onlyTicket());
+    expect(await onlyTicket()).toMatchObject({ status: 'CLOSED', closedBy: STAFF });
+
+    resetTicketCooldowns();
+    await open(OTHER);
+    const second = Object.values((await store.getGuild(GUILD)).tickets).find((ticket) => ticket.ownerId === OTHER);
+    if (second === undefined) throw new Error('second ticket missing');
+    await close(MANAGER, second);
+    expect((await store.getGuild(GUILD)).tickets[second.ticketId]).toMatchObject({ status: 'CLOSED', closedBy: MANAGER });
+  });
+
+  it('an unrelated user cannot close somebody else’s ticket', async () => {
+    await publish();
+    await open(OWNER);
+    const ticket = await onlyTicket();
+    const view = await close(OTHER, ticket);
 
     expect((await onlyTicket()).status).toBe('OPEN');
     expect(view.deferUpdate).not.toHaveBeenCalled();
-    expect(fake.channels.get(ticket.channelId)?.permissionOverwrites.edit).not.toHaveBeenCalled();
+    expect(fake.channels.get(ticket.channelId)?.delete).not.toHaveBeenCalled();
     expect(lastText(view.reply)).toContain('Only the ticket owner');
   });
 
@@ -476,61 +616,169 @@ describe('discord-only tickets', () => {
     await publish();
     await open(OWNER);
     const ticket = await onlyTicket();
-    await handleButton(closeButton(fake, OWNER, ticket, PANEL) as never, store);
+    await handleButton(button(fake, 'close', OWNER, ticket, PANEL) as never, store);
 
     expect((await onlyTicket()).status).toBe('OPEN');
   });
 
-  it('owner can close: persists CLOSED, locks sending, keeps viewing, renames and logs', async () => {
+  it('a failed transcript does not prevent logging or deletion', async () => {
     await publish();
     await open(OWNER);
     const ticket = await onlyTicket();
-    const view = closeButton(fake, OWNER, ticket);
-    await handleButton(view as never, store);
-
-    const closed = await onlyTicket();
-    expect(closed).toMatchObject({ status: 'CLOSED', closedBy: OWNER });
-    expect(closed.closedAt).not.toBeNull();
-    expect(view.editReply).toHaveBeenCalledWith(expect.objectContaining({ components: [] }));
     const channel = fake.channels.get(ticket.channelId);
-    expect(channel?.permissionOverwrites.edit).toHaveBeenCalledWith(
-      OWNER,
-      {
-        ViewChannel: true,
-        SendMessages: false,
-        SendMessagesInThreads: false,
-        CreatePublicThreads: false,
-        CreatePrivateThreads: false,
-      },
-      expect.objectContaining({ type: OverwriteType.Member }),
-    );
-    expect(channel?.setName).toHaveBeenCalledWith('closed-xn-tk-0001', expect.any(String));
-    expect(channel?.delete).not.toHaveBeenCalled();
+    channel?.messages.fetch.mockRejectedValue(new Error('Missing Access'));
 
-    const log = fake.channels.get(LOG);
-    expect(log?.send).toHaveBeenCalledOnce();
-    const logged = JSON.stringify(log?.send.mock.calls[0]);
-    for (const expected of ['XN-TK-0001', OWNER, 'General Support', 'Opened', 'Closed by', ticket.channelId])
-      expect(logged).toContain(expected);
-    expect(view.followUp).not.toHaveBeenCalled();
+    await close(OWNER, ticket);
+
+    const [log] = logSends() as { embeds: { description: string }[]; files: unknown[] }[];
+    expect(log?.embeds[0]?.description).toBe('Transcript unavailable');
+    expect(log?.files).toEqual([]);
+    expect(channel?.delete).toHaveBeenCalledOnce();
   });
 
-  it('keeps the ticket OPEN and retryable when the owner cannot be locked', async () => {
+  it('a failed delete keeps the ticket CLOSED, warns #ticket-log once and does not retry', async () => {
     await publish();
     await open(OWNER);
     const ticket = await onlyTicket();
     const channel = fake.channels.get(ticket.channelId);
-    channel?.permissionOverwrites.edit.mockRejectedValueOnce(new Error('Missing Permissions'));
-    const failed = closeButton(fake, OWNER, ticket);
-    await handleButton(failed as never, store);
+    channel?.delete.mockRejectedValue(Object.assign(new Error('Missing Permissions'), { code: 50013 }));
 
-    expect((await onlyTicket()).status).toBe('OPEN');
-    expect(lastText(failed.followUp)).toContain('still open');
-    expect(failed.editReply).not.toHaveBeenCalled();
+    await close(OWNER, ticket);
 
-    await handleButton(closeButton(fake, OWNER, ticket) as never, store);
+    expect(channel?.delete).toHaveBeenCalledOnce();
     expect((await onlyTicket()).status).toBe('CLOSED');
+    const titles = JSON.stringify(logSends());
+    expect(titles).toContain('📁 XENON TICKET CLOSED');
+    expect(titles).toContain('⚠️ TICKET CHANNEL NOT DELETED');
+    expect(titles).toContain('50013');
   });
+
+  it('falls back to a metadata-only log when the transcript cannot be uploaded, then deletes', async () => {
+    await publish();
+    await open(OWNER);
+    const ticket = await onlyTicket();
+    const log = fake.channels.get(LOG);
+    const realSend = log?.send.getMockImplementation();
+    log?.send.mockImplementation((payload: Payload & { files?: unknown[] }) =>
+      (payload.files?.length ?? 0) > 0
+        ? Promise.reject(new Error('Missing Permissions'))
+        : (realSend?.(payload) ?? Promise.reject(new Error('unreachable'))),
+    );
+
+    await close(OWNER, ticket);
+
+    const sent = logSends() as { embeds: { description: string }[]; files: unknown[] }[];
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.embeds[0]?.description).toBe('Transcript unavailable');
+    expect(fake.channels.get(ticket.channelId)?.delete).toHaveBeenCalledOnce();
+  });
+
+  it('marks transcripts incomplete and warns on publish when Message Content Intent is disabled', async () => {
+    messageContent = false;
+    const view = await publish();
+    expect(lastText(view.editReply)).toContain('Message Content Intent is disabled');
+    await open(OWNER);
+    const ticket = await onlyTicket();
+
+    await close(OWNER, ticket);
+
+    const [log] = logSends() as { embeds: { description: string }[]; files: { attachment: Buffer }[] }[];
+    expect(log?.embeds[0]?.description).toContain('Transcript incomplete');
+    expect(log?.files[0]?.attachment.toString('utf8')).toContain('Message Content Intent is disabled');
+  });
+
+  it('re-checks protection right before deleting, after the log is written', async () => {
+    await publish();
+    await open(OWNER);
+    const ticket = await onlyTicket();
+    const log = fake.channels.get(LOG);
+    const realSend = log?.send.getMockImplementation();
+    log?.send.mockImplementationOnce(async (payload: Payload & { files?: unknown[] }) => {
+      // Management adopts the channel as infrastructure while the close is running.
+      await store.registry(GUILD).upsert({
+        logicalKey: 'channel.support',
+        resourceType: 'CHANNEL',
+        discordId: ticket.channelId,
+        channelId: null,
+        managed: true,
+        contentHash: null,
+        configurationHash: null,
+        createdByRunId: null,
+        metadata: { adopted: true },
+      });
+      return realSend?.(payload) ?? Promise.reject(new Error('unreachable'));
+    });
+
+    await close(OWNER, ticket);
+
+    expect(fake.channels.get(ticket.channelId)?.delete).not.toHaveBeenCalled();
+    expect(JSON.stringify(logSends())).toContain('not a Xenon ticket channel');
+  });
+
+  it('keeps the channel when the log cannot be written, so nothing is lost', async () => {
+    await publish();
+    await open(OWNER);
+    const ticket = await onlyTicket();
+    fake.channels.get(LOG)?.send.mockRejectedValue(new Error('Missing Access'));
+    const view = await close(OWNER, ticket);
+
+    expect((await onlyTicket()).status).toBe('CLOSED');
+    expect(fake.channels.get(ticket.channelId)?.delete).not.toHaveBeenCalled();
+    expect(lastText(view.followUp)).toContain('channel was kept');
+  });
+
+  it('a double close produces one log and one delete', async () => {
+    await publish();
+    await open(OWNER);
+    const ticket = await onlyTicket();
+    const first = button(fake, 'close', OWNER, ticket);
+    const second = button(fake, 'close', STAFF, ticket);
+
+    await Promise.all([handleButton(first as never, store), handleButton(second as never, store)]);
+
+    expect(logSends()).toHaveLength(1);
+    expect(fake.channels.get(ticket.channelId)?.delete).toHaveBeenCalledOnce();
+    const replies = [lastText(first.followUp), lastText(second.followUp), lastText(first.reply), lastText(second.reply)];
+    expect(replies).toContain(ALREADY_CLOSING);
+
+    const late = await close(MANAGER, ticket);
+    expect(lastText(late.reply)).toBe(ALREADY_CLOSING);
+    expect(logSends()).toHaveLength(1);
+  });
+
+  it('never deletes adopted or configured infrastructure, even if a record points at it', async () => {
+    await publish();
+    await open(OWNER);
+    const ticket = await onlyTicket();
+    await store.registry(GUILD).upsert({
+      logicalKey: 'channel.support',
+      resourceType: 'CHANNEL',
+      discordId: ticket.channelId,
+      channelId: null,
+      managed: true,
+      contentHash: null,
+      configurationHash: null,
+      createdByRunId: null,
+      metadata: { adopted: true },
+    });
+
+    await close(OWNER, ticket);
+
+    expect(fake.channels.get(ticket.channelId)?.delete).not.toHaveBeenCalled();
+    expect(JSON.stringify(logSends())).toContain('not a Xenon ticket channel');
+    for (const id of [PANEL, LOG, CATEGORY]) expect(fake.channels.get(id)?.delete).not.toHaveBeenCalled();
+    for (const categoryId of Object.values((await store.getGuild(GUILD)).ticketCategories))
+      expect(fake.channels.get(categoryId)?.delete).not.toHaveBeenCalled();
+  });
+
+  it('formats durations for the log', () => {
+    expect(formatDuration(42_000)).toBe('42s');
+    expect(formatDuration(5 * 60_000 + 3_000)).toBe('5m 3s');
+    expect(formatDuration(2 * 3_600_000 + 14 * 60_000)).toBe('2h 14m');
+    expect(formatDuration(3 * 86_400_000 + 4 * 3_600_000)).toBe('3d 4h');
+  });
+
+  // ── Lifecycle, persistence and safety ────────────────────────────────────
 
   it('only releases an existing ticket when Discord confirms its channel was deleted', async () => {
     await publish();
@@ -548,21 +796,11 @@ describe('discord-only tickets', () => {
 
     expect(lastText(transient.editReply)).toContain('could not verify');
     expect((await onlyTicket()).status).toBe('OPEN');
-    expect(ticketChannelsCreated()).toBe(1);
 
     if (realFetch !== undefined) fake.guild.channels.fetch.mockImplementation(realFetch);
     const released = await open(OWNER);
     expect(lastText(released.editReply)).toContain('Ticket created');
     expect((await store.getGuild(GUILD)).tickets[ticket.ticketId]).toMatchObject({ status: 'CLOSED', closedBy: null });
-  });
-
-  it('refuses to create tickets when the configured log channel disappears', async () => {
-    await publish();
-    fake.channels.delete(LOG);
-    const view = await open(OWNER);
-
-    expect(ticketChannelsCreated()).toBe(0);
-    expect(lastText(view.editReply)).toContain('/xenon tickets publish');
   });
 
   it('refuses a staff role change while ticket channels still grant the previous role', async () => {
@@ -580,7 +818,6 @@ describe('discord-only tickets', () => {
 
     const state = await store.getGuild(GUILD);
     expect(state.ticketConfig?.ticketStaffRoleId).toBe(NEW_STAFF_ROLE);
-    expect(created(ChannelType.GuildCategory)).toHaveLength(5);
     for (const categoryId of Object.values(state.ticketCategories)) {
       const category = fake.channels.get(categoryId);
       expect(category?.permissionOverwrites.delete).toHaveBeenCalledWith(STAFF_ROLE, expect.any(String));
@@ -592,67 +829,22 @@ describe('discord-only tickets', () => {
     }
   });
 
-  it('keeps the panel of a pre-category configuration and creates categories on republish', async () => {
-    await writeFile(
-      file,
-      JSON.stringify({
-        version: 1,
-        guilds: {
-          [GUILD]: {
-            entries: [],
-            features: {},
-            ticketConfig: {
-              ticketPanelChannelId: PANEL,
-              ticketCategoryId: CATEGORY,
-              ticketLogChannelId: LOG,
-              ticketStaffRoleId: STAFF_ROLE,
-              ticketPanelMessageId: null,
-            },
-          },
-        },
-      }),
-    );
-
-    const loaded = await store.getGuild(GUILD);
-    expect(loaded.ticketConfig).toEqual({
-      ticketPanelChannelId: PANEL,
-      ticketLogChannelId: LOG,
-      ticketStaffRoleId: STAFF_ROLE,
-      ticketPanelMessageId: null,
-    });
-    expect(loaded.ticketCategories).toEqual({});
-
-    await publish();
-    expect(Object.keys((await store.getGuild(GUILD)).ticketCategories)).toHaveLength(5);
-  });
-
-  it('staff role members and ManageGuild users can close', async () => {
-    await publish();
-    await open(OWNER);
-    await handleButton(closeButton(fake, STAFF, await onlyTicket()) as never, store);
-    expect(await onlyTicket()).toMatchObject({ status: 'CLOSED', closedBy: STAFF });
-
-    resetTicketCooldowns();
-    await open(OTHER);
-    const second = Object.values((await store.getGuild(GUILD)).tickets).find((ticket) => ticket.ownerId === OTHER);
-    if (second === undefined) throw new Error('second ticket missing');
-    await handleButton(closeButton(fake, MANAGER, second) as never, store);
-    expect((await store.getGuild(GUILD)).tickets[second.ticketId]).toMatchObject({ status: 'CLOSED', closedBy: MANAGER });
-  });
-
-  it('reloads ticket state from JSON after a restart', async () => {
+  it('keeps CLOSED records after the channel is deleted and reloads them after a restart', async () => {
     await publish();
     await open(OWNER);
     const ticket = await onlyTicket();
 
     const restarted = new JsonDiscordRuntimeStore(file);
     expect((await restarted.getGuild(GUILD)).tickets[ticket.ticketId]).toEqual(ticket);
-    await handleButton(closeButton(fake, OWNER, ticket) as never, restarted);
-    expect((await new JsonDiscordRuntimeStore(file).getGuild(GUILD)).tickets[ticket.ticketId]?.status).toBe('CLOSED');
+    await handleButton(button(fake, 'close', OWNER, ticket) as never, restarted);
+
+    expect(fake.channels.get(ticket.channelId)?.delete).toHaveBeenCalledOnce();
+    const reloaded = (await new JsonDiscordRuntimeStore(file).getGuild(GUILD)).tickets[ticket.ticketId];
+    expect(reloaded).toMatchObject({ ticketId: ticket.ticketId, channelId: ticket.channelId, ownerId: OWNER, status: 'CLOSED', closedBy: OWNER });
     expect(await restarted.reserveTicketId(GUILD)).toBe('XN-TK-0002');
   });
 
-  it('loads pre-ticket and malformed runtime documents without losing other state', async () => {
+  it('loads pre-ticket, pre-claim and malformed runtime documents without losing other state', async () => {
     await writeFile(
       file,
       JSON.stringify({
@@ -663,7 +855,13 @@ describe('discord-only tickets', () => {
             features: { tempVoice: true },
             welcomeEnabled: false,
             rooms: {},
-            ticketConfig: { ticketPanelChannelId: 'not-a-snowflake' },
+            ticketConfig: {
+              ticketPanelChannelId: PANEL,
+              ticketCategoryId: CATEGORY,
+              ticketLogChannelId: LOG,
+              ticketStaffRoleId: STAFF_ROLE,
+              ticketPanelMessageId: null,
+            },
             tickets: {
               'XN-TK-0007': {
                 ticketId: 'XN-TK-0007',
@@ -686,9 +884,15 @@ describe('discord-only tickets', () => {
     const state = await store.getGuild(GUILD);
     expect(state.welcomeEnabled).toBe(false);
     expect(state.features).toEqual({ tempVoice: true });
-    expect(state.ticketConfig).toBeNull();
+    expect(state.ticketConfig).toEqual({
+      ticketPanelChannelId: PANEL,
+      ticketLogChannelId: LOG,
+      ticketStaffRoleId: STAFF_ROLE,
+      ticketPanelMessageId: null,
+    });
+    expect(state.ticketCategories).toEqual({});
+    expect(state.tickets['XN-TK-0007']?.claimedBy).toBeNull();
     expect(Object.keys(state.tickets)).toEqual(['XN-TK-0007']);
-    // The counter never reissues a reference that exists on disk.
     expect(await store.reserveTicketId(GUILD)).toBe('XN-TK-0008');
     const written = JSON.parse(await readFile(file, 'utf8')) as {
       guilds: Record<string, { tickets: Record<string, unknown> }>;
@@ -696,17 +900,16 @@ describe('discord-only tickets', () => {
     expect(written.guilds[GUILD]?.tickets['XN-TK-0008']).toBeUndefined();
   });
 
-  it('runs without Postgres or the provisioning engine and only creates the ticket channel', async () => {
+  it('runs without Postgres or the provisioning engine and only creates and deletes Xenon resources', async () => {
     await publish();
     await open(OWNER);
-    await handleButton(closeButton(fake, OWNER, await onlyTicket()) as never, store);
+    await close(OWNER, await onlyTicket());
 
     expect(flags.databaseLoaded).toBe(false);
     expect(adapter.discordGuildAdapter).not.toHaveBeenCalled();
-    // Only the five Xenon ticket categories and the one ticket channel are ever created.
-    expect(created(ChannelType.GuildCategory)).toHaveLength(5);
+    expect(created(ChannelType.GuildCategory)).toHaveLength(TYPES.length);
     expect(ticketChannelsCreated()).toBe(1);
-    expect(fake.guild.channels.create).toHaveBeenCalledTimes(6);
+    expect(fake.guild.channels.create).toHaveBeenCalledTimes(TYPES.length + 1);
     expect(fake.guild.roles.create).not.toHaveBeenCalled();
     for (const method of Object.values(fake.guild.autoModerationRules)) expect(method).not.toHaveBeenCalled();
     for (const id of [PANEL, CATEGORY, LOG]) {

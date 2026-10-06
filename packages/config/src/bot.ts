@@ -52,6 +52,8 @@ const discordOnlyBotSchema = runtimeSchema.extend({
   DISCORD_BOT_TOKEN: z.string().trim().min(1),
   DISCORD_GUILD_ID: discordSnowflake,
   DISCORD_INVITE_URL: z.url(),
+  /** Optional: only used for the ticket panel's website button. */
+  NEXT_PUBLIC_SITE_URL: optional(z.url()),
 });
 
 export type BotEnv = z.output<typeof integratedBotSchema>;
