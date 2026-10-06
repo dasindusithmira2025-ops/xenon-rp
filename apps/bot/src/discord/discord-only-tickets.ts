@@ -44,14 +44,12 @@ import type { DiscordGuildRuntimeState, DiscordRuntimeStore, TicketConfig, Ticke
 
 /** Each type gets its own Xenon-created Discord category, named `<label> Tickets`. */
 export const TICKET_CATEGORIES = [
-  { value: 'GENERAL', emoji: '🎫', label: 'General Support', summary: 'General questions and assistance', menu: 'General questions and assistance', staffOnly: false },
-  { value: 'TECHNICAL', emoji: '🔧', label: 'Technical Support', summary: 'Discord, FiveM, launcher or server issues', menu: 'Discord, FiveM or server issues', staffOnly: false },
-  { value: 'CHARACTER', emoji: '👤', label: 'Character Issue', summary: 'Problems involving your character or character data', menu: 'Character-related problems', staffOnly: false },
-  { value: 'WHITELIST', emoji: '📝', label: 'Whitelist Support', summary: 'Whitelist, application or interview assistance', menu: 'Application or whitelist assistance', staffOnly: false },
-  { value: 'PLAYER_REPORT', emoji: '🛡️', label: 'Player Report', summary: 'Report a player or rule violation', menu: 'Report a player or rule violation', staffOnly: false },
-  { value: 'STAFF_REPORT', emoji: '🚨', label: 'Staff Report', summary: 'Report a Xenon staff member privately', menu: 'Privately report a staff member', staffOnly: false },
-  { value: 'BUSINESS', emoji: '💼', label: 'Business / Organization', summary: 'Business, gang or organization assistance', menu: 'Organization or business assistance', staffOnly: false },
-  { value: 'DEVELOPER', emoji: '👨‍💻', label: 'Developer Task', summary: 'Developer tasks and technical reports · Staff only', menu: 'Developer issues · Staff only', staffOnly: true },
+  { value: 'GENERAL', emoji: '💬', label: 'General Support', summary: 'General questions and assistance', menu: 'General questions and assistance' },
+  { value: 'TECHNICAL', emoji: '🛠️', label: 'Technical Support', summary: 'Discord, FiveM, launcher or server issues', menu: 'Discord, FiveM or server issues' },
+  { value: 'CHARACTER', emoji: '🎭', label: 'Character Issue', summary: 'Problems involving your character or character data', menu: 'Character-related problems' },
+  { value: 'WHITELIST', emoji: '📜', label: 'Whitelist Support', summary: 'Whitelist, application or interview assistance', menu: 'Application or whitelist assistance' },
+  { value: 'PLAYER_REPORT', emoji: '🚩', label: 'Player Report', summary: 'Report a player or rule violation', menu: 'Report a player or rule violation' },
+  { value: 'STAFF_REPORT', emoji: '⚖️', label: 'Staff Report', summary: 'Report a Xenon staff member privately', menu: 'Privately report a staff member' },
 ] as const;
 
 const OWNER_ALLOW = [P.ViewChannel, P.SendMessages, P.ReadMessageHistory, P.AttachFiles];
@@ -80,7 +78,6 @@ const TRANSCRIPT_MESSAGE_LIMIT = 500;
 export const RERUN_PUBLISH =
   'Tickets are temporarily unavailable. Xenon management must rerun /xenon tickets publish.';
 export const ALREADY_CLOSING = 'This ticket is already closing or closed.';
-export const STAFF_ONLY_CATEGORY = 'This ticket category is available to Xenon staff only.';
 
 const lastCreation = new Map<string, number>();
 const creating = new Set<string>();
@@ -552,10 +549,6 @@ export async function openTicketFromSelect(
   }
   if (interaction.message.id !== config.ticketPanelMessageId || interaction.channelId !== config.ticketPanelChannelId) {
     await reply('This ticket panel is no longer active. Use the current XENON SUPPORT CENTER panel.');
-    return;
-  }
-  if (category.staffOnly && !(await isTicketStaff(interaction, guild, config))) {
-    await reply(STAFF_ONLY_CATEGORY);
     return;
   }
 

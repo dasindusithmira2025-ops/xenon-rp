@@ -35,7 +35,6 @@ import {
   formatDuration,
   resetTicketCooldowns,
   setTicketDeleteDelay,
-  STAFF_ONLY_CATEGORY,
   ticketCenterPanel,
   ticketChannelName,
 } from './discord-only-tickets';
@@ -56,14 +55,12 @@ const STAFF_ROLE = '600000000000000001';
 const NEW_STAFF_ROLE = '600000000000000002';
 
 const TYPES = [
-  ['GENERAL', '🎫', 'General Support'],
-  ['TECHNICAL', '🔧', 'Technical Support'],
-  ['CHARACTER', '👤', 'Character Issue'],
-  ['WHITELIST', '📝', 'Whitelist Support'],
-  ['PLAYER_REPORT', '🛡️', 'Player Report'],
-  ['STAFF_REPORT', '🚨', 'Staff Report'],
-  ['BUSINESS', '💼', 'Business / Organization'],
-  ['DEVELOPER', '👨‍💻', 'Developer Task'],
+  ['GENERAL', '💬', 'General Support'],
+  ['TECHNICAL', '🛠️', 'Technical Support'],
+  ['CHARACTER', '🎭', 'Character Issue'],
+  ['WHITELIST', '📜', 'Whitelist Support'],
+  ['PLAYER_REPORT', '🚩', 'Player Report'],
+  ['STAFF_REPORT', '⚖️', 'Staff Report'],
 ] as const;
 
 let sequence = 900000000000000000n;
@@ -367,7 +364,9 @@ describe('discord-only tickets', () => {
     expect(menu.custom_id).toBe('xn:ticket:create');
     expect(menu.placeholder).toBe('🎟️ Select a support category');
     expect(menu.options.map((option) => [option.value, option.emoji?.name, option.label])).toEqual(TYPES.map((type) => [...type]));
-    expect(menu.options.find((option) => option.value === 'DEVELOPER')?.label).toBe('Developer Task');
+    expect(new Set(menu.options.map((option) => option.emoji?.name)).size).toBe(TYPES.length);
+    expect(menu.options.map((option) => option.emoji?.name)).not.toContain('🎫');
+    expect(JSON.stringify(panel)).not.toMatch(/Business|Developer/);
   });
 
   it('adds the website button only for a public https site URL', () => {
@@ -475,20 +474,16 @@ describe('discord-only tickets', () => {
     expect(fake.channels.get(PANEL)?.send).toHaveBeenCalledOnce();
   });
 
-  it('rejects Developer Task tickets from regular members', async () => {
+  it('rejects the retired Business and Developer ticket types', async () => {
     await publish();
-    const view = await open(OWNER, 'DEVELOPER');
-
+    for (const retired of ['BUSINESS', 'DEVELOPER']) {
+      const view = await open(MANAGER, retired);
+      expect(lastText(view.editReply)).toContain('listed ticket categories');
+    }
     expect(ticketChannelsCreated()).toBe(0);
-    expect(lastText(view.editReply)).toBe(STAFF_ONLY_CATEGORY);
-  });
-
-  it('lets staff-role members and ManageGuild members open Developer Task tickets', async () => {
-    await publish();
-    await open(STAFF, 'DEVELOPER');
-    await open(MANAGER, 'DEVELOPER');
-
-    expect(ticketChannelsCreated()).toBe(2);
+    expect(created(ChannelType.GuildCategory).map((options) => options.name)).not.toEqual(
+      expect.arrayContaining(['Business / Organization Tickets', 'Developer Task Tickets']),
+    );
   });
 
   it('rejects unknown categories, stale panels, a second open ticket and rapid re-creation', async () => {
