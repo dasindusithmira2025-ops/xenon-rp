@@ -15,8 +15,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { JsonDiscordRuntimeStore } from '../runtime-store';
 
-import { computePostureLabel, handleModerationCommand, handleSecurityCommand } from './commands';
-import { createCase } from './model';
+import {
+  computePostureLabel,
+  handleModerationCommand,
+  handleSecurityCommand,
+  SECURITY_COMMANDS,
+} from './commands';
+import { createCase, type TrustLevel } from './model';
 
 import type { SecurityService } from './service';
 
@@ -97,7 +102,7 @@ describe('security command authorization', () => {
       getString: () => 'Test warning',
     });
 
-    await handleModerationCommand(interaction, guild, store, new Object() as SecurityService);
+    await handleModerationCommand(interaction, guild, store, fakeService({}));
 
     expect(interaction.editReply).toHaveBeenCalledWith({
       content: 'Your highest role must strictly outrank the target member.',
@@ -124,7 +129,7 @@ describe('security command authorization', () => {
       },
     }));
     const guild = { id: guildId, ownerId } as Guild;
-    const service = {
+    const service = fakeService({
       saveSnapshot: async () => {
         await store.updateGuild(guildId, (current) => ({
           ...current,
@@ -141,7 +146,7 @@ describe('security command authorization', () => {
         }));
         return undefined;
       },
-    } as unknown as SecurityService;
+    });
     const interaction = makeInteraction('security', moderatorId, {
       getSubcommandGroup: () => 'trust',
       getSubcommand: () => 'add',
@@ -168,6 +173,7 @@ interface FakeOptions {
   readonly user?: string;
   readonly strings?: Readonly<Record<string, string>>;
   readonly integers?: Readonly<Record<string, number>>;
+  readonly booleans?: Readonly<Record<string, boolean | null>>;
 }
 
 function fakeInteraction(
@@ -185,7 +191,7 @@ function fakeInteraction(
       getUser: () => (options.user === undefined ? null : { id: options.user }),
       getString: (name: string) => options.strings?.[name] ?? null,
       getInteger: (name: string) => options.integers?.[name] ?? null,
-      getBoolean: () => null,
+      getBoolean: (name: string) => options.booleans?.[name] ?? null,
     },
     memberPermissions: new PermissionsBitField(permissions),
     deferred: true,
@@ -194,6 +200,13 @@ function fakeInteraction(
     editReply: vi.fn(() => Promise.resolve(undefined)),
     reply: vi.fn(() => Promise.resolve(undefined)),
   } as unknown as ChatInputCommandInteraction;
+}
+
+function fakeService(partial: object): SecurityService {
+  return {
+    runManual: (_actorId: string, operation: () => Promise<unknown>) => operation(),
+    ...partial,
+  } as unknown as SecurityService;
 }
 
 function lastReply(interaction: ChatInputCommandInteraction): string {
@@ -210,6 +223,7 @@ describe('computePostureLabel', () => {
     incidents: [],
     raidLevel: 'NORMAL' as const,
     degraded: false,
+    enforcementMode: 'ENFORCE' as const,
   };
 
   it('applies the documented precedence', () => {
@@ -221,6 +235,17 @@ describe('computePostureLabel', () => {
     expect(
       computePostureLabel({ ...base, findings: critical, enabled: false, lockdownActive: true }),
     ).toBe('LOCKDOWN');
+  });
+
+  it('reports DEGRADED when automatic protection is inactive, below LOCKDOWN and AT RISK', () => {
+    const critical = [{ severity: 'CRITICAL' as const }];
+    for (const enforcementMode of ['OBSERVE', 'ALERT'] as const) {
+      const input = { ...base, enforcementMode };
+      expect(computePostureLabel(input)).toBe('DEGRADED');
+      expect(computePostureLabel({ ...input, findings: critical })).toBe('AT RISK');
+      expect(computePostureLabel({ ...input, lockdownActive: true })).toBe('LOCKDOWN');
+      expect(computePostureLabel({ ...input, enabled: false })).toBe('DISABLED');
+    }
   });
 
   it('treats open high/critical incidents and raid levels as at risk, but not handled ones', () => {
@@ -301,9 +326,14 @@ describe('security and moderation command behavior', () => {
     const saveCase = vi.fn();
     const interaction = kickInteraction();
 
-    await handleModerationCommand(interaction, guild, store, {
-      saveCase,
-    } as unknown as SecurityService);
+    await handleModerationCommand(
+      interaction,
+      guild,
+      store,
+      fakeService({
+        saveCase,
+      }),
+    );
 
     expect(saveCase).not.toHaveBeenCalled();
     expect(lastReply(interaction)).toContain('50013');
@@ -316,9 +346,14 @@ describe('security and moderation command behavior', () => {
     const saveCase = vi.fn();
     const interaction = kickInteraction();
 
-    await handleModerationCommand(interaction, guild, store, {
-      saveCase,
-    } as unknown as SecurityService);
+    await handleModerationCommand(
+      interaction,
+      guild,
+      store,
+      fakeService({
+        saveCase,
+      }),
+    );
 
     expect(target.kick).not.toHaveBeenCalled();
     expect(saveCase).not.toHaveBeenCalled();
@@ -335,9 +370,14 @@ describe('security and moderation command behavior', () => {
       strings: { reason: 'Spam' },
     });
 
-    await handleModerationCommand(interaction, guild, store, {
-      saveCase,
-    } as unknown as SecurityService);
+    await handleModerationCommand(
+      interaction,
+      guild,
+      store,
+      fakeService({
+        saveCase,
+      }),
+    );
 
     expect(members.ban).not.toHaveBeenCalled();
     expect(saveCase).not.toHaveBeenCalled();
@@ -354,9 +394,14 @@ describe('security and moderation command behavior', () => {
       strings: { reason: 'Appeal', user_id: targetId },
     });
 
-    await handleModerationCommand(interaction, guild, store, {
-      saveCase: vi.fn(),
-    } as unknown as SecurityService);
+    await handleModerationCommand(
+      interaction,
+      guild,
+      store,
+      fakeService({
+        saveCase: vi.fn(),
+      }),
+    );
 
     expect(members.unban).not.toHaveBeenCalled();
     expect(lastReply(interaction)).toContain('not banned');
@@ -383,9 +428,14 @@ describe('security and moderation command behavior', () => {
     const { guild, target } = moderationGuild(P.KickMembers);
     const interaction = kickInteraction();
 
-    await handleModerationCommand(interaction, guild, store, {
-      saveCase: vi.fn(),
-    } as unknown as SecurityService);
+    await handleModerationCommand(
+      interaction,
+      guild,
+      store,
+      fakeService({
+        saveCase: vi.fn(),
+      }),
+    );
 
     expect(target.kick).not.toHaveBeenCalled();
     expect(lastReply(interaction)).toContain('no duplicate');
@@ -403,9 +453,9 @@ describe('security and moderation command behavior', () => {
           };
         }),
     );
-    const service = {
+    const service = fakeService({
       saveCase: vi.fn(() => Promise.resolve(undefined)),
-    } as unknown as SecurityService;
+    });
     const first = kickInteraction();
     const running = handleModerationCommand(first, guild, store, service);
     await vi.waitFor(() => {
@@ -425,7 +475,7 @@ describe('security and moderation command behavior', () => {
   it('rejects /security for a user with Discord permission but no Xenon trust', async () => {
     const store = await makeStore();
     const guild = { id: guildId, ownerId } as Guild;
-    const service = { saveSnapshot: vi.fn() } as unknown as SecurityService;
+    const service = fakeService({ saveSnapshot: vi.fn() });
     const interaction = fakeInteraction('security', moderatorId, P.ManageGuild, {
       subcommand: 'setup',
     });
@@ -443,7 +493,7 @@ describe('security and moderation command behavior', () => {
       subcommand: 'bogus',
     });
 
-    await handleSecurityCommand(interaction, guild, store, {} as SecurityService);
+    await handleSecurityCommand(interaction, guild, store, fakeService({}));
 
     expect(lastReply(interaction)).toBe('Unsupported security command.');
   });
@@ -451,9 +501,9 @@ describe('security and moderation command behavior', () => {
   it('persists optional raid recovery and slowmode settings and keeps unset ones', async () => {
     const store = await makeStore();
     const guild = { id: guildId, ownerId } as Guild;
-    const service = {
+    const service = fakeService({
       saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
-    } as unknown as SecurityService;
+    });
     const thresholds = {
       warning10s: 3,
       raid10s: 6,
@@ -486,11 +536,11 @@ describe('security and moderation command behavior', () => {
   it('releases raid response after switching raid mode off and reports it', async () => {
     const store = await makeStore();
     const guild = { id: guildId, ownerId } as Guild;
-    const service = {
+    const service = fakeService({
       saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
       recordManualRaidMode: vi.fn(() => Promise.resolve(undefined)),
       checkRaidRecovery: vi.fn(() => Promise.resolve(true)),
-    } as unknown as SecurityService;
+    });
     const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
       group: 'raid-mode',
       subcommand: 'off',
@@ -535,12 +585,12 @@ describe('security and moderation command behavior', () => {
       channels: { cache: channels, create },
       roles: { cache: roles, create: roleCreate },
     } as unknown as Guild;
-    const service = {
+    const service = fakeService({
       saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
       syncAutoMod: vi.fn(() =>
         Promise.resolve({ created: [], updated: [], conflicts: [], unavailable: null }),
       ),
-    } as unknown as SecurityService;
+    });
 
     for (let run = 0; run < 2; run += 1) {
       await handleSecurityCommand(
@@ -586,12 +636,12 @@ describe('security and moderation command behavior', () => {
         create: roleCreate,
       },
     } as unknown as Guild;
-    const service = {
+    const service = fakeService({
       saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
       syncAutoMod: vi.fn(() =>
         Promise.resolve({ created: [], updated: [], conflicts: [], unavailable: null }),
       ),
-    } as unknown as SecurityService;
+    });
     const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
       subcommand: 'setup',
     });
@@ -602,5 +652,174 @@ describe('security and moderation command behavior', () => {
     expect(setPermissions).not.toHaveBeenCalled();
     expect(roleCreate).not.toHaveBeenCalled();
     expect(lastReply(interaction)).toContain('marker disabled');
+  });
+
+  it('runs a staff timeout inside runManual while the persisted mode is OBSERVE', async () => {
+    const store = await makeStore();
+    const { guild, target } = moderationGuild(P.ModerateMembers);
+    let insideManual = false;
+    const timeoutDuringManual: boolean[] = [];
+    const timeout = vi.fn((_ms: number | null, _reason: string) => {
+      timeoutDuringManual.push(insideManual);
+      return Promise.resolve(undefined);
+    });
+    Object.assign(target, { moderatable: true, timeout });
+    const runManual = vi.fn(async (_actorId: string, operation: () => Promise<unknown>) => {
+      insideManual = true;
+      try {
+        return await operation();
+      } finally {
+        insideManual = false;
+      }
+    });
+    const service = {
+      runManual,
+      saveCase: vi.fn(() => Promise.resolve(undefined)),
+    } as unknown as SecurityService;
+    const interaction = fakeInteraction('timeout', ownerId, P.ModerateMembers, {
+      user: targetId,
+      strings: { reason: 'Cooling off' },
+      integers: { minutes: 10 },
+    });
+
+    await handleModerationCommand(interaction, guild, store, service);
+
+    expect((await store.getGuild(guildId)).security.config.enforcementMode).toBe('OBSERVE');
+    expect(runManual).toHaveBeenCalledWith(ownerId, expect.any(Function));
+    expect(timeout).toHaveBeenCalledWith(600_000, 'Cooling off');
+    expect(timeoutDuringManual).toEqual([true]);
+    expect(lastReply(interaction)).toContain('Completed timeout');
+  });
+
+  describe('/security mode', () => {
+    const modeService = () =>
+      fakeService({
+        setEnforcementMode: vi.fn((_guild: Guild, mode: string) =>
+          Promise.resolve({
+            previous: 'OBSERVE',
+            current: mode,
+            activeRestrictions: { lockdown: false, quarantines: 0, raidSlowmodeChannels: 0 },
+          }),
+        ),
+      });
+    const setMode = (userId: string, confirm: boolean | null, mode = 'enforce') =>
+      fakeInteraction('security', userId, P.ManageGuild, {
+        group: 'mode',
+        subcommand: 'set',
+        strings: { mode },
+        booleans: { confirm },
+      });
+    const trust = async (
+      store: JsonDiscordRuntimeStore,
+      level: 'SECURITY_ADMIN' | 'TRUSTED_STAFF' | 'NORMAL_STAFF' | null,
+    ) => {
+      const actors: Record<string, TrustLevel> = level === null ? {} : { [moderatorId]: level };
+      await store.updateGuild(guildId, (current) => ({
+        ...current,
+        security: {
+          ...current.security,
+          config: {
+            ...current.security.config,
+            trustedActors: actors,
+          },
+        },
+      }));
+    };
+    const guild = { id: guildId, ownerId } as Guild;
+
+    it.each([null, 'NORMAL_STAFF', 'TRUSTED_STAFF'] as const)(
+      'refuses a ManageGuild user with trust %s',
+      async (level) => {
+        const store = await makeStore();
+        await trust(store, level);
+        const service = modeService();
+        const interaction = setMode(moderatorId, true);
+
+        await handleSecurityCommand(interaction, guild, store, service);
+
+        expect(lastReply(interaction)).toContain('Not authorized');
+        expect(service.setEnforcementMode).not.toHaveBeenCalled();
+      },
+    );
+
+    it('requires explicit confirmation to enable enforce and lists the protections', async () => {
+      const store = await makeStore();
+      await trust(store, 'SECURITY_ADMIN');
+      const service = modeService();
+      const unconfirmed = setMode(moderatorId, null);
+
+      await handleSecurityCommand(unconfirmed, guild, store, service);
+
+      expect(service.setEnforcementMode).not.toHaveBeenCalled();
+      expect(lastReply(unconfirmed)).toContain('/security mode set mode:enforce confirm:true');
+      expect(lastReply(unconfirmed)).toContain('•');
+
+      const confirmed = setMode(moderatorId, true);
+      await handleSecurityCommand(confirmed, guild, store, service);
+
+      expect(service.setEnforcementMode).toHaveBeenCalledWith(guild, 'ENFORCE', moderatorId);
+      expect(lastReply(confirmed)).toContain('OBSERVE → ENFORCE');
+    });
+
+    it('lets the owner switch to observe without confirmation and explains how to release restrictions', async () => {
+      const store = await makeStore();
+      const service = fakeService({
+        setEnforcementMode: vi.fn(() =>
+          Promise.resolve({
+            previous: 'ENFORCE',
+            current: 'OBSERVE',
+            activeRestrictions: { lockdown: true, quarantines: 2, raidSlowmodeChannels: 3 },
+          }),
+        ),
+      });
+      const interaction = setMode(ownerId, null, 'observe');
+
+      await handleSecurityCommand(interaction, guild, store, service);
+
+      expect(service.setEnforcementMode).toHaveBeenCalledWith(guild, 'OBSERVE', ownerId);
+      const text = lastReply(interaction);
+      expect(text).toContain('/security unlock');
+      expect(text).toContain('/security unquarantine');
+      expect(text).toContain('/security raid-mode off');
+    });
+
+    it('requires confirmation for enforce even when the persisted mode is already ENFORCE', async () => {
+      const store = await makeStore();
+      await store.updateGuild(guildId, (current) => ({
+        ...current,
+        security: {
+          ...current.security,
+          config: { ...current.security.config, enforcementMode: 'ENFORCE' },
+        },
+      }));
+      const service = modeService();
+      const interaction = setMode(ownerId, null);
+
+      await handleSecurityCommand(interaction, guild, store, service);
+
+      expect(service.setEnforcementMode).not.toHaveBeenCalled();
+      expect(lastReply(interaction)).toContain('confirm:true');
+    });
+
+    it('reports status without changing anything', async () => {
+      const store = await makeStore();
+      const service = fakeService({ setEnforcementMode: vi.fn() });
+      const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
+        group: 'mode',
+        subcommand: 'status',
+      });
+
+      await handleSecurityCommand(interaction, guild, store, service);
+
+      expect(service.setEnforcementMode).not.toHaveBeenCalled();
+      expect(lastReply(interaction)).toContain('Enforcement mode: OBSERVE');
+      expect(lastReply(interaction)).toContain('Active restrictions');
+    });
+  });
+
+  it('keeps /security within Discord command limits', () => {
+    const entry = SECURITY_COMMANDS.find((command) => command.name === 'security');
+    expect(entry?.options?.length).toBeLessThanOrEqual(25);
+    expect(entry?.options?.some((option) => option.name === 'mode')).toBe(true);
   });
 });

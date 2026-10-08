@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 export type TrustLevel = 'SECURITY_ADMIN' | 'TRUSTED_STAFF' | 'NORMAL_STAFF' | 'UNTRUSTED';
 export type SecuritySeverity = 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
 export type RaidMode = 'AUTO' | 'ON' | 'OFF';
+export type EnforcementMode = 'OBSERVE' | 'ALERT' | 'ENFORCE';
 export type LinkAction = 'ALLOW' | 'WARN' | 'BLOCK';
 export type IncidentStatus = 'OPEN' | 'CONTAINED' | 'RESOLVED';
 export type CaseAction =
@@ -69,6 +70,8 @@ export interface SecurityConfig {
   readonly ownedAutoModRuleIds: readonly string[];
   readonly prohibitedKeywords: readonly string[];
   readonly raidMode: RaidMode;
+  /** Central switch: OBSERVE records only, ALERT also notifies, ENFORCE performs automatic responses. */
+  readonly enforcementMode: EnforcementMode;
   /** Minutes without a further elevated join before automatic raid response is released. */
   readonly raidRecoveryMinutes: number;
   /** Slowmode applied to lockdown channels during a raid; 0 disables. */
@@ -243,6 +246,7 @@ export const DEFAULT_SECURITY_CONFIG: SecurityConfig = {
   ownedAutoModRuleIds: [],
   prohibitedKeywords: [],
   raidMode: 'AUTO',
+  enforcementMode: 'OBSERVE',
   raidRecoveryMinutes: 10,
   raidSlowmodeSeconds: 30,
   raidThresholds: {
@@ -361,6 +365,14 @@ function parseConfig(value: unknown, strict: boolean): SecurityConfig {
       : strict
         ? fail('Invalid raid mode.')
         : DEFAULT_SECURITY_CONFIG.raidMode;
+    const enforcementMode =
+      raw.enforcementMode === undefined
+        ? DEFAULT_SECURITY_CONFIG.enforcementMode
+        : isEnforcementMode(raw.enforcementMode)
+          ? raw.enforcementMode
+          : strict
+            ? fail('Invalid enforcement mode.')
+            : DEFAULT_SECURITY_CONFIG.enforcementMode;
     const linkAction = isLinkAction(links.action)
       ? links.action
       : strict
@@ -410,6 +422,7 @@ function parseConfig(value: unknown, strict: boolean): SecurityConfig {
         DEFAULT_SECURITY_CONFIG.raidSlowmodeSeconds,
       ),
       raidMode,
+      enforcementMode,
       raidThresholds: {
         warning10s: configNumber(
           thresholds.warning10s,
@@ -1315,6 +1328,9 @@ function isTrustLevel(value: unknown): value is TrustLevel {
 }
 function isRaidMode(value: unknown): value is RaidMode {
   return value === 'AUTO' || value === 'ON' || value === 'OFF';
+}
+function isEnforcementMode(value: unknown): value is EnforcementMode {
+  return value === 'OBSERVE' || value === 'ALERT' || value === 'ENFORCE';
 }
 function isLinkAction(value: unknown): value is LinkAction {
   return value === 'ALLOW' || value === 'WARN' || value === 'BLOCK';

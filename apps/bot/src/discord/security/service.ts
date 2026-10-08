@@ -1,3 +1,5 @@
+import { AsyncLocalStorage } from 'node:async_hooks';
+
 import {
   AuditLogEvent,
   DiscordAPIError,
@@ -19,7 +21,7 @@ import {
   type Message,
 } from 'discord.js';
 
-import { synchronizeAutoModRules } from './automod';
+import { synchronizeAutoModRules, type AutoModSyncResult } from './automod';
 import { SecurityEngine } from './engine';
 import {
   captureOverwrites,
@@ -31,6 +33,7 @@ import {
   isSnowflake,
   scanRolePermissions,
   type CaseAction,
+  type EnforcementMode,
   type GuildSecuritySnapshot,
   type LinkAction,
   type LockdownChannelSnapshot,
@@ -121,6 +124,61 @@ type LockdownGuildChannel = Extract<
       | ChannelType.GuildMedia;
   }
 >;
+export interface EnforcementModeChange {
+  readonly previous: EnforcementMode;
+  readonly current: EnforcementMode;
+  readonly activeRestrictions: {
+    readonly lockdown: boolean;
+    readonly quarantines: number;
+    readonly raidSlowmodeChannels: number;
+  };
+}
+/** Thrown before an automatic Discord mutation when the guild is not in ENFORCE mode. */
+export class EnforcementBlockedError extends Error {
+  public constructor(
+    public readonly mode: EnforcementMode,
+    public readonly label: string,
+  ) {
+    super(`ENFORCEMENT_MODE_BLOCKED:${mode}:${label}`);
+    this.name = 'EnforcementBlockedError';
+  }
+}
+const listFormat = new Intl.ListFormat('en', { style: 'long', type: 'conjunction' });
+
+function describeWould(mode: EnforcementMode, steps: readonly string[]): string {
+  return `${mode === 'ALERT' ? 'ALERT ONLY' : 'OBSERVED'}: would ${listFormat.format(steps)}`;
+}
+
+/** Human list of the automatic responses ENFORCE mode would activate under this configuration. */
+export function enforcedProtections(config: SecurityConfig): readonly string[] {
+  if (!config.enabled) return [];
+  const protections: string[] = [];
+  if (config.modules.raid) {
+    protections.push(
+      config.raidMode === 'ON'
+        ? 'Raid mode ON: quarantine every untrusted arrival'
+        : 'Raid quarantine of untrusted arrivals during RAID/CRITICAL join surges',
+    );
+    protections.push(
+      config.raidSlowmodeSeconds > 0
+        ? `Raid slowmode of ${String(config.raidSlowmodeSeconds)}s on configured lockdown channels`
+        : 'Raid slowmode disabled',
+    );
+  }
+  if (config.modules.lockdown && config.autoLockdownOnCritical)
+    protections.push('Automatic lockdown on CRITICAL raid or anti-nuke incidents');
+  if (config.modules.antiNuke)
+    protections.push('Anti-nuke containment: dangerous-role removal or timeout of the actor');
+  if (config.modules.spam) protections.push('Spam message deletion and member timeouts');
+  if (config.modules.linkGuard && config.links.action !== 'ALLOW')
+    protections.push(
+      config.links.action === 'BLOCK'
+        ? 'Link deletion for blocked links'
+        : 'Private warnings for flagged links',
+    );
+  return protections;
+}
+
 export interface NativeSafetyCheck {
   readonly name: string;
   readonly status: 'OK' | 'WARN' | 'MANUAL ACTION REQUIRED';
@@ -159,8 +217,105 @@ export class SecurityService {
   private readonly unattributedAlerts = new Map<string, number>();
   private readonly completedAuditEntries = new Set<string>();
   private readonly raidRecoveryReported = new Set<string>();
+  private readonly manualContext = new AsyncLocalStorage<{
+    readonly origin: 'MANUAL';
+    readonly actorId: string;
+  }>();
 
   public constructor(private readonly store: DiscordRuntimeStore) {}
+
+  /** Marks the operation as staff-initiated; automatic-only restrictions do not apply inside it. */
+  public runManual<T>(actorId: string, operation: () => Promise<T>): Promise<T> {
+    return this.manualContext.run({ origin: 'MANUAL', actorId }, operation);
+  }
+
+  public async setEnforcementMode(
+    guild: Guild,
+    mode: EnforcementMode,
+    actorId: string,
+  ): Promise<EnforcementModeChange> {
+    return this.runManual(actorId, async () => {
+      let previous: EnforcementMode = mode;
+      await this.store.updateGuild(guild.id, (current) => {
+        previous = current.security.config.enforcementMode;
+        return {
+          ...current,
+          security: {
+            ...current.security,
+            config: { ...current.security.config, enforcementMode: mode },
+          },
+        };
+      });
+      const security = (await this.store.getGuild(guild.id)).security;
+      const activeRestrictions = {
+        lockdown: security.lockdown !== null,
+        quarantines: security.quarantines.length,
+        raidSlowmodeChannels: security.raidResponse?.slowmode.length ?? 0,
+      };
+      const incident = createIncident({
+        severity: 'MEDIUM',
+        title: `Enforcement mode changed to ${mode}`,
+        source: 'SecurityCommand',
+        rule: `ENFORCEMENT_MODE_${mode}`,
+        actorId,
+        targetId: guild.id,
+        evidence: [
+          `${previous} -> ${mode}`,
+          `Active restrictions kept as-is: lockdown ${activeRestrictions.lockdown ? 'active' : 'none'}, ${String(activeRestrictions.quarantines)} quarantine record(s), ${String(activeRestrictions.raidSlowmodeChannels)} raid slowmode channel(s)`,
+        ],
+        automatic: false,
+        actionTaken: ['Enforcement mode updated; existing restrictions were not changed'],
+        auditCorrelation: 'NOT_APPLICABLE',
+      });
+      await this.saveIncident(guild, incident);
+      await this.logIncident(guild, incident, 'audit', true);
+      return { previous, current: mode, activeRestrictions };
+    });
+  }
+
+  private isAutomatic(): boolean {
+    return this.manualContext.getStore() === undefined;
+  }
+
+  /** Fresh persisted mode when an automatic caller is not allowed to mutate; otherwise null. */
+  private async automaticBlock(guildId: string): Promise<EnforcementMode | null> {
+    if (!this.isAutomatic()) return null;
+    const mode = (await this.store.getGuild(guildId)).security.config.enforcementMode;
+    return mode === 'ENFORCE' ? null : mode;
+  }
+
+  private async assertMutationAllowed(guildId: string, label: string): Promise<void> {
+    const blocked = await this.automaticBlock(guildId);
+    if (blocked !== null) throw new EnforcementBlockedError(blocked, label);
+  }
+
+  private async mutate(guildId: string, label: string, run: () => Promise<unknown>): Promise<void> {
+    await this.assertMutationAllowed(guildId, label);
+    await run();
+  }
+
+  /** Like `mutate`, but converts any failure into a result; `blocked` carries the mode-block code. */
+  private async tryMutate(
+    guildId: string,
+    label: string,
+    run: () => Promise<unknown>,
+  ): Promise<{ readonly done: boolean; readonly blocked: string | null }> {
+    try {
+      await this.mutate(guildId, label, run);
+      return { done: true, blocked: null };
+    } catch (error) {
+      return {
+        done: false,
+        blocked: error instanceof EnforcementBlockedError ? error.message : null,
+      };
+    }
+  }
+
+  /** Automatic notifications are silent in OBSERVE; only the manual async context is exempt. */
+  private async notificationsAllowed(guildId: string): Promise<boolean> {
+    if (!this.isAutomatic()) return true;
+    return (await this.store.getGuild(guildId)).security.config.enforcementMode !== 'OBSERVE';
+  }
 
   public setMessageContentAvailable(available: boolean): void {
     this.messageContentAvailable = available;
@@ -170,10 +325,28 @@ export class SecurityService {
     const state = await this.store.getGuild(member.guild.id);
     const config = state.security.config;
     if (!config.enabled || !config.modules.raid || config.raidMode === 'OFF') return;
+    const mode = config.enforcementMode;
     const botId = member.guild.members.me?.id;
     if (config.raidMode === 'ON') {
       const trust = config.trustedActors[member.id];
       if (member.id !== member.guild.ownerId && (trust === undefined || trust === 'UNTRUSTED')) {
+        if (mode !== 'ENFORCE') {
+          const observed = createIncident({
+            severity: 'HIGH',
+            title: 'Raid mode arrival requires security review',
+            source: 'RaidDetector',
+            rule: 'RAID_MODE_ARRIVAL',
+            actorId: null,
+            targetId: member.id,
+            evidence: ['Manual raid mode is active; this arrival would be quarantined.'],
+            automatic: true,
+            actionTaken: [describeWould(mode, ['quarantine'])],
+            auditCorrelation: 'NOT_APPLICABLE',
+          });
+          await this.saveIncident(member.guild, observed);
+          await this.logIncident(member.guild, observed, 'alerts');
+          return;
+        }
         const result =
           botId === undefined
             ? 'QUARANTINE_BOT_ID_UNAVAILABLE'
@@ -256,12 +429,39 @@ export class SecurityService {
       });
       await this.saveIncident(member.guild, incident);
     }
+    const trust = config.trustedActors[member.id];
+    const exemptArrival =
+      member.id === member.guild.ownerId || (trust !== undefined && trust !== 'UNTRUSTED');
+    if (mode !== 'ENFORCE') {
+      if (incident === null) return;
+      const raidElevated = evaluation.level === 'RAID' || evaluation.level === 'CRITICAL';
+      const would: string[] = [];
+      if (raidElevated && !exemptArrival) would.push('quarantine');
+      if (
+        observation.transitioned &&
+        evaluation.level === 'CRITICAL' &&
+        config.autoLockdownOnCritical &&
+        config.modules.lockdown
+      )
+        would.push('lock down');
+      if (raidElevated && config.raidSlowmodeSeconds > 0 && config.lockdownChannelIds.length > 0)
+        would.push(`apply ${String(config.raidSlowmodeSeconds)}s slowmode`);
+      const observedActions = would.length === 0 ? [] : [describeWould(mode, would)];
+      if (observedActions.length > 0)
+        await this.updateIncident(member.guild.id, incident.id, (current) => ({
+          ...current,
+          actionTaken: observedActions,
+        }));
+      await this.logIncident(
+        member.guild,
+        { ...incident, actionTaken: observedActions },
+        evaluation.level === 'WARNING' ? 'audit' : 'alerts',
+      );
+      return;
+    }
     const actions: string[] = [];
     const raidFailures: string[] = [];
     if (evaluation.level === 'RAID' || evaluation.level === 'CRITICAL') {
-      const trust = config.trustedActors[member.id];
-      const exemptArrival =
-        member.id === member.guild.ownerId || (trust !== undefined && trust !== 'UNTRUSTED');
       if (!exemptArrival)
         actions.push(
           botId === undefined
@@ -351,7 +551,15 @@ export class SecurityService {
     );
   }
 
-  public async recordManualRaidMode(
+  public recordManualRaidMode(
+    guild: Guild,
+    actorId: string,
+    mode: 'ON' | 'OFF' | 'AUTO',
+  ): Promise<void> {
+    return this.runManual(actorId, () => this.recordManualRaidModeOnce(guild, actorId, mode));
+  }
+
+  private async recordManualRaidModeOnce(
     guild: Guild,
     actorId: string,
     mode: 'ON' | 'OFF' | 'AUTO',
@@ -480,7 +688,14 @@ export class SecurityService {
       this.incidentPending.delete(cooldownKey);
     }
     const actions: string[] = [];
-    if (evaluation.severity === 'CRITICAL') {
+    if (evaluation.severity === 'CRITICAL' && config.enforcementMode !== 'ENFORCE') {
+      actions.push(
+        describeWould(config.enforcementMode, [
+          'remove dangerous roles',
+          ...(config.autoLockdownOnCritical && config.modules.lockdown ? ['lock down'] : []),
+        ]),
+      );
+    } else if (evaluation.severity === 'CRITICAL') {
       actions.push(
         ...(await this.containActor(guild, signal.actorId, incident.id).catch((error: unknown) => [
           `Containment failed: ${describeDiscordError(error)}`,
@@ -551,6 +766,7 @@ export class SecurityService {
           result.action,
           result.reason,
           result.domain,
+          config.enforcementMode,
         );
         if (result.action === 'BLOCK') break;
       }
@@ -580,6 +796,7 @@ export class SecurityService {
       member,
       result.severity,
       result.reasons.join(', '),
+      config.enforcementMode,
     );
   }
 
@@ -646,6 +863,8 @@ export class SecurityService {
     automatic: boolean,
     actorId: string | null,
   ): Promise<string> {
+    const blockedMode = await this.automaticBlock(guild.id);
+    if (blockedMode !== null) return `ENFORCEMENT_MODE_BLOCKED:${blockedMode}`;
     const state = await this.store.getGuild(guild.id);
     const journal = state.security.lockdown;
     const interrupted =
@@ -852,6 +1071,17 @@ export class SecurityService {
           'after',
           `Xenon lockdown: ${reason.slice(0, 300)}`,
         );
+        if (result.blocked !== undefined) {
+          // Mode changed after the journal entry: leave the patch APPLYING so recovery reconciles it.
+          const blockedAction = result.blocked;
+          if (incidentId !== null)
+            await this.updateIncident(guild.id, incidentId, (current) => ({
+              ...current,
+              actionTaken: [...current.actionTaken, blockedAction],
+              status: 'OPEN',
+            }));
+          return blockedAction;
+        }
         active = await this.setLockdownPatchStatus(
           active,
           guild.id,
@@ -1104,6 +1334,8 @@ export class SecurityService {
           'before',
           `Restore Xenon lockdown bits: ${snapshot.reason.slice(0, 200)}`,
         );
+        if (result.blocked !== undefined)
+          return { restored, conflicts: [...conflicts, result.blocked] };
         const status = result.applied ? 'RESTORED' : 'CONFLICT';
         active = await this.setLockdownPatchStatus(
           active,
@@ -1176,6 +1408,8 @@ export class SecurityService {
     reason: string,
     actorId: string,
   ): Promise<string> {
+    const blockedMode = await this.automaticBlock(member.guild.id);
+    if (blockedMode !== null) return `ENFORCEMENT_MODE_BLOCKED:${blockedMode}`;
     const guild = member.guild;
     const currentMember = await guild.members
       .fetch({ user: member.id, force: true })
@@ -1258,6 +1492,7 @@ export class SecurityService {
         'after',
         `Xenon quarantine for ${member.id}: ${reason.slice(0, 250)}`,
       );
+      if (result.blocked !== undefined) return result.blocked;
       active = await this.setQuarantinePatchStatus(
         active,
         guild.id,
@@ -1309,7 +1544,9 @@ export class SecurityService {
       !freshMember.roles.cache.has(markerRole.id)
     ) {
       try {
-        await freshMember.roles.add(markerRole, reason.slice(0, 500));
+        await this.mutate(guild.id, 'MARKER_ROLE_ADD', () =>
+          freshMember.roles.add(markerRole, reason.slice(0, 500)),
+        );
         active = { ...active, markerRoleAdded: true };
         try {
           await this.persistQuarantine(active, guild.id);
@@ -1452,6 +1689,7 @@ export class SecurityService {
         'before',
         `Restore Xenon quarantine bits: ${reason.slice(0, 200)}`,
       );
+      if (result.blocked !== undefined) return result.blocked;
       active = await this.setQuarantinePatchStatus(
         active,
         guild.id,
@@ -1467,7 +1705,9 @@ export class SecurityService {
     }
     if (active.markerRoleAdded && role !== undefined && member.roles.cache.has(role.id)) {
       try {
-        await member.roles.remove(role, reason.slice(0, 500));
+        await this.mutate(guild.id, 'MARKER_ROLE_REMOVE', () =>
+          member.roles.remove(role, reason.slice(0, 500)),
+        );
       } catch (error) {
         return `UNQUARANTINE_FAILED:${error instanceof Error ? error.message.slice(0, 160) : 'Discord rejected the marker removal'}`;
       }
@@ -1514,10 +1754,11 @@ export class SecurityService {
     }));
   }
 
-  public async syncAutoMod(
-    guild: Guild,
-  ): Promise<Awaited<ReturnType<typeof synchronizeAutoModRules>>> {
-    return synchronizeAutoModRules(guild, this.store);
+  public async syncAutoMod(guild: Guild): Promise<AutoModSyncResult> {
+    await this.assertMutationAllowed(guild.id, 'AUTOMOD_SYNC');
+    return synchronizeAutoModRules(guild, this.store, () =>
+      this.assertMutationAllowed(guild.id, 'AUTOMOD_SYNC'),
+    );
   }
 
   public async scanPermissions(guild: Guild): Promise<readonly PermissionFinding[]> {
@@ -1942,6 +2183,7 @@ export class SecurityService {
       const state = (await this.store.getGuild(guild.id)).security;
       const response = state.raidResponse;
       if (response === null || state.config.raidMode === 'ON') return false;
+      if (this.isAutomatic() && state.config.enforcementMode !== 'ENFORCE') return false;
       const manuallyReleased = state.config.raidMode === 'OFF' || !state.config.modules.raid;
       const recoveryMs = state.config.raidRecoveryMinutes * 60_000;
       if (!manuallyReleased && Date.now() - Date.parse(response.lastEscalationAt) < recoveryMs)
@@ -1982,7 +2224,9 @@ export class SecurityService {
           continue;
         }
         try {
-          await channel.setRateLimitPerUser(entry.before, 'Xenon raid response ended');
+          await this.mutate(guild.id, 'SLOWMODE_RESTORE', () =>
+            channel.setRateLimitPerUser(entry.before, 'Xenon raid response ended'),
+          );
           restored += 1;
         } catch (error) {
           retained.push(entry);
@@ -2098,6 +2342,7 @@ export class SecurityService {
         }));
         return [];
       }
+      await this.assertMutationAllowed(guild.id, 'SLOWMODE_SET');
       const actions: string[] = [];
       const planned: RaidResponseState['slowmode'][number][] = [];
       const appliers = new Map<string, () => Promise<unknown>>();
@@ -2123,7 +2368,9 @@ export class SecurityService {
           if (before >= applied) continue;
           planned.push({ channelId, before, applied });
           appliers.set(channelId, () =>
-            channel.setRateLimitPerUser(applied, `Xenon raid response (${level})`),
+            this.mutate(guild.id, 'SLOWMODE_SET', () =>
+              channel.setRateLimitPerUser(applied, `Xenon raid response (${level})`),
+            ),
           );
         }
       }
@@ -2181,7 +2428,18 @@ export class SecurityService {
     });
   }
 
-  public async resolveIncident(
+  public resolveIncident(
+    guild: Guild,
+    incidentId: string,
+    actorId: string,
+    note: string,
+  ): Promise<'RESOLVED' | 'NOT_FOUND' | 'ALREADY_RESOLVED'> {
+    return this.runManual(actorId, () =>
+      this.resolveIncidentOnce(guild, incidentId, actorId, note),
+    );
+  }
+
+  private async resolveIncidentOnce(
     guild: Guild,
     incidentId: string,
     actorId: string,
@@ -2431,7 +2689,7 @@ export class SecurityService {
         `Audit entry ${entry.id}`,
         'A dangerous permission deny was removed; effective base permissions for the overwrite target could not be confirmed.',
       ],
-      automatic: false,
+      automatic: true,
       actionTaken: ['No automatic containment; effective permission escalation is unverified.'],
       auditCorrelation: 'CONFIRMED',
     });
@@ -2462,14 +2720,15 @@ export class SecurityService {
     const actions: string[] = [];
     if (removable.size > 0) {
       try {
-        await actor.roles.remove(
-          [...removable.keys()],
-          `Xenon anti-nuke containment ${incidentId}`,
+        await this.mutate(guild.id, 'ROLES_REMOVE', () =>
+          actor.roles.remove([...removable.keys()], `Xenon anti-nuke containment ${incidentId}`),
         );
         actions.push(`Removed ${String(removable.size)} dangerous role(s)`);
       } catch (error) {
         actions.push(
-          `Dangerous-role removal failed (${describeDiscordError(error)}); inspect role hierarchy and permissions`,
+          error instanceof EnforcementBlockedError
+            ? error.message
+            : `Dangerous-role removal failed (${describeDiscordError(error)}); inspect role hierarchy and permissions`,
         );
       }
     }
@@ -2482,10 +2741,16 @@ export class SecurityService {
     }
     if (actions.length === 0 && actor.moderatable) {
       try {
-        await actor.timeout(10 * 60 * 1_000, `Xenon anti-nuke containment ${incidentId}`);
+        await this.mutate(guild.id, 'TIMEOUT', () =>
+          actor.timeout(10 * 60 * 1_000, `Xenon anti-nuke containment ${incidentId}`),
+        );
         actions.push('Actor timed out for 10 minutes');
       } catch (error) {
-        actions.push(`Timeout failed (${describeDiscordError(error)}); inspect bot permissions`);
+        actions.push(
+          error instanceof EnforcementBlockedError
+            ? error.message
+            : `Timeout failed (${describeDiscordError(error)}); inspect bot permissions`,
+        );
       }
     }
     return actions;
@@ -2498,13 +2763,16 @@ export class SecurityService {
     action: LinkAction,
     reason: string,
     domain: string | null,
+    mode: EnforcementMode,
   ): Promise<void> {
     let actionTaken: string;
-    if (action === 'BLOCK') {
-      actionTaken = await message
-        .delete()
-        .then(() => 'Message deleted')
-        .catch(() => 'Message deletion failed');
+    if (mode !== 'ENFORCE') {
+      actionTaken = describeWould(mode, [
+        action === 'BLOCK' ? 'delete the message' : 'send a warning DM',
+      ]);
+    } else if (action === 'BLOCK') {
+      const result = await this.tryMutate(guild.id, 'MESSAGE_DELETE', () => message.delete());
+      actionTaken = result.done ? 'Message deleted' : (result.blocked ?? 'Message deletion failed');
     } else {
       const dmKey = `${guild.id}:${member.id}`;
       const now = Date.now();
@@ -2512,12 +2780,14 @@ export class SecurityService {
         actionTaken = 'Warning not re-sent (recently warned)';
       } else {
         boundedSet(this.linkWarningDms, dmKey, now, MAX_TRACKED_KEYS);
-        actionTaken = await member
-          .send(
+        const result = await this.tryMutate(guild.id, 'DM_SEND', () =>
+          member.send(
             `A link in <#${message.channelId}> was flagged: ${reason}. Local URL checks are not malware detection.`,
-          )
-          .then(() => 'Warning sent privately')
-          .catch(() => 'Private warning delivery failed');
+          ),
+        );
+        actionTaken = result.done
+          ? 'Warning sent privately'
+          : (result.blocked ?? 'Private warning delivery failed');
       }
     }
     const incident = createIncident({
@@ -2546,11 +2816,13 @@ export class SecurityService {
     member: GuildMember,
     level: 'WARN' | 'DELETE' | 'TIMEOUT' | 'ESCALATE',
     reason: string,
+    mode: EnforcementMode,
   ): Promise<void> {
     const cooldownKey = `${guild.id}:${member.id}`;
     const startedAt = Date.now();
     if (startedAt < (this.spamCooldowns.get(cooldownKey) ?? 0)) {
-      if (level !== 'WARN') await message.delete().catch(() => undefined);
+      if (level !== 'WARN' && mode === 'ENFORCE')
+        await this.tryMutate(guild.id, 'MESSAGE_DELETE', () => message.delete());
       boundedSet(
         this.spamSuppressed,
         cooldownKey,
@@ -2573,30 +2845,84 @@ export class SecurityService {
         record.action === 'TIMEOUT' &&
         Date.now() - Date.parse(record.createdAt) <= 60 * 60 * 1_000,
     ).length;
+    const caseReason =
+      suppressed > 0 ? `${reason} (+${String(suppressed)} suppressed detections)` : reason;
+    const timeoutEligible = (level === 'TIMEOUT' || level === 'ESCALATE') && member.moderatable;
+    const timeoutSeconds =
+      recentTimeouts === 0 ? 10 * 60 : recentTimeouts === 1 ? 60 * 60 : 6 * 60 * 60;
+    if (mode !== 'ENFORCE') {
+      const steps = [
+        ...(level === 'WARN' ? [] : ['delete the message']),
+        timeoutEligible
+          ? `time out the member for ${String(timeoutSeconds)} seconds`
+          : 'send a warning DM',
+      ];
+      const observed = createIncident({
+        severity: level === 'WARN' ? 'LOW' : level === 'DELETE' ? 'MEDIUM' : 'HIGH',
+        title: `Spam detected (${level.toLowerCase()})`,
+        source: 'SpamGuard',
+        rule: `SPAM_${level}`,
+        actorId: member.id,
+        targetId: message.channelId,
+        evidence: [caseReason.slice(0, 500), `Message ${message.id}`],
+        automatic: true,
+        actionTaken: [describeWould(mode, steps)],
+        auditCorrelation: 'NOT_APPLICABLE',
+      });
+      await this.saveIncident(guild, observed);
+      await this.logIncident(
+        guild,
+        observed,
+        level === 'TIMEOUT' || level === 'ESCALATE' ? 'alerts' : 'audit',
+      );
+      return;
+    }
     let action: CaseAction = 'WARN';
     let duration: number | null = null;
     let deletion = 'Message not deleted';
-    if (level === 'DELETE' || level === 'TIMEOUT' || level === 'ESCALATE')
-      deletion = await message
-        .delete()
-        .then(() => 'Message deleted')
-        .catch(() => 'Message deletion failed');
-    if ((level === 'TIMEOUT' || level === 'ESCALATE') && member.moderatable) {
-      duration = recentTimeouts === 0 ? 10 * 60 : recentTimeouts === 1 ? 60 * 60 : 6 * 60 * 60;
-      try {
-        await member.timeout(duration * 1_000, `Xenon spam protection: ${reason}`);
-        action = 'TIMEOUT';
-      } catch {
-        action = 'WARN';
+    let blocked: string | null = null;
+    if (level !== 'WARN') {
+      const result = await this.tryMutate(guild.id, 'MESSAGE_DELETE', () => message.delete());
+      deletion = result.done ? 'Message deleted' : (result.blocked ?? 'Message deletion failed');
+      blocked = result.blocked;
+    }
+    if (timeoutEligible && blocked === null) {
+      duration = timeoutSeconds;
+      const result = await this.tryMutate(guild.id, 'TIMEOUT', () =>
+        member.timeout(timeoutSeconds * 1_000, `Xenon spam protection: ${reason}`),
+      );
+      if (result.done) action = 'TIMEOUT';
+      else {
         duration = null;
+        blocked = result.blocked;
       }
     }
-    if (action === 'WARN')
-      await member
-        .send(`Xenon spam protection flagged a message in <#${message.channelId}>: ${reason}.`)
-        .catch(() => undefined);
-    const caseReason =
-      suppressed > 0 ? `${reason} (+${String(suppressed)} suppressed detections)` : reason;
+    if (action === 'WARN' && blocked === null) {
+      const result = await this.tryMutate(guild.id, 'DM_SEND', () =>
+        member.send(
+          `Xenon spam protection flagged a message in <#${message.channelId}>: ${reason}.`,
+        ),
+      );
+      blocked = result.blocked;
+    }
+    if (blocked !== null) {
+      // The mode changed after the boundary check: record what happened without a moderation case.
+      const interrupted = createIncident({
+        severity: 'MEDIUM',
+        title: `Spam response blocked by enforcement mode (${level.toLowerCase()})`,
+        source: 'SpamGuard',
+        rule: `SPAM_${level}`,
+        actorId: member.id,
+        targetId: message.channelId,
+        evidence: [caseReason.slice(0, 500), `Message ${message.id}`],
+        automatic: true,
+        actionTaken: [deletion, blocked],
+        auditCorrelation: 'NOT_APPLICABLE',
+      });
+      await this.saveIncident(guild, interrupted);
+      await this.logIncident(guild, interrupted, 'alerts');
+      return;
+    }
     const record = createCase({
       action,
       moderatorId: guild.client.user.id,
@@ -2671,8 +2997,10 @@ export class SecurityService {
     guild: Guild,
     incident: SecurityIncident,
     destination: 'alerts' | 'audit',
+    unthrottled = false,
   ): Promise<void> {
-    const carried = this.throttleAlert(incident);
+    if (!(await this.notificationsAllowed(guild.id))) return;
+    const carried = unthrottled ? { suppressed: 0, ids: [] } : this.throttleAlert(incident);
     if (carried === null) return;
     const config = (await this.store.getGuild(guild.id)).security.config;
     const channelId = destination === 'alerts' ? config.channels.alerts : config.channels.audit;
@@ -2731,8 +3059,10 @@ export class SecurityService {
       .setTitle(`${incident.severity} · ${incident.title}`.slice(0, 256))
       .addFields(fields)
       .setTimestamp(new Date(incident.createdAt));
-    if (channel !== null && channel !== undefined && 'send' in channel)
-      await channel.send({ embeds: [embed] }).catch(() => undefined);
+    if (channel === null || channel === undefined || !('send' in channel)) return;
+    // The mode may have changed while the embed was prepared: decide again right before sending.
+    if (!(await this.notificationsAllowed(guild.id))) return;
+    await channel.send({ embeds: [embed] }).catch(() => undefined);
   }
 
   /** Returns null when a similar alert was posted recently; otherwise the suppressed tally to attach. */
@@ -2766,6 +3096,7 @@ export class SecurityService {
     entry: GuildAuditLogsEntry,
     incidentId: string,
   ): Promise<void> {
+    if (!(await this.notificationsAllowed(guild.id))) return;
     const state = await this.store.getGuild(guild.id);
     const channelId = state.security.config.channels.audit;
     const channel = channelId === null ? null : guild.channels.cache.get(channelId);
@@ -2777,6 +3108,7 @@ export class SecurityService {
       `Reason ${entry.reason ?? 'not provided'}`,
       `Incident ${incidentId}`,
     ].join('\n');
+    if (!(await this.notificationsAllowed(guild.id))) return;
     await channel
       .send({
         embeds: [
@@ -2795,11 +3127,13 @@ export class SecurityService {
     key: 'alerts' | 'audit' | 'modLogs',
     embed: EmbedBuilder,
   ): Promise<void> {
+    if (!(await this.notificationsAllowed(guild.id))) return;
     const config = (await this.store.getGuild(guild.id)).security.config;
     const channelId = config.channels[key];
     const channel = channelId === null ? null : guild.channels.cache.get(channelId);
-    if (channel !== null && channel !== undefined && 'send' in channel)
-      await channel.send({ embeds: [embed] }).catch(() => undefined);
+    if (channel === null || channel === undefined || !('send' in channel)) return;
+    if (!(await this.notificationsAllowed(guild.id))) return;
+    await channel.send({ embeds: [embed] }).catch(() => undefined);
   }
 
   private async logHierarchyBlocked(guild: Guild, detail: string): Promise<void> {
@@ -2904,7 +3238,7 @@ export class SecurityService {
     patch: SecurityOverwritePatch,
     direction: 'after' | 'before',
     reason: string,
-  ): Promise<{ readonly applied: boolean; readonly detail: string }> {
+  ): Promise<{ readonly applied: boolean; readonly detail: string; readonly blocked?: string }> {
     const channel = await guild.channels.fetch(channelId, { force: true }).catch(() => null);
     if (channel === null || !hasPermissionOverwrites(channel))
       return { applied: false, detail: 'channel is unavailable for overwrite recovery' };
@@ -2920,11 +3254,15 @@ export class SecurityService {
     const options = overwriteOptions(patch, desired);
     if (Object.keys(options).length === 0) return { applied: true, detail: '' };
     try {
-      await channel.permissionOverwrites.edit(patch.id, options, {
-        type: patch.type,
-        reason: reason.slice(0, 500),
-      });
+      await this.mutate(guild.id, 'PERMISSION_OVERWRITE', () =>
+        channel.permissionOverwrites.edit(patch.id, options, {
+          type: patch.type,
+          reason: reason.slice(0, 500),
+        }),
+      );
     } catch (error) {
+      if (error instanceof EnforcementBlockedError)
+        return { applied: false, detail: error.message, blocked: error.message };
       return {
         applied: false,
         detail:

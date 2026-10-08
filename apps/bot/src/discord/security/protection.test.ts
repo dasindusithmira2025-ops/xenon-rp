@@ -160,7 +160,10 @@ async function configure(
 ): Promise<void> {
   await store.updateGuild(guildId, (current) => ({
     ...current,
-    security: { ...current.security, config: { ...current.security.config, ...patch } },
+    security: {
+      ...current.security,
+      config: { ...current.security.config, enforcementMode: 'ENFORCE', ...patch },
+    },
   }));
 }
 
@@ -497,6 +500,7 @@ describe('security protection behaviour', () => {
 
     it('creates one case for a burst, deletes the rest, and reports suppressed detections on the next case', async () => {
       const guild = buildGuild();
+      await configure(store, {});
       const service = new SecurityService(store);
       service.setMessageContentAvailable(true);
       const member = makeMember();

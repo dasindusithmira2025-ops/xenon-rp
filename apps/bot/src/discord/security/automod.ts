@@ -48,16 +48,21 @@ async function withGuildSyncLock<T>(guildId: string, operation: () => Promise<T>
   }
 }
 
+/** `beforeMutation` runs immediately before every Discord write and may throw to abort the sync. */
 export function synchronizeAutoModRules(
   guild: Guild,
   store: DiscordRuntimeStore,
+  beforeMutation?: () => Promise<void>,
 ): Promise<AutoModSyncResult> {
-  return withGuildSyncLock(guild.id, () => synchronizeAutoModRulesLocked(guild, store));
+  return withGuildSyncLock(guild.id, () =>
+    synchronizeAutoModRulesLocked(guild, store, beforeMutation),
+  );
 }
 
 async function synchronizeAutoModRulesLocked(
   guild: Guild,
   store: DiscordRuntimeStore,
+  beforeMutation: (() => Promise<void>) | undefined,
 ): Promise<AutoModSyncResult> {
   const created: string[] = [];
   const updated: string[] = [];
@@ -133,6 +138,7 @@ async function synchronizeAutoModRulesLocked(
       reason: 'Xenon security baseline sync',
     };
     if (ruleId === null) {
+      await beforeMutation?.();
       const rule = await guild.autoModerationRules.create({
         ...options,
         triggerType: definition.triggerType,
@@ -159,6 +165,7 @@ async function synchronizeAutoModRulesLocked(
       );
       continue;
     }
+    await beforeMutation?.();
     await guild.autoModerationRules.edit(ruleId, options);
     updated.push(definition.name);
   }

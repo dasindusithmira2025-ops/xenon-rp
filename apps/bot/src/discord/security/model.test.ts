@@ -341,3 +341,28 @@ describe('security detection policies', () => {
     expect(() => validateSecurityState(invalid, true)).toThrow('Invalid prohibited keyword list.');
   });
 });
+
+describe('enforcement mode configuration', () => {
+  const { enforcementMode: _omitted, ...legacyConfig } = DEFAULT_SECURITY_CONFIG;
+
+  it('defaults to OBSERVE and migrates configs saved before the field existed', () => {
+    expect(DEFAULT_SECURITY_CONFIG.enforcementMode).toBe('OBSERVE');
+    for (const strict of [true, false])
+      expect(validateSecurityState({ config: legacyConfig }, strict).config.enforcementMode).toBe(
+        'OBSERVE',
+      );
+  });
+
+  it('keeps an explicitly saved mode and never upgrades invalid values to ENFORCE', () => {
+    for (const mode of ['OBSERVE', 'ALERT', 'ENFORCE'] as const)
+      expect(
+        validateSecurityState({ config: { ...legacyConfig, enforcementMode: mode } }, true).config
+          .enforcementMode,
+      ).toBe(mode);
+    for (const invalid of ['enforce', 'ON', 1, null, true]) {
+      const raw = { config: { ...legacyConfig, enforcementMode: invalid } };
+      expect(validateSecurityState(raw, false).config.enforcementMode).toBe('OBSERVE');
+      expect(() => validateSecurityState(raw, true)).toThrow();
+    }
+  });
+});

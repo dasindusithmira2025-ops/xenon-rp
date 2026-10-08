@@ -277,7 +277,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, lockdownChannelIds: [channelId] },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          lockdownChannelIds: [channelId],
+        },
       },
     }));
     const service = new SecurityService(store);
@@ -325,7 +329,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, lockdownChannelIds: [channelId] },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          lockdownChannelIds: [channelId],
+        },
       },
     }));
     const service = new SecurityService(store);
@@ -353,6 +361,7 @@ describe('security containment services', () => {
         ...current.security,
         config: {
           ...current.security.config,
+          enforcementMode: 'ENFORCE',
           channels: { ...current.security.config.channels, alerts: channelId },
           lockdownChannelIds: [channelId],
         },
@@ -381,6 +390,7 @@ describe('security containment services', () => {
         ...current.security,
         config: {
           ...current.security.config,
+          enforcementMode: 'ENFORCE',
           spam: { ...current.security.config.spam, exemptRoleIds: [exemptRoleId] },
           links: {
             ...current.security.config.links,
@@ -428,6 +438,7 @@ describe('security containment services', () => {
         ...current.security,
         config: {
           ...current.security.config,
+          enforcementMode: 'ENFORCE',
           spam: { ...current.security.config.spam, exemptChannelIds: [channelId] },
         },
       },
@@ -468,6 +479,7 @@ describe('security containment services', () => {
         ...current.security,
         config: {
           ...current.security.config,
+          enforcementMode: 'ENFORCE',
           links: {
             ...current.security.config.links,
             action: 'BLOCK',
@@ -510,7 +522,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, quarantineRoleId: quarantineId },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          quarantineRoleId: quarantineId,
+        },
       },
     }));
     const allowedRoleId = '82345678901234567';
@@ -552,7 +568,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, quarantineRoleId: quarantineId },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          quarantineRoleId: quarantineId,
+        },
       },
     }));
     const member = fake.makeMember(actorId, [quarantineId]);
@@ -584,13 +604,13 @@ describe('security containment services', () => {
     const service = new SecurityService(store);
 
     expect(
-      await service.activateLockdown(fake.guild, 'Permission check', null, false, ownerId),
+      await service.runManual(ownerId, () =>
+        service.activateLockdown(fake.guild, 'Permission check', null, false, ownerId),
+      ),
     ).toBe('LOCKDOWN_MISSING_MANAGE_ROLES');
     expect(
-      await service.quarantine(
-        fake.makeMember(actorId) as unknown as GuildMember,
-        'Reason',
-        ownerId,
+      await service.runManual(ownerId, () =>
+        service.quarantine(fake.makeMember(actorId) as unknown as GuildMember, 'Reason', ownerId),
       ),
     ).toBe('QUARANTINE_MISSING_MANAGE_ROLES');
     expect(fake.overwriteManager.edit).not.toHaveBeenCalled();
@@ -603,7 +623,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, lockdownChannelIds: [channelId] },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          lockdownChannelIds: [channelId],
+        },
       },
     }));
     const botPermissions =
@@ -638,10 +662,9 @@ describe('security containment services', () => {
     const moderator = fake.makeMember(moderatorId, [], { highestPosition: 3 });
     const target = fake.makeMember(actorId, [], { highestPosition: 3 });
 
-    const result = await new SecurityService(store).quarantine(
-      target as unknown as GuildMember,
-      'Suspicious join',
-      moderator.id,
+    const service = new SecurityService(store);
+    const result = await service.runManual(moderator.id, () =>
+      service.quarantine(target as unknown as GuildMember, 'Suspicious join', moderator.id),
     );
     expect(result).toBe('PROTECTION_BLOCKED_BY_MODERATOR_HIERARCHY');
     expect((await store.getGuild(guildId)).security.quarantines).toHaveLength(0);
@@ -653,10 +676,9 @@ describe('security containment services', () => {
     const fake = createGuild();
     const administrator = fake.makeMember(actorId, [], { permissions: P.Administrator });
 
-    const result = await new SecurityService(store).quarantine(
-      administrator as unknown as GuildMember,
-      'Suspicious join',
-      ownerId,
+    const service = new SecurityService(store);
+    const result = await service.runManual(ownerId, () =>
+      service.quarantine(administrator as unknown as GuildMember, 'Suspicious join', ownerId),
     );
     expect(result).toBe('QUARANTINE_ADMINISTRATOR_TARGET_UNSUPPORTED');
     expect((await store.getGuild(guildId)).security.quarantines).toHaveLength(0);
@@ -667,7 +689,10 @@ describe('security containment services', () => {
     const fake = createGuild();
     await store.updateGuild(guildId, (current) => ({
       ...current,
-      security: { ...current.security, config: { ...current.security.config, raidMode: 'ON' } },
+      security: {
+        ...current.security,
+        config: { ...current.security.config, enforcementMode: 'ENFORCE', raidMode: 'ON' },
+      },
     }));
     const member = fake.makeMember(actorId);
     const owner = fake.makeMember(ownerId, [], { permissions: P.ViewChannel });
@@ -693,6 +718,7 @@ describe('security containment services', () => {
         ...current.security,
         config: {
           ...current.security.config,
+          enforcementMode: 'ENFORCE',
           raidThresholds: {
             warning10s: 1,
             raid10s: 2,
@@ -868,6 +894,7 @@ describe('security containment services', () => {
         ...current.security,
         config: {
           ...current.security.config,
+          enforcementMode: 'ENFORCE',
           lockdownChannelIds: [channelId, '32345678901234999'],
         },
       },
@@ -893,7 +920,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, quarantineRoleId: quarantineId },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          quarantineRoleId: quarantineId,
+        },
       },
     }));
   }
@@ -954,10 +985,9 @@ describe('security containment services', () => {
     const target = fake.makeMember(actorId);
     Object.defineProperty(target, 'manageable', { value: false });
 
-    const result = await new SecurityService(store).quarantine(
-      target as unknown as GuildMember,
-      'Suspicious join',
-      ownerId,
+    const service = new SecurityService(store);
+    const result = await service.runManual(ownerId, () =>
+      service.quarantine(target as unknown as GuildMember, 'Suspicious join', ownerId),
     );
 
     expect(result).toBe('PROTECTION_BLOCKED_BY_ROLE_HIERARCHY');
@@ -975,6 +1005,7 @@ describe('security containment services', () => {
         ...current.security,
         config: {
           ...current.security.config,
+          enforcementMode: 'ENFORCE',
           channels: { alerts: channelId, audit: null, modLogs: null },
         },
       },
@@ -1060,7 +1091,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, lockdownChannelIds: [channelId] },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          lockdownChannelIds: [channelId],
+        },
       },
     }));
     const service = new SecurityService(store);
@@ -1085,7 +1120,11 @@ describe('security containment services', () => {
       ...current,
       security: {
         ...current.security,
-        config: { ...current.security.config, lockdownChannelIds: [channelId] },
+        config: {
+          ...current.security.config,
+          enforcementMode: 'ENFORCE',
+          lockdownChannelIds: [channelId],
+        },
       },
     }));
     const service = new SecurityService(store);
@@ -1114,18 +1153,30 @@ describe('security containment services', () => {
     const testMember = fake.makeMember(actorId, [allowedRoleId]);
     const member = testMember as unknown as GuildMember;
     const service = new SecurityService(store);
-    expect(await service.quarantine(member, 'Review required', ownerId)).toMatch(/^QUARANTINED:/);
+    expect(
+      await service.runManual(ownerId, () =>
+        service.quarantine(member, 'Review required', ownerId),
+      ),
+    ).toMatch(/^QUARANTINED:/);
 
     // Crash after the overwrite was written but before the journal recorded it.
     await markJournalStatus(store, 'APPLYING');
-    expect(await service.quarantine(member, 'Review required', ownerId)).toMatch(/^QUARANTINED:/);
+    expect(
+      await service.runManual(ownerId, () =>
+        service.quarantine(member, 'Review required', ownerId),
+      ),
+    ).toMatch(/^QUARANTINED:/);
     expect((await store.getGuild(guildId)).security.quarantines[0]?.status).toBe('ACTIVE');
     expect(testMember.permissionsIn(fake.channel).has(P.ViewChannel)).toBe(false);
 
     // Crash during unquarantine after the overwrite was already restored.
     fake.overwriteManager.cache.delete(actorId);
     await markJournalStatus(store, 'RESTORING');
-    expect(await service.unquarantine(member, ownerId, 'Review complete')).toBe('UNQUARANTINED');
+    expect(
+      await service.runManual(ownerId, () =>
+        service.unquarantine(member, ownerId, 'Review complete'),
+      ),
+    ).toBe('UNQUARANTINED');
     expect((await store.getGuild(guildId)).security.quarantines).toHaveLength(0);
     expect(testMember.permissionsIn(fake.channel).has(P.ViewChannel)).toBe(true);
   });

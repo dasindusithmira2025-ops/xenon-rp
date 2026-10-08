@@ -22,6 +22,8 @@ import {
   type SecurityIncident,
   type SecuritySeverity,
   type TrustLevel,
+  type EnforcementMode,
+  type SecurityGuildState,
 } from './model';
 import {
   permissionCheck,
@@ -29,6 +31,7 @@ import {
   trustForActor,
   type NativeSafetyCheck,
   type SecurityService,
+  enforcedProtections,
 } from './service';
 import {
   collectGuildFacts,
@@ -454,6 +457,33 @@ const security = new SlashCommandBuilder()
           .setRequired(true)
           .setMaxLength(500),
       ),
+  )
+  .addSubcommandGroup((group) =>
+    group
+      .setName('mode')
+      .setDescription('View or change the security enforcement mode')
+      .addSubcommand((sub) =>
+        sub.setName('status').setDescription('Show the enforcement mode and active restrictions'),
+      )
+      .addSubcommand((sub) =>
+        sub
+          .setName('set')
+          .setDescription('Set observe, alert, or enforce')
+          .addStringOption((option) =>
+            option
+              .setName('mode')
+              .setDescription('Enforcement mode')
+              .setRequired(true)
+              .addChoices(
+                { name: 'Observe', value: 'observe' },
+                { name: 'Alert', value: 'alert' },
+                { name: 'Enforce', value: 'enforce' },
+              ),
+          )
+          .addBooleanOption((option) =>
+            option.setName('confirm').setDescription('Required to enable enforce'),
+          ),
+      ),
   );
 
 export const SECURITY_COMMANDS = [
@@ -645,301 +675,323 @@ export async function handleSecurityCommand(
     );
     return;
   }
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  return service.runManual(interaction.user.id, async () => {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
 
-  if (group === null && subcommand === 'setup') {
-    await reply(interaction, await setupSecurity(guild, store, service, interaction.user.id));
-    return;
-  }
-  if (group === null && subcommand === 'status') {
-    const embed = await securityStatus(guild, state.security, service);
-    await interaction.editReply({ content: '', embeds: [embed] });
-    return;
-  }
-  if (group === null && subcommand === 'scan') {
-    const findings = await service.scanPermissions(guild);
-    if (findings.length === 0) {
+    if (group === null && subcommand === 'setup') {
       await reply(
         interaction,
-        'No configured permission findings. Manual Discord verification-level, 2FA, screening, and raid protection still require owner review.',
+        `${await setupSecurity(guild, store, service, interaction.user.id)}\nEnforcement mode: ${config.enforcementMode}. Automatic responses stay off until /security mode set mode:enforce confirm:true.`,
       );
       return;
     }
-    const { content, embeds } = renderScan(findings);
-    await interaction.editReply({ content, embeds });
-    return;
-  }
-  if (group === 'snapshot') {
-    const newestFirst = [...state.security.snapshots].reverse().slice(0, 10);
-    if (subcommand === 'take') {
-      try {
-        const taken = await service.saveSnapshot(guild);
+    if (group === null && subcommand === 'status') {
+      const embed = await securityStatus(guild, state.security, service);
+      await interaction.editReply({ content: '', embeds: [embed] });
+      return;
+    }
+    if (group === null && subcommand === 'scan') {
+      const findings = await service.scanPermissions(guild);
+      if (findings.length === 0) {
         await reply(
           interaction,
-          `Snapshot saved at ${taken.createdAt}: ${String(taken.roles.length)} roles, ${String(taken.channels.length)} channels with overwrites.`,
+          'No configured permission findings. Manual Discord verification-level, 2FA, screening, and raid protection still require owner review.',
         );
-      } catch {
-        await reply(interaction, 'Snapshot could not be saved; nothing was changed.');
+        return;
       }
+      const { content, embeds } = renderScan(findings);
+      await interaction.editReply({ content, embeds });
       return;
     }
-    if (subcommand === 'list') {
-      await reply(
-        interaction,
-        newestFirst.length === 0
-          ? 'No snapshots recorded. Use /security snapshot take.'
-          : newestFirst
-              .map(
-                (item, position) =>
-                  `${String(position + 1)}. ${item.createdAt} · ${String(item.roles.length)} roles · ${String(item.channels.length)} channels`,
-              )
-              .join('\n'),
-      );
-      return;
-    }
-    const index = subcommand === 'compare' ? (interaction.options.getInteger('index') ?? 1) : 1;
-    const chosen = newestFirst[index - 1];
-    if (chosen === undefined) {
-      await reply(interaction, 'No snapshot exists at that index. Use /security snapshot list.');
-      return;
-    }
-    if (subcommand === 'compare') {
-      await reply(
-        interaction,
-        fit(formatComparison(compareSnapshot(chosen, collectGuildFacts(guild)), chosen.createdAt)),
-      );
-      return;
-    }
-    if (subcommand === 'restore-permissions') {
-      const confirm = interaction.options.getBoolean('confirm') ?? false;
-      await reply(
-        interaction,
-        fit(
-          await restoreRolePermissions(guild, store, service, interaction.user.id, chosen, confirm),
-        ),
-      );
-      return;
-    }
-  }
-  if (group === 'incident') {
-    if (subcommand === 'list') {
-      const status = interaction.options.getString('status') as IncidentStatus | null;
-      const matches = state.security.incidents
-        .filter((incident) => status === null || incident.status === status)
-        .slice(-15)
-        .reverse();
-      await reply(
-        interaction,
-        matches.length === 0
-          ? 'No matching incidents.'
-          : fit(
-              matches
+    if (group === 'snapshot') {
+      const newestFirst = [...state.security.snapshots].reverse().slice(0, 10);
+      if (subcommand === 'take') {
+        try {
+          const taken = await service.saveSnapshot(guild);
+          await reply(
+            interaction,
+            `Snapshot saved at ${taken.createdAt}: ${String(taken.roles.length)} roles, ${String(taken.channels.length)} channels with overwrites.`,
+          );
+        } catch {
+          await reply(interaction, 'Snapshot could not be saved; nothing was changed.');
+        }
+        return;
+      }
+      if (subcommand === 'list') {
+        await reply(
+          interaction,
+          newestFirst.length === 0
+            ? 'No snapshots recorded. Use /security snapshot take.'
+            : newestFirst
                 .map(
-                  (incident) =>
-                    `${incident.id} · ${incident.severity} · ${incident.status} · ${incident.title} · ${incident.createdAt}`,
+                  (item, position) =>
+                    `${String(position + 1)}. ${item.createdAt} · ${String(item.roles.length)} roles · ${String(item.channels.length)} channels`,
                 )
                 .join('\n'),
+        );
+        return;
+      }
+      const index = subcommand === 'compare' ? (interaction.options.getInteger('index') ?? 1) : 1;
+      const chosen = newestFirst[index - 1];
+      if (chosen === undefined) {
+        await reply(interaction, 'No snapshot exists at that index. Use /security snapshot list.');
+        return;
+      }
+      if (subcommand === 'compare') {
+        await reply(
+          interaction,
+          fit(
+            formatComparison(compareSnapshot(chosen, collectGuildFacts(guild)), chosen.createdAt),
+          ),
+        );
+        return;
+      }
+      if (subcommand === 'restore-permissions') {
+        const confirm = interaction.options.getBoolean('confirm') ?? false;
+        await reply(
+          interaction,
+          fit(
+            await restoreRolePermissions(
+              guild,
+              store,
+              service,
+              interaction.user.id,
+              chosen,
+              confirm,
             ),
-      );
+          ),
+        );
+        return;
+      }
+    }
+    if (group === 'incident') {
+      if (subcommand === 'list') {
+        const status = interaction.options.getString('status') as IncidentStatus | null;
+        const matches = state.security.incidents
+          .filter((incident) => status === null || incident.status === status)
+          .slice(-15)
+          .reverse();
+        await reply(
+          interaction,
+          matches.length === 0
+            ? 'No matching incidents.'
+            : fit(
+                matches
+                  .map(
+                    (incident) =>
+                      `${incident.id} · ${incident.severity} · ${incident.status} · ${incident.title} · ${incident.createdAt}`,
+                  )
+                  .join('\n'),
+              ),
+        );
+        return;
+      }
+      const incidentId = interaction.options.getString('id', true);
+      if (subcommand === 'view') {
+        const found = state.security.incidents.find((incident) => incident.id === incidentId);
+        await reply(
+          interaction,
+          found === undefined ? 'Incident not found.' : fit(formatIncident(found)),
+        );
+        return;
+      }
+      if (subcommand === 'resolve') {
+        const outcome = await service.resolveIncident(
+          guild,
+          incidentId,
+          interaction.user.id,
+          interaction.options.getString('note', true),
+        );
+        await reply(
+          interaction,
+          outcome === 'RESOLVED'
+            ? `Incident ${incidentId} resolved.`
+            : outcome === 'ALREADY_RESOLVED'
+              ? `Incident ${incidentId} was already resolved.`
+              : 'Incident not found.',
+        );
+        return;
+      }
+    }
+    if (group === 'mode') {
+      await handleModeCommand(interaction, guild, state.security, service);
       return;
     }
-    const incidentId = interaction.options.getString('id', true);
-    if (subcommand === 'view') {
-      const found = state.security.incidents.find((incident) => incident.id === incidentId);
+    if (group === 'raid') {
+      if (subcommand === 'status') {
+        const live = await service.raidStatus(guild.id).catch(() => null);
+        await reply(
+          interaction,
+          `Raid detection: ${config.modules.raid ? 'ENABLED' : 'DISABLED'}\nMode: ${config.raidMode}\nJoin thresholds: ${String(config.raidThresholds.warning10s)}/${String(config.raidThresholds.raid10s)}/${String(config.raidThresholds.critical10s)} in 10s; ${String(config.raidThresholds.warning30s)}/${String(config.raidThresholds.raid30s)}/${String(config.raidThresholds.critical30s)} in 30s.\nRecovery after ${String(config.raidRecoveryMinutes)} quiet minutes; raid slowmode ${config.raidSlowmodeSeconds === 0 ? 'disabled' : `${String(config.raidSlowmodeSeconds)}s`}.\n${
+            live === null
+              ? 'Live state: UNAVAILABLE'
+              : `Live level: ${live.level} · joins ${String(live.joins10s)}/10s, ${String(live.joins30s)}/30s · new-account ratio ${live.newAccountRatio.toFixed(2)} · active since ${live.activeSince ?? 'n/a'} · slowmode channels ${String(live.slowmodeChannels)} · recovery at ${live.recoveryAt ?? 'n/a'}`
+          }`,
+        );
+        return;
+      }
+      await updateConfig(guild, store, service, (current) => ({
+        ...current,
+        modules: { ...current.modules, raid: subcommand === 'enable' },
+        raidMode: subcommand === 'enable' ? 'AUTO' : current.raidMode,
+      }));
+      const released = await service.checkRaidRecovery(guild).catch(() => false);
       await reply(
         interaction,
-        found === undefined ? 'Incident not found.' : fit(formatIncident(found)),
+        `Raid detection ${subcommand === 'enable' ? 'enabled' : 'disabled'}.${released ? ' Active raid response was released.' : ''}`,
       );
       return;
     }
-    if (subcommand === 'resolve') {
-      const outcome = await service.resolveIncident(
-        guild,
-        incidentId,
-        interaction.user.id,
-        interaction.options.getString('note', true),
-      );
+    if (group === 'raid-mode') {
+      const mode = subcommand === 'on' ? 'ON' : subcommand === 'off' ? 'OFF' : 'AUTO';
+      await updateConfig(guild, store, service, (current) => ({
+        ...current,
+        raidMode: mode,
+        modules: { ...current.modules, raid: mode === 'ON' || current.modules.raid },
+      }));
+      await service.recordManualRaidMode(guild, interaction.user.id, mode);
+      const released = await service.checkRaidRecovery(guild).catch(() => false);
       await reply(
         interaction,
-        outcome === 'RESOLVED'
-          ? `Incident ${incidentId} resolved.`
-          : outcome === 'ALREADY_RESOLVED'
-            ? `Incident ${incidentId} was already resolved.`
-            : 'Incident not found.',
+        `Raid mode set to ${mode}.${released ? ' Active raid response was released.' : ''}`,
       );
       return;
     }
-  }
-  if (group === 'raid') {
-    if (subcommand === 'status') {
-      const live = await service.raidStatus(guild.id).catch(() => null);
+    if (group === 'trust') {
+      const target = interaction.options.getUser('user');
+      if (subcommand === 'list') {
+        const records = [
+          `<@${guild.ownerId}> — OWNER (implicit, not assignable)`,
+          ...Object.entries(config.trustedActors).map(
+            ([userId, trust]) => `<@${userId}> — ${trust}`,
+          ),
+        ];
+        await reply(interaction, records.slice(0, 50).join('\n'));
+        return;
+      }
+      if (target === null) {
+        await reply(interaction, 'The required user is missing.');
+        return;
+      }
+      const level =
+        subcommand === 'remove'
+          ? null
+          : (interaction.options.getString('level', true) as TrustLevel);
+      await service.saveSnapshot(guild);
+      let updateCount = 0;
+      await store.updateGuild(guild.id, (current) => {
+        const trustedActors: Record<string, TrustLevel> = Object.fromEntries(
+          Object.entries(current.security.config.trustedActors).filter(
+            ([userId]) => userId !== target.id,
+          ),
+        );
+        const actorTrust = current.security.config.trustedActors[interaction.user.id];
+        const targetTrust = current.security.config.trustedActors[target.id];
+        if (
+          !maySetTrust(
+            guild.ownerId === interaction.user.id,
+            actorTrust,
+            level ?? 'UNTRUSTED',
+            targetTrust,
+          )
+        )
+          return current;
+        if (level !== null) trustedActors[target.id] = level;
+        updateCount += 1;
+        return {
+          ...current,
+          security: {
+            ...current.security,
+            config: { ...current.security.config, trustedActors },
+          },
+        };
+      });
+      if (updateCount === 0) {
+        await reply(
+          interaction,
+          'Trust was not changed: only the owner or a security admin may change trust; the owner alone may change SECURITY_ADMIN trust.',
+        );
+        return;
+      }
       await reply(
         interaction,
-        `Raid detection: ${config.modules.raid ? 'ENABLED' : 'DISABLED'}\nMode: ${config.raidMode}\nJoin thresholds: ${String(config.raidThresholds.warning10s)}/${String(config.raidThresholds.raid10s)}/${String(config.raidThresholds.critical10s)} in 10s; ${String(config.raidThresholds.warning30s)}/${String(config.raidThresholds.raid30s)}/${String(config.raidThresholds.critical30s)} in 30s.\nRecovery after ${String(config.raidRecoveryMinutes)} quiet minutes; raid slowmode ${config.raidSlowmodeSeconds === 0 ? 'disabled' : `${String(config.raidSlowmodeSeconds)}s`}.\n${
-          live === null
-            ? 'Live state: UNAVAILABLE'
-            : `Live level: ${live.level} · joins ${String(live.joins10s)}/10s, ${String(live.joins30s)}/30s · new-account ratio ${live.newAccountRatio.toFixed(2)} · active since ${live.activeSince ?? 'n/a'} · slowmode channels ${String(live.slowmodeChannels)} · recovery at ${live.recoveryAt ?? 'n/a'}`
-        }`,
+        level === null
+          ? `Removed Xenon trust for <@${target.id}>.`
+          : `Set <@${target.id}> to ${level}.`,
       );
       return;
     }
-    await updateConfig(guild, store, service, (current) => ({
-      ...current,
-      modules: { ...current.modules, raid: subcommand === 'enable' },
-      raidMode: subcommand === 'enable' ? 'AUTO' : current.raidMode,
-    }));
-    const released = await service.checkRaidRecovery(guild).catch(() => false);
-    await reply(
-      interaction,
-      `Raid detection ${subcommand === 'enable' ? 'enabled' : 'disabled'}.${released ? ' Active raid response was released.' : ''}`,
-    );
-    return;
-  }
-  if (group === 'raid-mode') {
-    const mode = subcommand === 'on' ? 'ON' : subcommand === 'off' ? 'OFF' : 'AUTO';
-    await updateConfig(guild, store, service, (current) => ({
-      ...current,
-      raidMode: mode,
-      modules: { ...current.modules, raid: mode === 'ON' || current.modules.raid },
-    }));
-    await service.recordManualRaidMode(guild, interaction.user.id, mode);
-    const released = await service.checkRaidRecovery(guild).catch(() => false);
-    await reply(
-      interaction,
-      `Raid mode set to ${mode}.${released ? ' Active raid response was released.' : ''}`,
-    );
-    return;
-  }
-  if (group === 'trust') {
-    const target = interaction.options.getUser('user');
-    if (subcommand === 'list') {
-      const records = [
-        `<@${guild.ownerId}> — OWNER (implicit, not assignable)`,
-        ...Object.entries(config.trustedActors).map(([userId, trust]) => `<@${userId}> — ${trust}`),
-      ];
-      await reply(interaction, records.slice(0, 50).join('\n'));
+    if (group === 'automod') {
+      if (subcommand === 'status') {
+        const rules = await guild.autoModerationRules.fetch();
+        const xenonIds = new Set(config.ownedAutoModRuleIds);
+        const ownedRules = [...rules.values()].filter((rule) => xenonIds.has(rule.id));
+        const unownedXenonRules = [...rules.values()].filter(
+          (rule) => rule.name.startsWith('XENON |') && !xenonIds.has(rule.id),
+        );
+        await reply(
+          interaction,
+          `Recorded Xenon-owned rules: ${ownedRules.length}/${config.ownedAutoModRuleIds.length}\n${ownedRules.map((rule) => `${rule.name} · ${rule.enabled ? 'enabled' : 'disabled'} · ${rule.id}`).join('\n') || 'None recorded'}\nUnowned same-prefix rules are left untouched: ${
+            unownedXenonRules
+              .map((rule) => rule.name)
+              .slice(0, 10)
+              .join(', ') || 'none'
+          }`,
+        );
+        return;
+      }
+      const result = await service.syncAutoMod(guild);
+      await reply(
+        interaction,
+        `Created: ${result.created.join(', ') || 'none'}\nUpdated: ${result.updated.join(', ') || 'none'}\nConflicts: ${result.conflicts.join('; ') || 'none'}`,
+      );
       return;
     }
-    if (target === null) {
-      await reply(interaction, 'The required user is missing.');
+    if (group === 'config') {
+      const updated = await configure(guild, interaction, store, service, config, subcommand);
+      await reply(interaction, updated);
       return;
     }
-    const level =
-      subcommand === 'remove' ? null : (interaction.options.getString('level', true) as TrustLevel);
-    await service.saveSnapshot(guild);
-    let updateCount = 0;
-    await store.updateGuild(guild.id, (current) => {
-      const trustedActors: Record<string, TrustLevel> = Object.fromEntries(
-        Object.entries(current.security.config.trustedActors).filter(
-          ([userId]) => userId !== target.id,
+    if (group === null && subcommand === 'lockdown') {
+      const reason = interaction.options.getString('reason', true);
+      await reply(
+        interaction,
+        await service.activateLockdown(guild, reason, null, false, interaction.user.id),
+      );
+      return;
+    }
+    if (group === null && subcommand === 'unlock') {
+      const result = await service.releaseLockdown(guild, interaction.user.id);
+      await reply(
+        interaction,
+        `Restored ${String(result.restored)} channels. ${result.conflicts.slice(0, 8).join('\n')}`.slice(
+          0,
+          1_900,
         ),
       );
-      const actorTrust = current.security.config.trustedActors[interaction.user.id];
-      const targetTrust = current.security.config.trustedActors[target.id];
-      if (
-        !maySetTrust(
-          guild.ownerId === interaction.user.id,
-          actorTrust,
-          level ?? 'UNTRUSTED',
-          targetTrust,
-        )
-      )
-        return current;
-      if (level !== null) trustedActors[target.id] = level;
-      updateCount += 1;
-      return {
-        ...current,
-        security: {
-          ...current.security,
-          config: { ...current.security.config, trustedActors },
-        },
-      };
-    });
-    if (updateCount === 0) {
-      await reply(
-        interaction,
-        'Trust was not changed: only the owner or a security admin may change trust; the owner alone may change SECURITY_ADMIN trust.',
-      );
       return;
     }
-    await reply(
-      interaction,
-      level === null
-        ? `Removed Xenon trust for <@${target.id}>.`
-        : `Set <@${target.id}> to ${level}.`,
-    );
-    return;
-  }
-  if (group === 'automod') {
-    if (subcommand === 'status') {
-      const rules = await guild.autoModerationRules.fetch();
-      const xenonIds = new Set(config.ownedAutoModRuleIds);
-      const ownedRules = [...rules.values()].filter((rule) => xenonIds.has(rule.id));
-      const unownedXenonRules = [...rules.values()].filter(
-        (rule) => rule.name.startsWith('XENON |') && !xenonIds.has(rule.id),
-      );
-      await reply(
-        interaction,
-        `Recorded Xenon-owned rules: ${ownedRules.length}/${config.ownedAutoModRuleIds.length}\n${ownedRules.map((rule) => `${rule.name} · ${rule.enabled ? 'enabled' : 'disabled'} · ${rule.id}`).join('\n') || 'None recorded'}\nUnowned same-prefix rules are left untouched: ${
-          unownedXenonRules
-            .map((rule) => rule.name)
-            .slice(0, 10)
-            .join(', ') || 'none'
-        }`,
-      );
+    if (group === null && (subcommand === 'quarantine' || subcommand === 'unquarantine')) {
+      const user = interaction.options.getUser('member', true);
+      const member = await guild.members.fetch(user.id).catch(() => null);
+      if (member === null) {
+        await reply(interaction, 'Member is not available in this guild.');
+        return;
+      }
+      if (!(await moderatorOutranksTarget(guild, interaction.user.id, member))) {
+        await reply(interaction, 'Your highest role must strictly outrank the target member.');
+        return;
+      }
+      const reason = interaction.options.getString('reason', true);
+      const result =
+        subcommand === 'quarantine'
+          ? await service.quarantine(member, reason, interaction.user.id)
+          : await service.unquarantine(member, interaction.user.id, reason);
+      await reply(interaction, result);
       return;
     }
-    const result = await service.syncAutoMod(guild);
-    await reply(
-      interaction,
-      `Created: ${result.created.join(', ') || 'none'}\nUpdated: ${result.updated.join(', ') || 'none'}\nConflicts: ${result.conflicts.join('; ') || 'none'}`,
-    );
-    return;
-  }
-  if (group === 'config') {
-    const updated = await configure(guild, interaction, store, service, config, subcommand);
-    await reply(interaction, updated);
-    return;
-  }
-  if (group === null && subcommand === 'lockdown') {
-    const reason = interaction.options.getString('reason', true);
-    await reply(
-      interaction,
-      await service.activateLockdown(guild, reason, null, false, interaction.user.id),
-    );
-    return;
-  }
-  if (group === null && subcommand === 'unlock') {
-    const result = await service.releaseLockdown(guild, interaction.user.id);
-    await reply(
-      interaction,
-      `Restored ${String(result.restored)} channels. ${result.conflicts.slice(0, 8).join('\n')}`.slice(
-        0,
-        1_900,
-      ),
-    );
-    return;
-  }
-  if (group === null && (subcommand === 'quarantine' || subcommand === 'unquarantine')) {
-    const user = interaction.options.getUser('member', true);
-    const member = await guild.members.fetch(user.id).catch(() => null);
-    if (member === null) {
-      await reply(interaction, 'Member is not available in this guild.');
-      return;
-    }
-    if (!(await moderatorOutranksTarget(guild, interaction.user.id, member))) {
-      await reply(interaction, 'Your highest role must strictly outrank the target member.');
-      return;
-    }
-    const reason = interaction.options.getString('reason', true);
-    const result =
-      subcommand === 'quarantine'
-        ? await service.quarantine(member, reason, interaction.user.id)
-        : await service.unquarantine(member, interaction.user.id, reason);
-    await reply(interaction, result);
-    return;
-  }
-  await reply(interaction, 'Unsupported security command.');
+    await reply(interaction, 'Unsupported security command.');
+  });
 }
 
 export async function handleModerationCommand(
@@ -964,243 +1016,249 @@ export async function handleModerationCommand(
     );
     return;
   }
-  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-  if (command === 'cases' || command === 'warnings') {
-    const target =
-      command === 'warnings'
-        ? interaction.options.getUser('member', true)
-        : interaction.options.getUser('member');
-    const records = (await store.getGuild(guild.id)).security.cases
-      .filter((record) => target === null || record.targetId === target.id)
-      .filter((record) => command !== 'warnings' || record.action === 'WARN');
-    await reply(
-      interaction,
-      records.length === 0
-        ? 'No matching moderation cases.'
-        : records.slice(-15).reverse().map(formatCaseSummary).join('\n').slice(0, 1_900),
-    );
-    return;
-  }
-  if (command === 'case') {
-    const id = interaction.options.getString('id', true);
-    const record = (await store.getGuild(guild.id)).security.cases.find((item) => item.id === id);
-    await reply(interaction, record === undefined ? 'Case not found.' : formatCaseDetails(record));
-    return;
-  }
-  const caseAction = MODERATION_ACTIONS[command];
-  if (caseAction === undefined) {
-    await reply(interaction, 'Unsupported moderation command.');
-    return;
-  }
-  const botRequirement = BOT_REQUIREMENTS[command];
-  if (botRequirement !== undefined) {
-    const me = guild.members.me;
-    if (!me?.permissions.has(botRequirement.flag)) {
+  return service.runManual(interaction.user.id, async () => {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+    if (command === 'cases' || command === 'warnings') {
+      const target =
+        command === 'warnings'
+          ? interaction.options.getUser('member', true)
+          : interaction.options.getUser('member');
+      const records = (await store.getGuild(guild.id)).security.cases
+        .filter((record) => target === null || record.targetId === target.id)
+        .filter((record) => command !== 'warnings' || record.action === 'WARN');
       await reply(
         interaction,
-        `Xenon is missing the ${botRequirement.name} permission, so nothing was attempted and no case was recorded.`,
+        records.length === 0
+          ? 'No matching moderation cases.'
+          : records.slice(-15).reverse().map(formatCaseSummary).join('\n').slice(0, 1_900),
       );
       return;
     }
-  }
-  if (command === 'purge') {
-    const amount = interaction.options.getInteger('amount', true);
+    if (command === 'case') {
+      const id = interaction.options.getString('id', true);
+      const record = (await store.getGuild(guild.id)).security.cases.find((item) => item.id === id);
+      await reply(
+        interaction,
+        record === undefined ? 'Case not found.' : formatCaseDetails(record),
+      );
+      return;
+    }
+    const caseAction = MODERATION_ACTIONS[command];
+    if (caseAction === undefined) {
+      await reply(interaction, 'Unsupported moderation command.');
+      return;
+    }
+    const botRequirement = BOT_REQUIREMENTS[command];
+    if (botRequirement !== undefined) {
+      const me = guild.members.me;
+      if (!me?.permissions.has(botRequirement.flag)) {
+        await reply(
+          interaction,
+          `Xenon is missing the ${botRequirement.name} permission, so nothing was attempted and no case was recorded.`,
+        );
+        return;
+      }
+    }
+    if (command === 'purge') {
+      const amount = interaction.options.getInteger('amount', true);
+      const reason = interaction.options.getString('reason', true);
+      const channel = interaction.channel;
+      if (channel === null || !channel.isTextBased() || !('bulkDelete' in channel)) {
+        await reply(interaction, 'Purge is available only in a standard text channel.');
+        return;
+      }
+      const channelPermissions =
+        guild.members.me === null ? null : channel.permissionsFor(guild.members.me);
+      if (!channelPermissions?.has([P.ViewChannel, P.ReadMessageHistory, P.ManageMessages])) {
+        await reply(
+          interaction,
+          'Xenon lacks View Channel, Read Message History, or Manage Messages in this channel, so nothing was deleted and no case was recorded.',
+        );
+        return;
+      }
+      const key = `${guild.id}:PURGE:${channel.id}`;
+      if (inFlightModeration.has(key)) {
+        await reply(interaction, 'A purge is already running in this channel.');
+        return;
+      }
+      inFlightModeration.add(key);
+      try {
+        let deletedCount = 0;
+        try {
+          deletedCount = (await channel.bulkDelete(amount, true)).size;
+        } catch (error) {
+          await reply(
+            interaction,
+            `Discord rejected the purge (${describeDiscordError(error)}). No case was recorded.`,
+          );
+          return;
+        }
+        const record = createCase({
+          action: 'PURGE',
+          moderatorId: interaction.user.id,
+          targetId: null,
+          reason,
+          durationSeconds: null,
+          evidenceReference: `${String(deletedCount)} messages in channel ${channel.id}`,
+        });
+        await service.saveCase(guild.id, record);
+        await writeModerationLog(guild, config, record);
+        await reply(
+          interaction,
+          `Deleted ${String(deletedCount)} recent messages. Case ${record.id}. Messages older than 14 days are skipped by Discord.`,
+        );
+      } finally {
+        inFlightModeration.delete(key);
+      }
+      return;
+    }
     const reason = interaction.options.getString('reason', true);
-    const channel = interaction.channel;
-    if (channel === null || !channel.isTextBased() || !('bulkDelete' in channel)) {
-      await reply(interaction, 'Purge is available only in a standard text channel.');
+    const targetUser = command === 'unban' ? null : interaction.options.getUser('member', true);
+    const targetId =
+      command === 'unban' ? interaction.options.getString('user_id', true) : targetUser?.id;
+    if (targetId === undefined || !/^\d{17,20}$/.test(targetId)) {
+      await reply(interaction, 'Invalid Discord user ID.');
       return;
     }
-    const channelPermissions =
-      guild.members.me === null ? null : channel.permissionsFor(guild.members.me);
-    if (!channelPermissions?.has([P.ViewChannel, P.ReadMessageHistory, P.ManageMessages])) {
+    const target =
+      targetUser === null ? null : await guild.members.fetch(targetId).catch(() => null);
+    if (targetUser !== null && target === null) {
+      await reply(interaction, 'Member is not currently available in this guild.');
+      return;
+    }
+    const requireTarget = () => {
+      if (target === null) throw new Error('Expected a guild member for this moderation command.');
+      return target;
+    };
+    if (target !== null && !(await moderatorOutranksTarget(guild, interaction.user.id, target))) {
+      await reply(interaction, 'Your highest role must strictly outrank the target member.');
+      return;
+    }
+    if (
+      target !== null &&
+      !target.manageable &&
+      ['timeout', 'untimeout', 'kick', 'ban', 'softban'].includes(command)
+    ) {
+      await reply(interaction, 'Discord role hierarchy prevents Xenon from managing this member.');
+      return;
+    }
+    if (command === 'timeout' && !requireTarget().moderatable) {
+      await reply(interaction, 'Discord role hierarchy or permissions prevent timeout.');
+      return;
+    }
+    if (command === 'untimeout') {
+      if (!requireTarget().moderatable) {
+        await reply(interaction, 'Discord role hierarchy or permissions prevent timeout removal.');
+        return;
+      }
+      const until = requireTarget().communicationDisabledUntilTimestamp;
+      if (until === null || until <= Date.now()) {
+        await reply(interaction, 'That member is not currently timed out.');
+        return;
+      }
+    }
+    if (command === 'ban' || command === 'unban') {
+      const banned = await banState(guild, targetId);
+      if (command === 'ban' && banned === 'BANNED') {
+        await reply(interaction, 'That user is already banned.');
+        return;
+      }
+      if (command === 'unban' && banned === 'NOT_BANNED') {
+        await reply(interaction, 'That user is not banned.');
+        return;
+      }
+    }
+    const key = `${guild.id}:${caseAction}:${targetId}`;
+    const priorCases = (await store.getGuild(guild.id)).security.cases;
+    const now = Date.now();
+    const recentDuplicate = priorCases.some(
+      (record) =>
+        record.moderatorId === interaction.user.id &&
+        record.action === caseAction &&
+        record.targetId === targetId &&
+        now - Date.parse(record.createdAt) < DUPLICATE_WINDOW_MS,
+    );
+    if (inFlightModeration.has(key) || recentDuplicate) {
       await reply(
         interaction,
-        'Xenon lacks View Channel, Read Message History, or Manage Messages in this channel, so nothing was deleted and no case was recorded.',
+        'The same action on this target is already in progress or was just recorded; no duplicate was performed.',
       );
-      return;
-    }
-    const key = `${guild.id}:PURGE:${channel.id}`;
-    if (inFlightModeration.has(key)) {
-      await reply(interaction, 'A purge is already running in this channel.');
       return;
     }
     inFlightModeration.add(key);
     try {
-      let deletedCount = 0;
+      let durationSeconds: number | null = null;
+      let softbanUnbanFailed = false;
       try {
-        deletedCount = (await channel.bulkDelete(amount, true)).size;
+        if (command === 'warn') {
+          await requireTarget()
+            .send(`You received a XenonRP moderation warning in ${guild.name}: ${reason}`)
+            .catch(() => undefined);
+        } else if (command === 'timeout') {
+          durationSeconds = interaction.options.getInteger('minutes', true) * 60;
+          await requireTarget().timeout(durationSeconds * 1_000, reason);
+        } else if (command === 'untimeout') {
+          await requireTarget().timeout(null, reason);
+        } else if (command === 'kick') {
+          await requireTarget().kick(reason);
+        } else if (command === 'ban' || command === 'softban') {
+          const deleteMessageSeconds =
+            command === 'softban'
+              ? 86_400
+              : (interaction.options.getInteger('delete_days') ?? 0) * 86_400;
+          await guild.members.ban(targetId, { deleteMessageSeconds, reason });
+          if (command === 'softban') {
+            try {
+              await guild.members.unban(targetId, `Softban complete: ${reason}`);
+            } catch {
+              softbanUnbanFailed = true;
+            }
+          }
+        } else {
+          await guild.members.unban(targetId, reason);
+        }
       } catch (error) {
         await reply(
           interaction,
-          `Discord rejected the purge (${describeDiscordError(error)}). No case was recorded.`,
+          `Discord rejected the ${caseAction.toLowerCase()} (${describeDiscordError(error)}). No case was recorded.`,
+        );
+        return;
+      }
+      if (softbanUnbanFailed) {
+        const record = createCase({
+          action: 'BAN',
+          moderatorId: interaction.user.id,
+          targetId,
+          reason: `Softban unban failed; member remains banned. ${reason}`.slice(0, 1_000),
+          durationSeconds: null,
+          evidenceReference: 'Softban ban succeeded, unban failed.',
+        });
+        await service.saveCase(guild.id, record);
+        await writeModerationLog(guild, config, record);
+        await reply(
+          interaction,
+          `Ban succeeded, but unban failed; <@${targetId}> remains banned. Case ${record.id}.`,
         );
         return;
       }
       const record = createCase({
-        action: 'PURGE',
+        action: caseAction,
         moderatorId: interaction.user.id,
-        targetId: null,
+        targetId,
         reason,
-        durationSeconds: null,
-        evidenceReference: `${String(deletedCount)} messages in channel ${channel.id}`,
+        durationSeconds,
+        evidenceReference: null,
       });
       await service.saveCase(guild.id, record);
       await writeModerationLog(guild, config, record);
       await reply(
         interaction,
-        `Deleted ${String(deletedCount)} recent messages. Case ${record.id}. Messages older than 14 days are skipped by Discord.`,
+        `Completed ${caseAction.toLowerCase()} for <@${targetId}>. Case ${record.id}.`,
       );
     } finally {
       inFlightModeration.delete(key);
     }
-    return;
-  }
-  const reason = interaction.options.getString('reason', true);
-  const targetUser = command === 'unban' ? null : interaction.options.getUser('member', true);
-  const targetId =
-    command === 'unban' ? interaction.options.getString('user_id', true) : targetUser?.id;
-  if (targetId === undefined || !/^\d{17,20}$/.test(targetId)) {
-    await reply(interaction, 'Invalid Discord user ID.');
-    return;
-  }
-  const target = targetUser === null ? null : await guild.members.fetch(targetId).catch(() => null);
-  if (targetUser !== null && target === null) {
-    await reply(interaction, 'Member is not currently available in this guild.');
-    return;
-  }
-  const requireTarget = () => {
-    if (target === null) throw new Error('Expected a guild member for this moderation command.');
-    return target;
-  };
-  if (target !== null && !(await moderatorOutranksTarget(guild, interaction.user.id, target))) {
-    await reply(interaction, 'Your highest role must strictly outrank the target member.');
-    return;
-  }
-  if (
-    target !== null &&
-    !target.manageable &&
-    ['timeout', 'untimeout', 'kick', 'ban', 'softban'].includes(command)
-  ) {
-    await reply(interaction, 'Discord role hierarchy prevents Xenon from managing this member.');
-    return;
-  }
-  if (command === 'timeout' && !requireTarget().moderatable) {
-    await reply(interaction, 'Discord role hierarchy or permissions prevent timeout.');
-    return;
-  }
-  if (command === 'untimeout') {
-    if (!requireTarget().moderatable) {
-      await reply(interaction, 'Discord role hierarchy or permissions prevent timeout removal.');
-      return;
-    }
-    const until = requireTarget().communicationDisabledUntilTimestamp;
-    if (until === null || until <= Date.now()) {
-      await reply(interaction, 'That member is not currently timed out.');
-      return;
-    }
-  }
-  if (command === 'ban' || command === 'unban') {
-    const banned = await banState(guild, targetId);
-    if (command === 'ban' && banned === 'BANNED') {
-      await reply(interaction, 'That user is already banned.');
-      return;
-    }
-    if (command === 'unban' && banned === 'NOT_BANNED') {
-      await reply(interaction, 'That user is not banned.');
-      return;
-    }
-  }
-  const key = `${guild.id}:${caseAction}:${targetId}`;
-  const priorCases = (await store.getGuild(guild.id)).security.cases;
-  const now = Date.now();
-  const recentDuplicate = priorCases.some(
-    (record) =>
-      record.moderatorId === interaction.user.id &&
-      record.action === caseAction &&
-      record.targetId === targetId &&
-      now - Date.parse(record.createdAt) < DUPLICATE_WINDOW_MS,
-  );
-  if (inFlightModeration.has(key) || recentDuplicate) {
-    await reply(
-      interaction,
-      'The same action on this target is already in progress or was just recorded; no duplicate was performed.',
-    );
-    return;
-  }
-  inFlightModeration.add(key);
-  try {
-    let durationSeconds: number | null = null;
-    let softbanUnbanFailed = false;
-    try {
-      if (command === 'warn') {
-        await requireTarget()
-          .send(`You received a XenonRP moderation warning in ${guild.name}: ${reason}`)
-          .catch(() => undefined);
-      } else if (command === 'timeout') {
-        durationSeconds = interaction.options.getInteger('minutes', true) * 60;
-        await requireTarget().timeout(durationSeconds * 1_000, reason);
-      } else if (command === 'untimeout') {
-        await requireTarget().timeout(null, reason);
-      } else if (command === 'kick') {
-        await requireTarget().kick(reason);
-      } else if (command === 'ban' || command === 'softban') {
-        const deleteMessageSeconds =
-          command === 'softban'
-            ? 86_400
-            : (interaction.options.getInteger('delete_days') ?? 0) * 86_400;
-        await guild.members.ban(targetId, { deleteMessageSeconds, reason });
-        if (command === 'softban') {
-          try {
-            await guild.members.unban(targetId, `Softban complete: ${reason}`);
-          } catch {
-            softbanUnbanFailed = true;
-          }
-        }
-      } else {
-        await guild.members.unban(targetId, reason);
-      }
-    } catch (error) {
-      await reply(
-        interaction,
-        `Discord rejected the ${caseAction.toLowerCase()} (${describeDiscordError(error)}). No case was recorded.`,
-      );
-      return;
-    }
-    if (softbanUnbanFailed) {
-      const record = createCase({
-        action: 'BAN',
-        moderatorId: interaction.user.id,
-        targetId,
-        reason: `Softban unban failed; member remains banned. ${reason}`.slice(0, 1_000),
-        durationSeconds: null,
-        evidenceReference: 'Softban ban succeeded, unban failed.',
-      });
-      await service.saveCase(guild.id, record);
-      await writeModerationLog(guild, config, record);
-      await reply(
-        interaction,
-        `Ban succeeded, but unban failed; <@${targetId}> remains banned. Case ${record.id}.`,
-      );
-      return;
-    }
-    const record = createCase({
-      action: caseAction,
-      moderatorId: interaction.user.id,
-      targetId,
-      reason,
-      durationSeconds,
-      evidenceReference: null,
-    });
-    await service.saveCase(guild.id, record);
-    await writeModerationLog(guild, config, record);
-    await reply(
-      interaction,
-      `Completed ${caseAction.toLowerCase()} for <@${targetId}>. Case ${record.id}.`,
-    );
-  } finally {
-    inFlightModeration.delete(key);
-  }
+  });
 }
 
 export function isSecurityOrModerationCommand(name: string): boolean {
@@ -1520,6 +1578,105 @@ async function setupSecurity(
   return `Security setup complete. Created: ${created.join(', ') || 'none'}.\nChannels: alerts ${channels.alerts === null ? 'MISSING' : `<#${channels.alerts}>`}, audit ${channels.audit === null ? 'MISSING' : `<#${channels.audit}>`}, mod logs ${channels.modLogs === null ? 'MISSING' : `<#${channels.modLogs}>`}.\nQuarantine role (marker only; member-specific channel overwrites enforce restrictions): ${quarantineRoleId === null ? 'MISSING' : `<@&${quarantineRoleId}>`}.${unsafeQuarantineRole ? '\nExisting Xenon Quarantine role has permissions or is managed — remove them or delete it; marker disabled. The role was not modified.' : ''}\nAutoMod: created ${automod.created.join(', ') || 'none'}, conflicts ${automod.conflicts.join('; ') || 'none'}${automod.unavailable === null ? '' : `; unavailable: ${automod.unavailable}`}\nReview /security scan and verify new log-channel privacy before relying on automation.`;
 }
 
+const MODE_SUMMARY: Record<EnforcementMode, string> = {
+  OBSERVE:
+    'detect and record incidents only; no automatic Discord changes, member DMs, or channel posts',
+  ALERT:
+    'detect, record, and post incidents to the security channels; no automatic punishment, DMs, or server changes',
+  ENFORCE: 'automatic responses are active (subject to module settings and safety checks)',
+};
+
+interface ActiveRestrictions {
+  readonly lockdown: boolean;
+  readonly quarantines: number;
+  readonly raidSlowmodeChannels: number;
+}
+
+function activeRestrictionsOf(state: SecurityGuildState): ActiveRestrictions {
+  return {
+    lockdown: state.lockdown !== null,
+    quarantines: state.quarantines.length,
+    raidSlowmodeChannels: state.raidResponse?.slowmode.length ?? 0,
+  };
+}
+
+function describeRestrictions(restrictions: ActiveRestrictions): string {
+  return `Lockdown: ${restrictions.lockdown ? 'ACTIVE' : 'not active'}; quarantined members: ${String(restrictions.quarantines)}; raid slowmode channels: ${String(restrictions.raidSlowmodeChannels)}.`;
+}
+
+function releaseGuidance(restrictions: ActiveRestrictions): string[] {
+  return [
+    ...(restrictions.lockdown ? ['/security unlock — restore the lockdown overwrites'] : []),
+    ...(restrictions.quarantines > 0
+      ? ['/security unquarantine member:<member> reason:<text> — release each quarantined member']
+      : []),
+    ...(restrictions.raidSlowmodeChannels > 0
+      ? ['/security raid-mode off — release raid slowmode']
+      : []),
+  ];
+}
+
+async function handleModeCommand(
+  interaction: ChatInputCommandInteraction,
+  guild: Guild,
+  state: SecurityGuildState,
+  service: SecurityService,
+): Promise<void> {
+  const config = state.config;
+  const subcommand = interaction.options.getSubcommand(true);
+  if (subcommand === 'status') {
+    await reply(
+      interaction,
+      [
+        `Enforcement mode: ${config.enforcementMode}`,
+        `OBSERVE — ${MODE_SUMMARY.OBSERVE}.`,
+        `ALERT — ${MODE_SUMMARY.ALERT}.`,
+        `ENFORCE — ${MODE_SUMMARY.ENFORCE}.`,
+        'Manual staff commands work in every mode.',
+        `Protections ENFORCE ${config.enforcementMode === 'ENFORCE' ? 'has active' : 'would activate'}:`,
+        ...enforcedProtections(config).map((line) => `• ${line}`),
+        `Active restrictions — ${describeRestrictions(activeRestrictionsOf(state))}`,
+      ].join('\n'),
+    );
+    return;
+  }
+  const requested = interaction.options.getString('mode', true).toUpperCase();
+  if (requested !== 'OBSERVE' && requested !== 'ALERT' && requested !== 'ENFORCE') {
+    await reply(interaction, 'Unknown mode. Choose observe, alert, or enforce.');
+    return;
+  }
+  const mode: EnforcementMode = requested;
+  if (mode === 'ENFORCE' && interaction.options.getBoolean('confirm') !== true) {
+    await reply(
+      interaction,
+      [
+        'Enforcement mode was not changed. ENFORCE would activate these automatic responses:',
+        ...enforcedProtections(config).map((line) => `• ${line}`),
+        'To confirm, run: /security mode set mode:enforce confirm:true',
+      ].join('\n'),
+    );
+    return;
+  }
+  const change = await service.setEnforcementMode(guild, mode, interaction.user.id);
+  const guidance =
+    change.previous === 'ENFORCE' && change.current !== 'ENFORCE'
+      ? releaseGuidance(change.activeRestrictions)
+      : [];
+  await reply(
+    interaction,
+    [
+      `Enforcement mode: ${change.previous} → ${change.current}.`,
+      MODE_SUMMARY[change.current],
+      ...(guidance.length > 0
+        ? [
+            'Existing restrictions were not released automatically. Release them with:',
+            ...guidance.map((line) => `• ${line}`),
+          ]
+        : []),
+    ].join('\n'),
+  );
+}
+
 export type PostureLabel = 'LOCKDOWN' | 'DISABLED' | 'AT RISK' | 'DEGRADED' | 'PROTECTED';
 
 export interface PostureInput {
@@ -1532,6 +1689,8 @@ export interface PostureInput {
   }[];
   readonly raidLevel: 'NORMAL' | 'WARNING' | 'RAID' | 'CRITICAL' | null;
   readonly degraded: boolean;
+  /** Automatic protection is inactive unless ENFORCE. */
+  readonly enforcementMode: EnforcementMode;
 }
 
 /** Precedence: LOCKDOWN > DISABLED > AT RISK > DEGRADED > PROTECTED. */
@@ -1549,6 +1708,7 @@ export function computePostureLabel(input: PostureInput): PostureLabel {
     input.raidLevel === 'CRITICAL'
   )
     return 'AT RISK';
+  if (input.enforcementMode !== 'ENFORCE') return 'DEGRADED';
   return input.degraded ? 'DEGRADED' : 'PROTECTED';
 }
 
@@ -1627,6 +1787,7 @@ async function securityStatus(
     incidents: state.incidents,
     raidLevel: raid?.level ?? null,
     degraded,
+    enforcementMode: config.enforcementMode,
   });
   const contentStatus = !needsMessageContent
     ? 'NOT REQUIRED'
@@ -1667,6 +1828,13 @@ async function securityStatus(
     )
     .setTitle(`Xenon Security · ${level}`)
     .addFields(
+      {
+        name: 'Enforcement mode',
+        value: clip(
+          `${config.enforcementMode} — ${MODE_SUMMARY[config.enforcementMode]}\nChange with /security mode set.`,
+        ),
+        inline: false,
+      },
       { name: 'Controller', value: config.enabled ? 'ENABLED' : 'DISABLED', inline: true },
       {
         name: 'Raid detection',

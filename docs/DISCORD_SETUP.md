@@ -165,6 +165,36 @@ persistent bot process and run:
    rewrite their existing overwrites.
 6. `/security snapshot take` to record a known-good baseline after the server is
    configured.
+7. Validate in a disposable test guild with
+   [SECURITY_LIVE_TEST.md](SECURITY_LIVE_TEST.md), then roll out by mode:
+   OBSERVE → ALERT → `/security mode set mode:enforce confirm:true`.
+
+### Enforcement modes
+
+Every installation starts in **OBSERVE**, including existing installations
+whose saved configuration predates this setting; Xenon never switches itself to
+ENFORCE.
+
+| Mode    | Detection and incidents | Automatic staff alerts | Automatic Discord actions (quarantine, timeout, role removal, message deletion, DMs, lockdown, slowmode, slowmode restore) |
+| ------- | ----------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| OBSERVE | yes                     | no                     | no                                                                                                                         |
+| ALERT   | yes                     | yes                    | no                                                                                                                         |
+| ENFORCE | yes                     | yes                    | yes, as configured                                                                                                         |
+
+`/security mode status` shows the mode, active restrictions, and the
+protections ENFORCE would run. `/security mode set` requires a SECURITY_ADMIN
+(or the owner) with Manage Server; ENFORCE additionally requires
+`confirm:true`. Mode changes are recorded as incidents and always posted to
+`#security-audit`. The mode is checked when a response is decided and again
+immediately before every automatic Discord call, so switching away from ENFORCE
+stops responses already in progress.
+
+Staff commands — moderation, `/security lockdown|unlock|quarantine|unquarantine`,
+`/security automod sync`, `/security snapshot restore-permissions`, and
+`/security raid-mode off` — work in every mode. Leaving ENFORCE keeps existing
+lockdown, quarantine, and raid-slowmode records; automatic raid recovery pauses
+outside ENFORCE, so release them with `/security unlock`, `/security
+unquarantine`, or `/security raid-mode off`.
 
 ### Default detection behavior
 
