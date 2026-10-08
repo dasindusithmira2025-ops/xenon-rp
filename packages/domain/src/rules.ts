@@ -27,6 +27,8 @@ import { refreshOnboardingStep } from './users';
 
 const RULES_CACHE_KEY = 'rules:published';
 const RULES_CACHE_TTL = 300;
+const OFFICIAL_FACTION_RULEBOOK_SLUG = 'xenonrp-official-rulebook';
+const OFFICIAL_FACTION_RULEBOOK_TITLE = 'XENONRP ROLEPLAY RULEBOOK';
 
 /** Invalidate the published view after an out-of-band official-source import. */
 export async function invalidatePublishedRulebookCache(): Promise<void> {
@@ -100,7 +102,10 @@ export async function publishedRulebook(db: Db): Promise<PublishedRulebook> {
       .map((category) => ({
         id: category.id,
         slug: category.slug,
-        name: category.name,
+        name:
+          category.slug === OFFICIAL_FACTION_RULEBOOK_SLUG
+            ? OFFICIAL_FACTION_RULEBOOK_TITLE
+            : category.name,
         description: category.description,
         sourceRoot: category.sourceRoot,
         sourceUrl: category.sourceUrl,

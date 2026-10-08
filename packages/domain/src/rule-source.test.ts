@@ -2,11 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { diffSourceText, extractSourcePage, sha256, sourceSnapshotHash } from './rule-source';
 
-const markdown = `> For the complete documentation index, see [llms.txt](https://example.test/llms.txt). Markdown versions of documentation pages are available by appending .md; this page is available as [Markdown](https://example.test/rule.md).
-
-# Rule 5.3 — නීතිය
-
-<figure><img src="https://cdn.example.test/city_life_logo.png" alt=""><figcaption></figcaption></figure>
+const markdown = `# Rule 5.3 — නීතිය
 
 Rule 5.3: Keep this exactly! Sinhala සිංහල — café “quotes” &amp; symbols.
 
@@ -19,7 +15,7 @@ Rule 5.3: Keep this exactly! Sinhala සිංහල — café “quotes” &amp
 | 5.3 | Keep, punctuation! |
 `;
 
-describe('official GitBook Markdown extraction', () => {
+describe('authored Markdown page extraction', () => {
   it('preserves exact mixed-language content, numbering, paragraphs, nested lists, tables, and punctuation', () => {
     const extracted = extractSourcePage(markdown);
 
@@ -35,7 +31,7 @@ describe('official GitBook Markdown extraction', () => {
     );
   });
 
-  it('hashes exact extracted source and ordered page identities deterministically', () => {
+  it('hashes authored content and ordered page identities deterministically', () => {
     const extracted = extractSourcePage(markdown);
     const page = { ...extracted, sourcePath: '/rule-5-3' };
 

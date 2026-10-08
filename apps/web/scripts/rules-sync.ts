@@ -1,7 +1,6 @@
 import '@xenon/config/load-env';
 
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 // This administrative CLI runs outside the web request/component boundary.
@@ -17,16 +16,10 @@ import {
 } from '@xenon/domain';
 import { closeRedis } from '@xenon/jobs';
 
-const SOURCE_ROOT = 'https://mycompany-181.gitbook.io/cityliferpgangrule-docs';
+const SOURCE_ROOT = 'xenonrp://official-rulebook';
 const CANDIDATE_FILE = fileURLToPath(
-  new URL('../../../docs/rules/official-snapshot.json', import.meta.url),
+  new URL('../../../docs/rules/xenon-rulebook.md', import.meta.url),
 );
-
-interface IndexPage {
-  readonly label: string;
-  readonly url: string;
-  readonly path: string;
-}
 
 interface ExistingRule {
   readonly id: string;
@@ -46,76 +39,24 @@ function log(message: string): void {
   process.stdout.write(`${message}\n`);
 }
 
-function sourcePathFor(url: string): string {
-  const parsed = new URL(url);
-  const base = new URL(SOURCE_ROOT).pathname.replace(/\/$/, '');
-  const path = parsed.pathname.startsWith(`${base}/`)
-    ? parsed.pathname.slice(base.length)
-    : parsed.pathname === base
-      ? '/'
-      : null;
-  if (path === null) throw new Error(`Source URL is outside the official GitBook: ${url}`);
-  return path.replace(/\.md$/, '') || '/';
+function slugForTitle(title: string): string {
+  const slug = title
+    .normalize('NFKD')
+    .toLocaleLowerCase('en-US')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-|-$/g, '');
+  if (slug.length === 0) throw new Error(`Cannot derive a source path from "${title}".`);
+  return slug;
 }
 
-function decodeHtmlHref(value: string): string {
-  return value.replaceAll('&amp;', '&').replaceAll('&#x2F;', '/');
-}
-
-function decodeXmlText(value: string): string {
-  return value.replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>');
-}
-
-async function fetchText(url: string): Promise<string> {
-  const response = await fetch(url, {
-    headers: { accept: 'text/markdown, text/plain, text/html;q=0.9, */*;q=0.8' },
-    signal: AbortSignal.timeout(35_000),
-  });
-  if (!response.ok) throw new Error(`HTTP ${String(response.status)} ${response.statusText}`);
-  return response.text();
-}
-
-function pagesFromIndex(index: string): readonly IndexPage[] {
-  const pages: IndexPage[] = [];
-  for (const line of index.split(/\r?\n/)) {
-    const match = /^\s*-\s+\[([^\]]+)\]\((https?:\/\/[^)]+\.md)\)\s*$/.exec(line);
-    if (match === null) continue;
-    const url = decodeHtmlHref(match[2] ?? '');
-    pages.push({ label: match[1] ?? '', url, path: sourcePathFor(url) });
-  }
-  if (pages.length === 0) throw new Error('Official GitBook llms.txt lists no Markdown pages.');
-  if (new Set(pages.map((page) => page.path)).size !== pages.length) {
-    throw new Error('Official GitBook llms.txt contains duplicate source paths.');
-  }
-  return pages;
-}
-
-function pagePathsFromSitemap(sitemap: string): readonly string[] {
-  const paths: string[] = [];
-  for (const match of sitemap.matchAll(/<loc>([\s\S]*?)<\/loc>/g)) {
-    const href = decodeXmlText(match[1] ?? '').trim();
-    let parsed: URL;
-    try {
-      parsed = new URL(href);
-    } catch {
-      continue;
-    }
-    if (parsed.origin !== new URL(SOURCE_ROOT).origin) continue;
-    if (parsed.search.length > 0 || parsed.hash.length > 0) continue;
-    paths.push(sourcePathFor(parsed.href));
-  }
-  return paths;
-}
-
-function extractSnapshotPage(
-  page: IndexPage,
-  rawMarkdown: string,
-  sourceOrder: number,
-): SourceRulePage {
+function pageFromMarkdown(title: string, content: string, sourceOrder: number): SourceRulePage {
+  const sourcePath = sourceOrder === 0 ? '/' : `/${slugForTitle(title)}`;
+  const rawMarkdown = `# ${title}\n\n${content}`;
   const extracted = extractSourcePage(rawMarkdown);
   return {
-    sourceUrl: page.url,
-    sourcePath: page.path,
+    sourceUrl: SOURCE_ROOT,
+    sourcePath,
     sourceOrder,
     title: extracted.title,
     content: extracted.content,
@@ -124,101 +65,83 @@ function extractSnapshotPage(
   };
 }
 
-async function fetchOfficialSnapshot(): Promise<RuleSourceSnapshot> {
-  const retrievedAt = new Date().toISOString();
-  const [index, sitemap] = await Promise.all([
-    fetchText(`${SOURCE_ROOT}/llms.txt`),
-    fetchText(`${SOURCE_ROOT}/sitemap-pages.xml`),
-  ]);
-  const listed = pagesFromIndex(index);
-  const sitemapPaths = pagePathsFromSitemap(sitemap);
-  const indexPaths = listed.map((page) => page.path);
-  if (sitemapPaths[0] !== '/') {
-    throw new Error('The GitBook page sitemap does not begin with its root page.');
-  }
-  const expectedIndexPaths = [listed[0]?.path ?? '', ...sitemapPaths.slice(1)];
-  if (
-    sitemapPaths.length !== listed.length ||
-    JSON.stringify(expectedIndexPaths) !== JSON.stringify(indexPaths)
-  ) {
-    const missingFromIndex = expectedIndexPaths.filter((path) => !indexPaths.includes(path));
-    const missingFromSitemap = indexPaths.filter((path) => !expectedIndexPaths.includes(path));
-    throw new Error(
-      `GitBook sitemap and llms.txt disagree. Missing from index: ${missingFromIndex.join(', ') || 'none'}; missing from sitemap: ${missingFromSitemap.join(', ') || 'none'}`,
-    );
-  }
-
-  const pages: SourceRulePage[] = [];
-  const failures: string[] = [];
-  for (let start = 0; start < listed.length; start += 4) {
-    const group = listed.slice(start, start + 4);
-    const fetched = await Promise.all(
-      group.map(async (page, offset) => {
-        try {
-          return extractSnapshotPage(page, await fetchText(page.url), start + offset);
-        } catch (error) {
-          failures.push(`${page.label} | ${page.url} | ${String(error)}`);
-          return null;
-        }
-      }),
-    );
-    pages.push(...fetched.filter((page): page is SourceRulePage => page !== null));
-  }
-  if (failures.length > 0) {
-    throw new Error(`Official GitBook pages could not be retrieved:\n${failures.join('\n')}`);
-  }
-  const firstPage = pages[0];
-  if (firstPage === undefined) {
-    throw new Error('The first source page is not the GitBook root page.');
-  }
-
-  return {
-    schemaVersion: 1,
-    sourceRoot: SOURCE_ROOT,
-    sourceTitle: firstPage.title,
-    retrievedAt,
-    contentHash: sourceSnapshotHash(pages),
-    pages,
-  };
+function sectionContent(markdown: string, start: number, end: number): string {
+  return markdown
+    .slice(start, end)
+    .replace(/^(?:\r?\n)+/, '')
+    .replace(/(?:\r?\n)+$/, '\n');
 }
 
 function validateSnapshot(snapshot: RuleSourceSnapshot): void {
   if (snapshot.schemaVersion !== 1 || snapshot.sourceRoot !== SOURCE_ROOT) {
-    throw new Error('Candidate snapshot schema or source root is not supported.');
+    throw new Error('Authored rulebook schema or source URL is not supported.');
   }
-  if (snapshot.pages.length === 0 || snapshot.pages[0]?.sourceOrder !== 0) {
-    throw new Error('Candidate snapshot does not begin with its index page.');
+  if (snapshot.pages.length < 2 || snapshot.pages[0]?.sourceOrder !== 0) {
+    throw new Error('Authored rulebook must contain an index and at least one section.');
   }
+
   const paths = new Set<string>();
   for (const [order, page] of snapshot.pages.entries()) {
-    if (paths.has(page.sourcePath)) throw new Error(`Duplicate source path: ${page.sourcePath}`);
-    paths.add(page.sourcePath);
-    if (page.sourceOrder !== order || sourcePathFor(page.sourceUrl) !== page.sourcePath) {
-      throw new Error(`Invalid provenance/order metadata for ${page.sourceUrl}`);
+    const expectedPath = order === 0 ? '/' : `/${slugForTitle(page.title)}`;
+    if (
+      paths.has(page.sourcePath) ||
+      page.sourcePath !== expectedPath ||
+      page.sourceOrder !== order ||
+      page.sourceUrl !== SOURCE_ROOT
+    ) {
+      throw new Error(`Invalid source path, URL, or order for ${page.title}.`);
     }
+    paths.add(page.sourcePath);
+
     const extracted = extractSourcePage(page.rawMarkdown);
     if (
       extracted.title !== page.title ||
       extracted.content !== page.content ||
       extracted.contentHash !== page.contentHash
     ) {
-      throw new Error(`Snapshot text/hash does not match its raw source page: ${page.sourceUrl}`);
+      throw new Error(`Authored Markdown or content hash is inconsistent for ${page.title}.`);
     }
   }
-  if (sourceSnapshotHash(snapshot.pages) !== snapshot.contentHash) {
-    throw new Error('Snapshot manifest content hash does not match its ordered pages.');
+  if (
+    snapshot.sourceTitle !== snapshot.pages[0].title ||
+    sourceSnapshotHash(snapshot.pages) !== snapshot.contentHash
+  ) {
+    throw new Error('Authored rulebook title or manifest hash is inconsistent.');
   }
 }
 
 async function readCandidate(): Promise<RuleSourceSnapshot> {
-  const snapshot = JSON.parse(await readFile(CANDIDATE_FILE, 'utf8')) as RuleSourceSnapshot;
+  const markdown = (await readFile(CANDIDATE_FILE, 'utf8')).replaceAll('\r\n', '\n');
+  const headings = [...markdown.matchAll(/^(#{1,2}) (.+)$/gm)];
+  const first = headings[0];
+  if (first?.index !== 0 || first[1] !== '#') {
+    throw new Error('Authored rulebook must begin with one H1 title.');
+  }
+  if (headings.slice(1).some((heading) => heading[1] !== '##')) {
+    throw new Error('Authored rulebook may contain only one H1 followed by H2 sections.');
+  }
+
+  const pages = headings.map((heading, order) => {
+    const headingEnd = heading.index + heading[0].length;
+    const nextHeading = headings[order + 1];
+    const contentEnd = nextHeading?.index ?? markdown.length;
+    const title = heading[2] ?? '';
+    const content = sectionContent(markdown, headingEnd, contentEnd);
+    return pageFromMarkdown(title, content, order);
+  });
+  const firstPage = pages[0];
+  if (firstPage === undefined) throw new Error('Authored rulebook title is missing.');
+
+  const snapshot: RuleSourceSnapshot = {
+    schemaVersion: 1,
+    sourceRoot: SOURCE_ROOT,
+    sourceTitle: firstPage.title,
+    retrievedAt: new Date().toISOString(),
+    contentHash: sourceSnapshotHash(pages),
+    pages,
+  };
   validateSnapshot(snapshot);
   return snapshot;
-}
-
-async function saveCandidate(snapshot: RuleSourceSnapshot): Promise<void> {
-  await mkdir(dirname(CANDIDATE_FILE), { recursive: true });
-  await writeFile(CANDIDATE_FILE, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
 }
 
 function diffPage(oldPage: { title: string; description: string }, page: SourceRulePage): string {
@@ -229,36 +152,39 @@ function diffPage(oldPage: { title: string; description: string }, page: SourceR
 }
 
 async function plan(): Promise<void> {
-  const snapshot = await fetchOfficialSnapshot();
-  await saveCandidate(snapshot);
+  const snapshot = await readCandidate();
 
-  const [categories, rules, current, otherPublishedCount] = await Promise.all([
-    prisma.ruleCategory.findMany({ where: { sourceRoot: SOURCE_ROOT } }),
-    prisma.rule.findMany({
-      where: { sourceRoot: SOURCE_ROOT },
-      select: {
-        id: true,
-        code: true,
-        slug: true,
-        title: true,
-        description: true,
-        status: true,
-        sortOrder: true,
-        sourceUrl: true,
-        sourcePath: true,
-        sourceOrder: true,
-        sourceContentHash: true,
-      },
-    }),
+  const category = await prisma.ruleCategory.findUnique({
+    where: { slug: 'xenonrp-official-rulebook' },
+  });
+  const [current, otherPublishedCount] = await Promise.all([
     prisma.ruleSet.findFirst({ where: { isCurrent: true } }),
     prisma.rule.count({
       where: {
         status: 'PUBLISHED',
-        OR: [{ sourceRoot: null }, { sourceRoot: { not: SOURCE_ROOT } }],
+        ...(category === null ? {} : { categoryId: { not: category.id } }),
       },
     }),
   ]);
-  const category = categories.find((candidate) => candidate.sourceOrder === 0) ?? null;
+  const rules =
+    category === null
+      ? []
+      : await prisma.rule.findMany({
+          where: { categoryId: category.id },
+          select: {
+            id: true,
+            code: true,
+            slug: true,
+            title: true,
+            description: true,
+            status: true,
+            sortOrder: true,
+            sourceUrl: true,
+            sourcePath: true,
+            sourceOrder: true,
+            sourceContentHash: true,
+          },
+        });
   const oldByPath = new Map(rules.map((rule) => [rule.sourcePath ?? '', rule as ExistingRule]));
   const unmatchedOld = new Set(rules.map((rule) => rule.id));
   const pageLines: string[] = [];
@@ -269,7 +195,10 @@ async function plan(): Promise<void> {
       else if (category.sourceContentHash !== page.contentHash) {
         pageLines.push(`[CHANGED PAGE] / | ${page.title}`);
         pageLines.push(
-          diffSourceText(`# ${category.name}\n\n`, `# ${page.title}\n\n${page.content}`),
+          diffSourceText(
+            `# ${category.name}\n\n${category.description ?? ''}`,
+            `# ${page.title}\n\n${page.content}`,
+          ),
         );
       } else pageLines.push(`[UNCHANGED] / | ${page.title}`);
       continue;
@@ -312,8 +241,8 @@ async function plan(): Promise<void> {
     );
   }
 
-  log(`Official source: ${SOURCE_ROOT}`);
-  log(`Retrieved: ${snapshot.retrievedAt}`);
+  log('Authored locally for XenonRP.');
+  log(`Prepared: ${snapshot.retrievedAt}`);
   log(
     `Pages discovered: ${String(snapshot.pages.length)} (1 index, ${String(snapshot.pages.length - 1)} rule pages)`,
   );
@@ -321,16 +250,16 @@ async function plan(): Promise<void> {
     `Published Xenon ruleset: ${current?.version === undefined ? 'none' : `v${String(current.version)}`}`,
   );
   if (otherPublishedCount > 0) {
-    log(`Published non-GitBook rules to retire on apply: ${String(otherPublishedCount)}`);
+    log(`Published rules from other sources to retire on apply: ${String(otherPublishedCount)}`);
   }
   log(`Source content hash: ${snapshot.contentHash}`);
   log('--- PLAN (database unchanged) ---');
   for (const line of pageLines) log(line);
-  log(`Candidate snapshot: ${CANDIDATE_FILE}`);
+  log(`Authored rulebook: ${CANDIDATE_FILE}`);
 }
 
 function ruleSlug(page: SourceRulePage): string {
-  return page.sourcePath.replace(/^\//, '');
+  return `xenonrp-${page.sourcePath.replace(/^\//, '')}`;
 }
 
 function ruleCode(page: SourceRulePage): string {
@@ -340,27 +269,34 @@ function ruleCode(page: SourceRulePage): string {
 async function apply(): Promise<void> {
   const snapshot = await readCandidate();
   const importedPages = snapshot.pages.filter((page) => page.sourceOrder !== 0);
-  if (importedPages.length === 0) throw new Error('The official snapshot contains no rule pages.');
+  if (importedPages.length === 0) throw new Error('The authored rulebook contains no sections.');
 
-  const [existingRules, foreignPublished, current] = await Promise.all([
-    prisma.rule.findMany({
-      where: { sourceRoot: SOURCE_ROOT },
-      select: {
-        id: true,
-        code: true,
-        slug: true,
-        title: true,
-        description: true,
-        status: true,
-        sortOrder: true,
-        sourcePath: true,
-        sourceContentHash: true,
-      },
-    }),
+  const category = await prisma.ruleCategory.findUnique({
+    where: { slug: 'xenonrp-official-rulebook' },
+    select: { id: true },
+  });
+  const existingRules =
+    category === null
+      ? []
+      : await prisma.rule.findMany({
+          where: { categoryId: category.id },
+          select: {
+            id: true,
+            code: true,
+            slug: true,
+            title: true,
+            description: true,
+            status: true,
+            sortOrder: true,
+            sourcePath: true,
+            sourceContentHash: true,
+          },
+        });
+  const [foreignPublished, current] = await Promise.all([
     prisma.rule.count({
       where: {
         status: 'PUBLISHED',
-        OR: [{ sourceRoot: null }, { sourceRoot: { not: SOURCE_ROOT } }],
+        ...(category === null ? {} : { categoryId: { not: category.id } }),
       },
     }),
     prisma.ruleSet.findFirst({ where: { isCurrent: true } }),
@@ -395,11 +331,11 @@ async function apply(): Promise<void> {
   const retrievedAt = new Date(snapshot.retrievedAt);
   const result = await prisma.$transaction(async (tx) => {
     const indexPage = snapshot.pages[0];
-    if (indexPage === undefined) throw new Error('Official snapshot index page is missing.');
+    if (indexPage === undefined) throw new Error('Authored rulebook index is missing.');
     const categoryData = {
-      slug: 'citylife-official-rulebook',
+      slug: 'xenonrp-official-rulebook',
       name: indexPage.title,
-      description: null,
+      description: indexPage.content || null,
       sortOrder: 0,
       sourceRoot: SOURCE_ROOT,
       sourceUrl: indexPage.sourceUrl,
@@ -409,8 +345,8 @@ async function apply(): Promise<void> {
       sourceContentHash: indexPage.contentHash,
       sourceRetrievedAt: retrievedAt,
     };
-    const category = await tx.ruleCategory.findFirst({
-      where: { sourceRoot: SOURCE_ROOT, sourceOrder: 0 },
+    const category = await tx.ruleCategory.findUnique({
+      where: { slug: 'xenonrp-official-rulebook' },
       select: { id: true },
     });
     const savedCategory =
@@ -419,9 +355,11 @@ async function apply(): Promise<void> {
         : await tx.ruleCategory.update({ where: { id: category.id }, data: categoryData });
 
     const oldRows = await tx.rule.findMany({
-      where: { sourceRoot: SOURCE_ROOT },
+      where: { categoryId: savedCategory.id },
       select: {
         id: true,
+        sourceRoot: true,
+        sourceUrl: true,
         sourcePath: true,
         sourceContentHash: true,
         sourceOrder: true,
@@ -475,7 +413,9 @@ async function apply(): Promise<void> {
         revisionChanged =
           existing.sourceContentHash !== page.contentHash ||
           existing.sourcePath !== page.sourcePath ||
-          existing.sourceOrder !== page.sourceOrder;
+          existing.sourceOrder !== page.sourceOrder ||
+          existing.sourceRoot !== SOURCE_ROOT ||
+          existing.sourceUrl !== page.sourceUrl;
       }
       if (revisionChanged) {
         const latest = await tx.ruleRevision.findFirst({
@@ -492,7 +432,7 @@ async function apply(): Promise<void> {
             examples: null,
             severity: null,
             editedBy: null,
-            changeNote: `Official GitBook sync ${snapshot.contentHash}`,
+            changeNote: `Updated XenonRP rulebook content (${snapshot.contentHash})`,
             contentHash: page.contentHash,
             sourceRoot: SOURCE_ROOT,
             sourceUrl: page.sourceUrl,
@@ -520,12 +460,11 @@ async function apply(): Promise<void> {
         data: { status: 'DRAFT' },
       });
     }
-    await tx.rule.updateMany({
-      where: { status: 'PUBLISHED', sourceRoot: null },
-      data: { status: 'DRAFT' },
-    });
-    await tx.rule.updateMany({
-      where: { status: 'PUBLISHED', sourceRoot: { not: SOURCE_ROOT } },
+    const retiredOtherRules = await tx.rule.updateMany({
+      where: {
+        status: 'PUBLISHED',
+        categoryId: { not: savedCategory.id },
+      },
       data: { status: 'DRAFT' },
     });
 
@@ -542,56 +481,55 @@ async function apply(): Promise<void> {
         version: (latestSet?.version ?? 0) + 1,
         revisionIds: orderedRevisionIds,
         publishedBy: null,
-        note: 'Official XenonRP rulebook imported from GitBook.',
+        note: 'Official XenonRP roleplay rulebook.',
         sourceRoot: SOURCE_ROOT,
         sourceContentHash: snapshot.contentHash,
         sourceRetrievedAt: retrievedAt,
         isCurrent: true,
       },
     });
-    return { ruleSet, importedCount: orderedRevisionIds.length, removedCount: removedIds.length };
+    return {
+      ruleSet,
+      importedCount: orderedRevisionIds.length,
+      retiredCount: removedIds.length + retiredOtherRules.count,
+    };
   });
 
   await invalidatePublishedRulebookCache();
   log(
-    `Published official ruleset v${String(result.ruleSet.version)}: ${String(result.importedCount)} page-level rules, hash ${snapshot.contentHash}; ${String(result.removedCount)} source pages retired from the current set.`,
+    `Published official ruleset v${String(result.ruleSet.version)}: ${String(result.importedCount)} page-level rules, hash ${snapshot.contentHash}; ${String(result.retiredCount)} previously published rules retired.`,
   );
 }
 
 async function verify(): Promise<void> {
   const snapshot = await readCandidate();
-  const live = await fetchOfficialSnapshot();
-  if (live.contentHash !== snapshot.contentHash) {
-    throw new Error(
-      `Current GitBook content hash ${live.contentHash} differs from the imported snapshot ${snapshot.contentHash}. Run rules:sync:plan and review the diff.`,
-    );
-  }
-
-  const [current, categories, rules, publishedRuleCount] = await Promise.all([
+  const [current, category, publishedRuleCount] = await Promise.all([
     prisma.ruleSet.findFirst({ where: { isCurrent: true } }),
-    prisma.ruleCategory.findMany({ where: { sourceRoot: SOURCE_ROOT } }),
-    prisma.rule.findMany({
-      where: { sourceRoot: SOURCE_ROOT, status: 'PUBLISHED' },
-      orderBy: { sourceOrder: 'asc' },
-      select: {
-        id: true,
-        title: true,
-        description: true,
-        sourceUrl: true,
-        sourcePath: true,
-        sourceOrder: true,
-        sourceContentHash: true,
-      },
+    prisma.ruleCategory.findUnique({
+      where: { slug: 'xenonrp-official-rulebook' },
     }),
     prisma.rule.count({ where: { status: 'PUBLISHED' } }),
   ]);
+  if (category === null) throw new Error('The official XenonRP rulebook category is missing.');
+  const rules = await prisma.rule.findMany({
+    where: { categoryId: category.id, status: 'PUBLISHED' },
+    orderBy: { sourceOrder: 'asc' },
+    select: {
+      id: true,
+      title: true,
+      description: true,
+      sourceUrl: true,
+      sourcePath: true,
+      sourceOrder: true,
+      sourceContentHash: true,
+    },
+  });
   const indexPage = snapshot.pages[0];
-  const category = categories.find((item) => item.sourceOrder === 0);
   if (
     indexPage === undefined ||
-    category === undefined ||
     current?.sourceRoot !== SOURCE_ROOT ||
     current.sourceContentHash !== snapshot.contentHash ||
+    category.description !== (indexPage.content || null) ||
     category.name !== indexPage.title ||
     category.sourceRoot !== SOURCE_ROOT ||
     category.sourceUrl !== indexPage.sourceUrl ||
@@ -600,7 +538,7 @@ async function verify(): Promise<void> {
     category.sourceContentHash !== indexPage.contentHash
   ) {
     throw new Error(
-      'The current Xenon ruleset or its index provenance does not match the snapshot.',
+      'The current Xenon ruleset or its index content and provenance do not match the authored source.',
     );
   }
 
@@ -651,12 +589,12 @@ async function verify(): Promise<void> {
       revision.sourceOrder === page.sourceOrder &&
       revision.sourceContentHash === page.contentHash;
     if (!expectedMatches || !revisionMatches) {
-      throw new Error(`SOURCE TEXT FIDELITY FAILED for ${page.sourceUrl}`);
+      throw new Error(`AUTHORED RULEBOOK CONTENT MISMATCH for ${page.title}.`);
     }
   }
 
   log(
-    `SOURCE TEXT FIDELITY VERIFIED — ${String(expected.length)} rules match current GitBook Markdown exactly.`,
+    `RULEBOOK CONTENT VERIFIED — ${String(expected.length)} rules match the authored XenonRP Markdown.`,
   );
   log(`Version: ${String(current.version)} | hash: ${snapshot.contentHash}`);
 }

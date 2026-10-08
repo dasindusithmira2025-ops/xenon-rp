@@ -1,14 +1,15 @@
-# Official rulebook sync
+# XenonRP rulebook publishing
 
-The public `/rules` page reads the currently published Xenon rule set from the database. It does not request GitBook while a player is viewing the page.
+The public `/rules` page reads the currently published XenonRP ruleset from the database and makes no external requests while players view it.
 
-The source of truth is [CityLifeRpGangRule on GitBook](https://mycompany-181.gitbook.io/cityliferpgangrule-docs). The sync tool reads its `llms.txt`, page sitemap, and each page's Markdown endpoint. The landing page provides the rulebook title; the remaining pages are imported in source order as page-level rules. Exact source Markdown and its SHA-256 hash are saved in `docs/rules/official-snapshot.json` and in Xenon's rule, revision, and rule-set records.
+The authored source is [`docs/rules/xenon-rulebook.md`](rules/xenon-rulebook.md). It preserves the rulebook’s eleven subject areas while replacing server-specific counts, locations, deadlines, mechanics, and punishment promises with XenonRP’s own published policies. The source Markdown is authoritative for the XenonRP ruleset.
 
-To update the rules after GitBook changes:
+To review and publish an update:
 
-1. Run `pnpm rules:sync:plan`. This fetches and saves a candidate snapshot, verifies the index against the sitemap, and prints a page-by-page diff without changing the database.
-2. Review the reported additions, removals, wording changes, and order changes.
-3. Run `pnpm rules:sync:apply` to publish the candidate as a new ruleset. The transaction retires other published rules and preserves prior revisions and acceptances.
-4. Run `pnpm rules:sync:verify` to fetch GitBook again and compare its current content, page order, hashes, database rules, revisions, and published ruleset against the candidate.
+1. Edit the authored Markdown, keeping one H1 title and one H2 per rule section.
+2. Run `pnpm rules:sync:plan`. It reads the local Markdown and prints a page-by-page diff without changing the database.
+3. Review all additions, removals, wording changes, and the number of currently published rules that the apply step will retire.
+4. Run `pnpm rules:sync:apply` to publish a new versioned ruleset. The transaction preserves prior revisions and acceptances, retires other published rules, and invalidates the public rulebook cache.
+5. Run `pnpm rules:sync:verify` to compare the database rules, revisions, and current ruleset against the authored Markdown.
 
-The public rulebook cache is invalidated after import. The import stores source URLs, page paths, source order, retrieval time, and content hashes with the corresponding records.
+Applying creates a new current ruleset, so players may need to accept the new version during onboarding. Stored paths and hashes identify the authored XenonRP content. Verification checks the local authored source against the database.

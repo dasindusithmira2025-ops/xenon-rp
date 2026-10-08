@@ -75,7 +75,7 @@ const components: Components = {
   ),
 };
 
-/** Server-rendered GitBook Markdown; raw HTML is intentionally never enabled. */
+/** Server-rendered rulebook Markdown; raw HTML is intentionally never enabled. */
 export function RuleMarkdownContent({ markdown }: { readonly markdown: string }) {
   return (
     <div className="x-rule-markdown">

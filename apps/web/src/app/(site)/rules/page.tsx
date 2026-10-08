@@ -23,8 +23,8 @@ export const revalidate = 300;
 /**
  * /rules
  *
- * The official source is stored in Xenon's versioned rules system, so players
- * can read the published copy without a live GitBook request.
+ * The published XenonRP rulebook is versioned in the database; page rendering
+ * reads the published record only.
  */
 export default async function RulesPage(): Promise<React.ReactElement> {
   const [rulebook, actor] = await Promise.all([publishedRulebook(prisma), currentActor()]);
@@ -45,7 +45,7 @@ export default async function RulesPage(): Promise<React.ReactElement> {
             rulebook
           </>
         }
-        lead="The published XenonRP rules, preserved from their official source and hosted here for players."
+        lead="The current XenonRP rules for fair, immersive roleplay. Follow any additional activity and faction rules that apply."
       >
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <span className="rounded-pill border border-line-strong px-3.5 py-1.5 font-mono text-[0.625rem] tracking-[0.16em] text-ink-secondary uppercase">

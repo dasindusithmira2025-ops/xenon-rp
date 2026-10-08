@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 export interface ExtractedSourcePage {
   readonly title: string;
-  /** Markdown body copied byte-for-byte after the page H1 and decorative logo. */
+  /** Markdown body after the page H1, retained exactly as authored. */
   readonly content: string;
   readonly contentHash: string;
 }
@@ -11,7 +11,7 @@ export interface SourceRulePage extends ExtractedSourcePage {
   readonly sourceUrl: string;
   readonly sourcePath: string;
   readonly sourceOrder: number;
-  /** Full GitBook Markdown response, retained for audit and exact re-import. */
+  /** Markdown source page used to derive the authored content and hash. */
   readonly rawMarkdown: string;
 }
 
@@ -29,38 +29,24 @@ export function sha256(value: string): string {
 }
 
 /**
- * Remove only GitBook's generated access note, page-title line, and the
- * source's decorative CityLife logo. The raw response remains alongside this
- * extracted body. No content words, punctuation, or meaningful whitespace are
- * normalized.
+ * Extract a page title and its exact Markdown body. The H1 is metadata; all
+ * content after its blank-line boundary is preserved for the stored revision.
  */
 export function extractSourcePage(markdown: string): ExtractedSourcePage {
   const headingStart = markdown.search(/^# /m);
-  if (headingStart < 0) throw new Error('GitBook Markdown has no page H1.');
-
-  const generatedPreamble = markdown.slice(0, headingStart);
-  if (
-    !generatedPreamble.includes('llms.txt') ||
-    !generatedPreamble.includes('available as [Markdown]')
-  ) {
-    throw new Error('GitBook Markdown is missing its expected generated provenance note.');
-  }
+  if (headingStart < 0) throw new Error('Markdown page has no H1.');
 
   const lineEnd = markdown.indexOf('\n', headingStart);
-  if (lineEnd < 0) throw new Error('GitBook page H1 has no following content boundary.');
+  if (lineEnd < 0) throw new Error('Markdown page H1 has no following content boundary.');
   const heading = markdown.slice(headingStart, lineEnd).replace(/\r$/, '');
   const title = heading.slice(2);
-  if (title.length === 0) throw new Error('GitBook page H1 is empty.');
+  if (title.length === 0) throw new Error('Markdown page H1 is empty.');
 
   let bodyStart = lineEnd + 1;
   if (markdown.startsWith('\r\n', bodyStart)) bodyStart += 2;
   else if (markdown.startsWith('\n', bodyStart)) bodyStart += 1;
 
-  let content = markdown.slice(bodyStart);
-  const decorativeFigure =
-    /^(?:<figure>[\s\S]*?city_life_logo[\s\S]*?<\/figure>|<img\b[^\r\n]*city_life_logo[^\r\n]*>)(?:\r?\n){1,2}/i;
-  content = content.replace(decorativeFigure, '');
-
+  const content = markdown.slice(bodyStart);
   return { title, content, contentHash: sha256(`${title}\n${content}`) };
 }
 
