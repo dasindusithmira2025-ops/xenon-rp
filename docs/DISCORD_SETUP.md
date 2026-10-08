@@ -155,8 +155,9 @@ persistent bot process and run:
    the owner can grant or revoke SECURITY_ADMIN. Manage all other trust using
    `/security trust add`, `/security trust remove`, and `/security trust list`.
 4. `/security automod status`, then `/security automod sync`. Xenon changes only
-   rules whose IDs are recorded as Xenon-owned; same-name collisions are
-   reported and left untouched.
+   rules whose IDs are recorded as Xenon-owned; unowned rules and same-name
+   collisions remain untouched. Sync reports trigger-capacity skips and
+   continues independent rule types when slots are available.
 5. Configure `/security config channels`, `/security config raid-thresholds`
    (join thresholds plus optional `recovery_minutes` and `slowmode_seconds`),
    `/security config spam` (limits and exemptions), `/security config link-policy`

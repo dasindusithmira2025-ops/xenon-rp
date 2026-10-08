@@ -2,7 +2,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { Collection, type Guild } from 'discord.js';
+import { AutoModerationRuleTriggerType, Collection, DiscordAPIError, type Guild } from 'discord.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { JsonDiscordRuntimeStore } from '../runtime-store';
@@ -10,6 +10,10 @@ import { JsonDiscordRuntimeStore } from '../runtime-store';
 import { synchronizeAutoModRules } from './automod';
 
 const guildId = '12345678901234567';
+
+function apiError(code: number, message: string): DiscordAPIError {
+  return new DiscordAPIError({ code, message }, code, 400, 'POST', 'url', {});
+}
 
 function fakeGuild() {
   let sequence = 90000000000000100n;
@@ -80,6 +84,8 @@ describe('Xenon-owned AutoMod reconciliation', () => {
     const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
     const fake = fakeGuild();
     const first = await synchronizeAutoModRules(fake.guild, store);
+    expect(first.xenonOwnedRuleCount).toBe(3);
+    expect(first.existingServerRules).toEqual([]);
     expect(first.created).toEqual([
       'XENON | Mention Spam',
       'XENON | Invite Protection',
@@ -117,7 +123,7 @@ describe('Xenon-owned AutoMod reconciliation', () => {
     fake.rules.set('90000000000000001', {
       id: '90000000000000001',
       name: 'XENON | Mention Spam',
-      triggerType: 1,
+      triggerType: AutoModerationRuleTriggerType.MentionSpam,
       enabled: false,
     });
     const result = await synchronizeAutoModRules(fake.guild, store);
@@ -126,6 +132,119 @@ describe('Xenon-owned AutoMod reconciliation', () => {
     expect(result.conflicts).toEqual(
       expect.arrayContaining([expect.stringContaining('ownership is not recorded')]),
     );
+    expect(result.skipped).toEqual(
+      expect.arrayContaining([expect.stringContaining('XENON | Mention Spam: skipped')]),
+    );
+  });
+
+  it('preserves a differently named server mention rule and syncs independent rule types', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-automod-mention-limit-'));
+    const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+    const fake = fakeGuild();
+    const existingRule = {
+      id: '80000000000000001',
+      name: 'Server Mention Guard',
+      triggerType: AutoModerationRuleTriggerType.MentionSpam,
+      enabled: true,
+    };
+    fake.rules.set(existingRule.id, existingRule);
+
+    const result = await synchronizeAutoModRules(fake.guild, store);
+
+    expect(fake.rules.get(existingRule.id)).toEqual(existingRule);
+    expect(fake.edit).not.toHaveBeenCalled();
+    expect(fake.create.mock.calls.map(([options]) => options.name)).toEqual([
+      'XENON | Invite Protection',
+      'XENON | Security Keywords',
+    ]);
+    expect(result.skipped).toEqual(
+      expect.arrayContaining([expect.stringContaining('XENON | Mention Spam: skipped')]),
+    );
+    expect(result.conflicts.join(' ')).toContain(existingRule.name);
+    expect(result.existingServerRules).toEqual([
+      {
+        name: existingRule.name,
+        triggerType: existingRule.triggerType,
+        enabled: existingRule.enabled,
+      },
+    ]);
+    expect(result.xenonOwnedRuleCount).toBe(2);
+    expect((await store.getGuild(guildId)).security.config.ownedAutoModRuleIds).toHaveLength(2);
+  });
+
+  it('respects the keyword trigger limit while syncing independent mention protection', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-automod-keyword-limit-'));
+    const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+    const fake = fakeGuild();
+    for (let index = 0; index < 5; index += 1) {
+      const id = `8000000000000000${String(index + 1)}`;
+      fake.rules.set(id, {
+        id,
+        name: `Server Keyword Rule ${String(index + 1)}`,
+        triggerType: AutoModerationRuleTriggerType.Keyword,
+        enabled: index !== 0,
+      });
+    }
+
+    const result = await synchronizeAutoModRules(fake.guild, store);
+
+    expect(fake.create.mock.calls.map(([options]) => options.name)).toEqual([
+      'XENON | Mention Spam',
+      'XENON | Invite Protection',
+    ]);
+    expect(result.skipped).toEqual(
+      expect.arrayContaining([expect.stringContaining('XENON | Security Keywords: skipped')]),
+    );
+    expect(result.existingServerRules).toHaveLength(5);
+    expect(result.xenonOwnedRuleCount).toBe(2);
+  });
+
+  it('continues other rules when Discord rejects one create request', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-automod-create-error-'));
+    const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+    const fake = fakeGuild();
+    fake.create.mockRejectedValueOnce(
+      apiError(50_035, 'AUTO_MODERATION_MAX_RULES_OF_TYPE_EXCEEDED'),
+    );
+
+    const result = await synchronizeAutoModRules(fake.guild, store);
+
+    expect(result.created).toEqual(['XENON | Invite Protection', 'XENON | Security Keywords']);
+    expect(result.skipped.join(' ')).toContain('XENON | Mention Spam');
+    expect(result.conflicts.join(' ')).toContain('50035');
+    expect((await store.getGuild(guildId)).security.config.ownedAutoModRuleIds).toHaveLength(2);
+  });
+
+  it('continues updates and retains ownership when one Discord edit fails', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-automod-edit-error-'));
+    const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+    const fake = fakeGuild();
+    await synchronizeAutoModRules(fake.guild, store);
+    fake.edit.mockRejectedValueOnce(apiError(50_013, 'Missing Permissions'));
+
+    const result = await synchronizeAutoModRules(fake.guild, store);
+
+    expect(result.updated).toEqual(['XENON | Invite Protection', 'XENON | Security Keywords']);
+    expect(result.skipped.join(' ')).toContain('XENON | Mention Spam');
+    expect(result.conflicts.join(' ')).toContain('50013');
+    expect((await store.getGuild(guildId)).security.config.ownedAutoModRuleIds).toHaveLength(3);
+  });
+
+  it('returns an unavailable result when fetching server rules fails', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-automod-fetch-error-'));
+    const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+    const fake = fakeGuild();
+    vi.mocked(fake.guild.autoModerationRules.fetch).mockRejectedValueOnce(
+      apiError(50_001, 'Missing Access'),
+    );
+
+    const result = await synchronizeAutoModRules(fake.guild, store);
+
+    expect(result.unavailable).toContain('50001');
+    expect(result.xenonOwnedRuleCount).toBeNull();
+    expect(result.created).toEqual([]);
+    expect(fake.create).not.toHaveBeenCalled();
+    expect(fake.edit).not.toHaveBeenCalled();
   });
 
   it('builds rules from the latest persisted security configuration', async () => {

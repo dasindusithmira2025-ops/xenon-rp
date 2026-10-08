@@ -930,12 +930,21 @@ export async function handleSecurityCommand(
         const rules = await guild.autoModerationRules.fetch();
         const xenonIds = new Set(config.ownedAutoModRuleIds);
         const ownedRules = [...rules.values()].filter((rule) => xenonIds.has(rule.id));
+        const serverRules = [...rules.values()].filter((rule) => !xenonIds.has(rule.id));
         const unownedXenonRules = [...rules.values()].filter(
           (rule) => rule.name.startsWith('XENON |') && !xenonIds.has(rule.id),
         );
         await reply(
           interaction,
-          `Recorded Xenon-owned rules: ${ownedRules.length}/${config.ownedAutoModRuleIds.length}\n${ownedRules.map((rule) => `${rule.name} · ${rule.enabled ? 'enabled' : 'disabled'} · ${rule.id}`).join('\n') || 'None recorded'}\nUnowned same-prefix rules are left untouched: ${
+          `Xenon-owned rules: ${ownedRules.length} current / ${config.ownedAutoModRuleIds.length} tracked\n${ownedRules.map((rule) => `${rule.name} · ${rule.enabled ? 'enabled' : 'disabled'} · ${rule.id}`).join('\n') || 'None recorded'}\nExisting non-Xenon server rules: ${String(serverRules.length)} total, ${String(serverRules.filter((rule) => rule.enabled).length)} enabled\n${
+            serverRules
+              .slice(0, 10)
+              .map(
+                (rule) =>
+                  `${rule.name} · ${rule.enabled ? 'enabled' : 'disabled'} · trigger ${String(rule.triggerType)}`,
+              )
+              .join('\n') || 'None'
+          }${serverRules.length > 10 ? `\n${String(serverRules.length - 10)} more server rules` : ''}\nUnowned same-prefix Xenon-named rules are left untouched: ${
             unownedXenonRules
               .map((rule) => rule.name)
               .slice(0, 10)
@@ -945,9 +954,26 @@ export async function handleSecurityCommand(
         return;
       }
       const result = await service.syncAutoMod(guild);
+      const existingRuleCount = result.existingServerRules.length;
+      const enabledExistingRuleCount = result.existingServerRules.filter(
+        (rule) => rule.enabled,
+      ).length;
+      const existingRules =
+        result.unavailable === null
+          ? [
+              `${String(existingRuleCount)} total, ${String(enabledExistingRuleCount)} enabled`,
+              ...result.existingServerRules
+                .slice(0, 10)
+                .map(
+                  (rule) =>
+                    `${rule.name} · ${rule.enabled ? 'enabled' : 'disabled'} · trigger ${String(rule.triggerType)}`,
+                ),
+              ...(existingRuleCount > 10 ? [`${String(existingRuleCount - 10)} more`] : []),
+            ].join('; ')
+          : 'unavailable';
       await reply(
         interaction,
-        `Created: ${result.created.join(', ') || 'none'}\nUpdated: ${result.updated.join(', ') || 'none'}\nConflicts: ${result.conflicts.join('; ') || 'none'}`,
+        `Created: ${result.created.join(', ') || 'none'}\nUpdated: ${result.updated.join(', ') || 'none'}\nSkipped: ${result.skipped.join('; ') || 'none'}\nConflicts: ${result.conflicts.join('; ') || 'none'}\nXenon-owned rules after sync: ${result.xenonOwnedRuleCount === null ? 'unavailable' : String(result.xenonOwnedRuleCount)}\nExisting server-wide rules before sync (not Xenon-owned): ${existingRules}\nUnavailable: ${result.unavailable ?? 'none'}`,
       );
       return;
     }
@@ -1576,10 +1602,36 @@ async function setupSecurity(
   const automod = await service.syncAutoMod(guild).catch((error: unknown) => ({
     created: [],
     updated: [],
+    skipped: [],
     conflicts: [],
+    xenonOwnedRuleCount: null,
+    existingServerRules: [],
     unavailable: error instanceof Error ? error.message : 'AutoMod API unavailable',
   }));
-  return `Security setup complete. Created: ${created.join(', ') || 'none'}.\nChannels: alerts ${channels.alerts === null ? 'MISSING' : `<#${channels.alerts}>`}, audit ${channels.audit === null ? 'MISSING' : `<#${channels.audit}>`}, mod logs ${channels.modLogs === null ? 'MISSING' : `<#${channels.modLogs}>`}.\nQuarantine role (marker only; member-specific channel overwrites enforce restrictions): ${quarantineRoleId === null ? 'MISSING' : `<@&${quarantineRoleId}>`}.${unsafeQuarantineRole ? '\nExisting Xenon Quarantine role has permissions or is managed — remove them or delete it; marker disabled. The role was not modified.' : ''}\nAutoMod: created ${automod.created.join(', ') || 'none'}, conflicts ${automod.conflicts.join('; ') || 'none'}${automod.unavailable === null ? '' : `; unavailable: ${automod.unavailable}`}\nReview /security scan and verify new log-channel privacy before relying on automation.`;
+  const existingRuleCount = automod.existingServerRules.length;
+  const enabledExistingRuleCount = automod.existingServerRules.filter(
+    (rule) => rule.enabled,
+  ).length;
+  const existingServerRules =
+    automod.unavailable !== null
+      ? 'unavailable'
+      : [
+          `${String(existingRuleCount)} total, ${String(enabledExistingRuleCount)} enabled`,
+          ...automod.existingServerRules
+            .slice(0, 10)
+            .map((rule) => `${rule.name} (${rule.enabled ? 'enabled' : 'disabled'})`),
+          ...(existingRuleCount > 10 ? [`${String(existingRuleCount - 10)} more`] : []),
+        ].join(', ');
+  const automodSummary = [
+    `created ${automod.created.join(', ') || 'none'}`,
+    `updated ${automod.updated.join(', ') || 'none'}`,
+    `skipped ${automod.skipped.join('; ') || 'none'}`,
+    `conflicts ${automod.conflicts.join('; ') || 'none'}`,
+    `Xenon-owned rules: ${automod.xenonOwnedRuleCount === null ? 'unavailable' : String(automod.xenonOwnedRuleCount)}`,
+    `existing non-Xenon rules: ${existingServerRules}`,
+    ...(automod.unavailable === null ? [] : [`unavailable: ${automod.unavailable}`]),
+  ].join('; ');
+  return `Security setup complete. Created: ${created.join(', ') || 'none'}.\nChannels: alerts ${channels.alerts === null ? 'MISSING' : `<#${channels.alerts}>`}, audit ${channels.audit === null ? 'MISSING' : `<#${channels.audit}>`}, mod logs ${channels.modLogs === null ? 'MISSING' : `<#${channels.modLogs}>`}.\nQuarantine role (marker only; member-specific channel overwrites enforce restrictions): ${quarantineRoleId === null ? 'MISSING' : `<@&${quarantineRoleId}>`}.${unsafeQuarantineRole ? '\nExisting Xenon Quarantine role has permissions or is managed — remove them or delete it; marker disabled. The role was not modified.' : ''}\nAutoMod: ${automodSummary}\nReview /security scan and verify new log-channel privacy before relying on automation.`;
 }
 
 const MODE_SUMMARY: Record<EnforcementMode, string> = {

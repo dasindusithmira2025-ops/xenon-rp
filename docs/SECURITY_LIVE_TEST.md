@@ -169,11 +169,18 @@ warning30s:1 raid30s:2 critical30s:3 recovery_minutes:2 slowmode_seconds:10`
 
 ## 11. Native AutoMod reconciliation
 
-1. `/security automod sync` → three `XENON | …` rules created.
-2. Run again → updated, not duplicated.
-3. Create your own rule named `XENON | Mention Spam` manually → reported as a
-   conflict and left untouched.
-4. `/security automod status` matches Server Settings → AutoMod.
+1. On a clean test guild, `/security automod sync` → three `XENON | …` rules
+   created; run again → updated, not duplicated.
+2. On a disposable test guild with an unowned Mention Spam rule of another
+   name, sync leaves it untouched, reports the full trigger slot, and still
+   creates Invite Protection and Security Keywords if their Keyword capacity
+   is available.
+3. Fill the Keyword rule capacity on the test guild; sync reports skipped
+   rules and continues without failing the command.
+4. Create an unowned rule named `XENON | Mention Spam` → reported as a conflict
+   and left untouched.
+5. `/security automod status` distinguishes Xenon-owned rules from other
+   server-wide AutoMod rules.
 
 ## 12. Restart and persistent state
 

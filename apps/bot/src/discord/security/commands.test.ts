@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  AutoModerationRuleTriggerType,
   ChannelType,
   Collection,
   DiscordAPIError,
@@ -640,6 +641,68 @@ describe('security and moderation command behavior', () => {
     expect(lastReply(interaction)).toContain('released');
   });
 
+  it('reports created, skipped, conflicting, and existing server AutoMod rules', async () => {
+    const store = await makeStore();
+    const { guild } = moderationGuild(P.ManageGuild);
+    const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
+      group: 'automod',
+      subcommand: 'sync',
+    });
+    const service = fakeService({
+      syncAutoMod: vi.fn(() =>
+        Promise.resolve({
+          created: ['XENON | Invite Protection'],
+          updated: ['XENON | Security Keywords'],
+          skipped: ['XENON | Mention Spam: trigger limit reached'],
+          conflicts: ['Server Mention Guard was left untouched'],
+          xenonOwnedRuleCount: 2,
+          existingServerRules: [
+            {
+              name: 'Server Mention Guard',
+              triggerType: AutoModerationRuleTriggerType.MentionSpam,
+              enabled: true,
+            },
+          ],
+          unavailable: null,
+        }),
+      ),
+    });
+
+    await handleSecurityCommand(interaction, guild, store, service);
+
+    const response = lastReply(interaction);
+    expect(response).toContain('Created: XENON | Invite Protection');
+    expect(response).toContain('Updated: XENON | Security Keywords');
+    expect(response).toContain('Skipped: XENON | Mention Spam');
+    expect(response).toContain('Conflicts: Server Mention Guard');
+    expect(response).toContain('Xenon-owned rules after sync: 2');
+    expect(response).toContain('Existing server-wide rules before sync (not Xenon-owned)');
+  });
+
+  it('distinguishes existing server-wide rules from Xenon-owned AutoMod rules in status', async () => {
+    const store = await makeStore();
+    const externalRule = {
+      id: '80000000000000001',
+      name: 'Server Mention Guard',
+      triggerType: AutoModerationRuleTriggerType.MentionSpam,
+      enabled: true,
+    };
+    const rules = new Collection([[externalRule.id, externalRule]]);
+    const { guild } = moderationGuild(P.ManageGuild, {
+      autoModerationRules: { fetch: vi.fn(() => Promise.resolve(rules)) },
+    });
+    const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
+      group: 'automod',
+      subcommand: 'status',
+    });
+
+    await handleSecurityCommand(interaction, guild, store, fakeService({}));
+
+    expect(lastReply(interaction)).toContain('Xenon-owned rules: 0 current / 0 tracked');
+    expect(lastReply(interaction)).toContain('Existing non-Xenon server rules: 1 total, 1 enabled');
+    expect(lastReply(interaction)).toContain(externalRule.name);
+  });
+
   it('creates nothing on repeated setup when the guild is already configured', async () => {
     const store = await makeStore();
     const channelOf = (id: string, name: string) => ({
@@ -675,7 +738,15 @@ describe('security and moderation command behavior', () => {
     const service = fakeService({
       saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
       syncAutoMod: vi.fn(() =>
-        Promise.resolve({ created: [], updated: [], conflicts: [], unavailable: null }),
+        Promise.resolve({
+          created: [],
+          updated: [],
+          skipped: [],
+          conflicts: [],
+          xenonOwnedRuleCount: 0,
+          existingServerRules: [],
+          unavailable: null,
+        }),
       ),
     });
 
@@ -726,7 +797,15 @@ describe('security and moderation command behavior', () => {
     const service = fakeService({
       saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
       syncAutoMod: vi.fn(() =>
-        Promise.resolve({ created: [], updated: [], conflicts: [], unavailable: null }),
+        Promise.resolve({
+          created: [],
+          updated: [],
+          skipped: [],
+          conflicts: [],
+          xenonOwnedRuleCount: 0,
+          existingServerRules: [],
+          unavailable: null,
+        }),
       ),
     });
     const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
