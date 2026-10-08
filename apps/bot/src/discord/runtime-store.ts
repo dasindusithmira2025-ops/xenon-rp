@@ -1,9 +1,22 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { once } from 'node:events';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve } from 'node:path';
+import { link, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { createServer, type Server } from 'node:net';
+import { hostname } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 
-import type { BlueprintFeatures, RegistryEntry, RegistryStore } from '@xenon/discord/provisioning/pure';
+import type {
+  BlueprintFeatures,
+  RegistryEntry,
+  RegistryStore,
+} from '@xenon/discord/provisioning/pure';
+
+import {
+  EMPTY_SECURITY_STATE,
+  validateSecurityState,
+  type SecurityGuildState,
+} from './security/model';
 
 export interface TemporaryRoomRecord {
   readonly guildId: string;
@@ -91,6 +104,7 @@ export interface DiscordGuildRuntimeState {
   readonly tickets: Readonly<Record<string, TicketRecord>>;
   /** Last issued ticket number; only ever increases so references are never reused. */
   readonly ticketSequence: number;
+  readonly security: SecurityGuildState;
 }
 
 /** Storage contract so the PostgreSQL service can replace JSON without feature changes. */
@@ -137,21 +151,50 @@ const EMPTY_GUILD: DiscordGuildRuntimeState = {
   tickets: {},
   ticketSequence: 0,
   ticketCategories: {},
+  security: EMPTY_SECURITY_STATE,
 };
 
 const TICKET_ID = /^XN-TK-(\d{4,9})$/;
 const TICKET_TYPE = /^[A-Z_]{1,32}$/;
 
-const SENSITIVE_KEY = /(?:secret|token|password|credential|database|redis|auth|pepper|private.?key)/i;
+const SENSITIVE_KEY =
+  /(?:secret|token|password|credential|database|redis|auth|pepper|private.?key)/i;
 const SNOWFLAKE = /^\d{17,20}$/;
 const RESOURCE_TYPES = new Set([
-  'ROLE', 'CATEGORY', 'CHANNEL', 'EMOJI', 'STICKER', 'PANEL', 'SPACE', 'AUTOMOD',
+  'ROLE',
+  'CATEGORY',
+  'CHANNEL',
+  'EMOJI',
+  'STICKER',
+  'PANEL',
+  'SPACE',
+  'AUTOMOD',
 ]);
 const FEATURES = new Set<keyof BlueprintFeatures>([
-  'faq', 'introductions', 'media', 'clips', 'screenshots', 'offTopic', 'suggestions',
-  'communityHelp', 'departmentsDirectory', 'cityGuide', 'businessDirectory', 'laws', 'commands',
-  'whitelistInfo', 'recruitment', 'patchNotes', 'events', 'voiceLounges', 'tempVoice',
-  'languageRoles', 'applicationReview', 'staffResources', 'automod', 'livePresence',
+  'faq',
+  'introductions',
+  'media',
+  'clips',
+  'screenshots',
+  'offTopic',
+  'suggestions',
+  'communityHelp',
+  'departmentsDirectory',
+  'cityGuide',
+  'businessDirectory',
+  'laws',
+  'commands',
+  'whitelistInfo',
+  'recruitment',
+  'patchNotes',
+  'events',
+  'voiceLounges',
+  'tempVoice',
+  'languageRoles',
+  'applicationReview',
+  'staffResources',
+  'automod',
+  'livePresence',
 ]);
 
 export function defaultRuntimeStorePath(start = process.cwd()): string {
@@ -163,6 +206,268 @@ export function defaultRuntimeStorePath(start = process.cwd()): string {
     if (parent === current) return join(resolve(start), '.data', 'discord-runtime.json');
     current = parent;
   }
+}
+
+interface InstanceLockRecord {
+  readonly pid: number;
+  readonly host: string;
+  readonly token: string;
+  readonly startedAt: string;
+  readonly heartbeatAt: string;
+}
+
+export interface RuntimeInstanceLockOptions {
+  /** Called once if another runtime has taken over the lock; the holder must stop. */
+  readonly onLost?: (detail: string) => void;
+  readonly heartbeatMs?: number;
+  readonly leaseMs?: number;
+}
+
+export interface RuntimeInstanceLock {
+  /** Renews the lease now (also runs every `heartbeatMs`); reports a takeover via `onLost`. */
+  readonly renew: () => Promise<void>;
+  readonly release: () => Promise<void>;
+}
+
+/** Tokens of locks this process currently holds; never reclaimable as same-PID stale. */
+const heldLockTokens = new Set<string>();
+
+/**
+ * Enforces one live Discord runtime per state file. Two processes sharing a store
+ * would duplicate destructive security responses and race persisted journals.
+ *
+ * - Same host: an OS-owned mutex (Windows named pipe / Linux abstract socket) is
+ *   held for the process lifetime and released by the OS on crash, so same-host
+ *   exclusivity has no stale-lock race. Other platforms fall back to PID checks.
+ * - Across hosts/containers sharing the volume: the lock file is a lease renewed
+ *   every `heartbeatMs`; another host may take it only after `leaseMs` without a
+ *   heartbeat. A holder that finds a foreign token on renewal calls `onLost`.
+ * - The file is published atomically (hard link of a fully written draft); an
+ *   unreadable lock fails closed.
+ */
+export async function acquireRuntimeInstanceLock(
+  storePath = defaultRuntimeStorePath(),
+  options: RuntimeInstanceLockOptions = {},
+): Promise<RuntimeInstanceLock> {
+  const heartbeatMs = options.heartbeatMs ?? 30_000;
+  const leaseMs = options.leaseMs ?? heartbeatMs * 4;
+  await mkdir(dirname(storePath), { recursive: true });
+  // Canonical path: symlinked/junctioned aliases of one store must share one mutex.
+  const lockPath = join(await realpath(dirname(storePath)), `${basename(storePath)}.lock`);
+  const mutex = await holdHostMutex(lockPath);
+  const startedAt = new Date().toISOString();
+  const record: InstanceLockRecord = {
+    pid: process.pid,
+    host: hostname(),
+    token: randomUUID(),
+    startedAt,
+    heartbeatAt: startedAt,
+  };
+  try {
+    await claimLockFile(lockPath, record, mutex !== null, leaseMs);
+  } catch (error) {
+    await closeServer(mutex);
+    throw error;
+  }
+  heldLockTokens.add(record.token);
+  let lost = false;
+  // Monotonic time of the last renewal known to have landed inside the lease.
+  let renewedAt = performance.now();
+  const fence = (detail: string): void => {
+    lost = true;
+    options.onLost?.(detail);
+  };
+  const renew = async (): Promise<void> => {
+    if (lost) return;
+    const attemptAt = performance.now();
+    if (attemptAt - renewedAt > leaseMs) {
+      fence('Runtime lock lease was not renewed in time; another runtime may have taken over.');
+      return;
+    }
+    const held = await readLock(lockPath);
+    if (typeof held !== 'object' || held.token !== record.token) {
+      fence(
+        typeof held === 'object'
+          ? `Runtime lock taken over by pid ${String(held.pid)} on ${held.host}.`
+          : `Runtime lock file is ${held}.`,
+      );
+      return;
+    }
+    const renewal = `${lockPath}.${record.token}.renew`;
+    await writeFile(renewal, JSON.stringify({ ...record, heartbeatAt: new Date().toISOString() }), {
+      mode: 0o600,
+    });
+    // Self-fence: never overwrite the lease once another host could already own it.
+    if (performance.now() - renewedAt > leaseMs - heartbeatMs) {
+      await rm(renewal, { force: true });
+      fence(
+        'Runtime lock renewal stalled past its safety margin; stopping instead of overwriting.',
+      );
+      return;
+    }
+    await rename(renewal, lockPath);
+    renewedAt = attemptAt;
+  };
+  const timer = setInterval(() => {
+    // A failed renewal is retried next tick; persistent failure surfaces as a takeover.
+    void renew().catch(() => undefined);
+  }, heartbeatMs);
+  timer.unref();
+  return {
+    renew,
+    release: async () => {
+      clearInterval(timer);
+      heldLockTokens.delete(record.token);
+      const held = await readLock(lockPath);
+      if (typeof held === 'object' && held.token === record.token)
+        await rm(lockPath, { force: true });
+      await closeServer(mutex);
+    },
+  };
+}
+
+async function holdHostMutex(lockPath: string): Promise<Server | null> {
+  const key = process.platform === 'win32' ? resolve(lockPath).toLowerCase() : resolve(lockPath);
+  const name = `xenon-runtime-${createHash('sha256').update(key).digest('hex').slice(0, 32)}`;
+  const address =
+    process.platform === 'win32'
+      ? `\\\\.\\pipe\\${name}`
+      : process.platform === 'linux'
+        ? `\0${name}`
+        : null;
+  if (address === null) return null;
+  const server = createServer((socket) => {
+    socket.destroy();
+  });
+  try {
+    server.listen(address);
+    await once(server, 'listening');
+  } catch (error) {
+    if (isErrno(error, 'EADDRINUSE'))
+      throw new Error(
+        `Another Xenon Discord runtime on this host is using ${lockPath}; refusing to start a second instance.`,
+        { cause: error },
+      );
+    throw error;
+  }
+  server.unref();
+  return server;
+}
+
+async function closeServer(server: Server | null): Promise<void> {
+  if (server === null) return;
+  server.close();
+  await once(server, 'close');
+}
+
+async function claimLockFile(
+  lockPath: string,
+  record: InstanceLockRecord,
+  hostExclusive: boolean,
+  leaseMs: number,
+): Promise<void> {
+  const draft = `${lockPath}.${record.token}.tmp`;
+  await writeFile(draft, JSON.stringify(record), { flag: 'wx', mode: 0o600 });
+  try {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        await link(draft, lockPath);
+        return;
+      } catch (error) {
+        if (!isErrno(error, 'EEXIST')) throw error;
+      }
+      const existing = await readLock(lockPath);
+      if (existing === 'missing') continue;
+      if (existing === 'malformed')
+        throw new Error(
+          `The runtime instance lock ${lockPath} is unreadable. Confirm no Xenon Discord runtime is running, then delete it.`,
+        );
+      if (!isStaleLock(existing, hostExclusive, leaseMs))
+        throw new Error(
+          `Another Xenon Discord runtime holds ${lockPath} (pid ${String(existing.pid)} on ${existing.host}, last heartbeat ${existing.heartbeatAt}). Stop it first, or wait for its lease to expire.`,
+        );
+      await reclaimStaleLock(lockPath, existing.token);
+    }
+    throw new Error(`Could not acquire the runtime instance lock at ${lockPath}.`);
+  } finally {
+    await rm(draft, { force: true });
+  }
+}
+
+/**
+ * Moves a stale lock aside; if a competing runtime replaced it meanwhile, puts it back.
+ * A displaced holder that cannot be restored detects the foreign token on its next renewal.
+ */
+async function reclaimStaleLock(lockPath: string, staleToken: string): Promise<void> {
+  const tomb = `${lockPath}.${randomUUID()}.stale`;
+  try {
+    await rename(lockPath, tomb);
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return;
+    throw error;
+  }
+  try {
+    const moved = await readLock(tomb);
+    if (typeof moved === 'object' && moved.token === staleToken) return;
+    await link(tomb, lockPath).catch((error: unknown) => {
+      if (!isErrno(error, 'EEXIST')) throw error;
+    });
+    throw new Error(
+      `Another Xenon Discord runtime acquired ${lockPath} concurrently; refusing to start a second instance.`,
+    );
+  } finally {
+    await rm(tomb, { force: true });
+  }
+}
+
+async function readLock(lockPath: string): Promise<InstanceLockRecord | 'missing' | 'malformed'> {
+  let text: string;
+  try {
+    text = await readFile(lockPath, 'utf8');
+  } catch (error) {
+    if (isErrno(error, 'ENOENT')) return 'missing';
+    throw error;
+  }
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      'pid' in parsed &&
+      'host' in parsed &&
+      'token' in parsed &&
+      'startedAt' in parsed &&
+      'heartbeatAt' in parsed &&
+      Number.isInteger(parsed.pid) &&
+      typeof parsed.host === 'string' &&
+      typeof parsed.token === 'string' &&
+      typeof parsed.startedAt === 'string' &&
+      typeof parsed.heartbeatAt === 'string' &&
+      Number.isFinite(Date.parse(parsed.heartbeatAt))
+    )
+      return parsed as InstanceLockRecord;
+  } catch {
+    // Fall through: an unparseable lock fails closed.
+  }
+  return 'malformed';
+}
+
+function isStaleLock(lock: InstanceLockRecord, hostExclusive: boolean, leaseMs: number): boolean {
+  if (Date.now() - Date.parse(lock.heartbeatAt) > leaseMs) return true;
+  if (lock.host !== hostname()) return false;
+  // Holding the host mutex proves no live runtime on this host owns the file.
+  if (hostExclusive) return true;
+  if (lock.pid === process.pid) return !heldLockTokens.has(lock.token);
+  try {
+    process.kill(lock.pid, 0);
+    return false;
+  } catch (error) {
+    return isErrno(error, 'ESRCH');
+  }
+}
+
+function isErrno(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code;
 }
 
 /** Local, atomic persistence for Discord-owned state only. Never accepts secrets. */
@@ -216,10 +521,7 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
     };
   }
 
-  public async saveFeatures(
-    guildId: string,
-    features: Partial<BlueprintFeatures>,
-  ): Promise<void> {
+  public async saveFeatures(guildId: string, features: Partial<BlueprintFeatures>): Promise<void> {
     await this.updateGuild(guildId, (state) => ({ ...state, features }));
   }
 
@@ -248,7 +550,11 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
     await this.updateGuild(guildId, (state) => ({ ...state, ticketConfig: config }));
   }
 
-  public async saveTicketCategory(guildId: string, ticketType: string, categoryId: string): Promise<void> {
+  public async saveTicketCategory(
+    guildId: string,
+    ticketType: string,
+    categoryId: string,
+  ): Promise<void> {
     assertSnowflake(categoryId, 'categoryId');
     if (!TICKET_TYPE.test(ticketType)) throw new Error('Invalid ticket type.');
     await this.updateGuild(guildId, (state) => ({
@@ -297,7 +603,11 @@ export class JsonDiscordRuntimeStore implements DiscordRuntimeStore {
     return closed;
   }
 
-  public async claimTicket(guildId: string, ticketId: string, staffId: string): Promise<TicketRecord | null> {
+  public async claimTicket(
+    guildId: string,
+    ticketId: string,
+    staffId: string,
+  ): Promise<TicketRecord | null> {
     assertSnowflake(staffId, 'staffId');
     let claimed: TicketRecord | null = null;
     await this.updateGuild(guildId, (state) => {
@@ -360,12 +670,15 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
     throw new Error('Invalid Discord guild runtime state.');
   const entries = value.entries.map((entry) => {
     if (
-      !isRecord(entry) || typeof entry.logicalKey !== 'string' ||
+      !isRecord(entry) ||
+      typeof entry.logicalKey !== 'string' ||
       !RESOURCE_TYPES.has(String(entry.resourceType)) ||
       !(entry.discordId === null || typeof entry.discordId === 'string') ||
       !(entry.channelId === null || typeof entry.channelId === 'string') ||
-      typeof entry.managed !== 'boolean' || !isRecord(entry.metadata)
-    ) throw new Error('Invalid Discord resource registry entry.');
+      typeof entry.managed !== 'boolean' ||
+      !isRecord(entry.metadata)
+    )
+      throw new Error('Invalid Discord resource registry entry.');
     for (const key of ['contentHash', 'configurationHash', 'createdByRunId'])
       if (!(entry[key] === null || typeof entry[key] === 'string'))
         throw new Error(`Invalid Discord resource registry field ${key}.`);
@@ -405,10 +718,13 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
     }
   }
   const storedSequence =
-    typeof value.ticketSequence === 'number' && Number.isSafeInteger(value.ticketSequence) && value.ticketSequence >= 0
+    typeof value.ticketSequence === 'number' &&
+    Number.isSafeInteger(value.ticketSequence) &&
+    value.ticketSequence >= 0
       ? value.ticketSequence
       : 0;
-  if (strict && storedSequence !== value.ticketSequence) throw new Error('Invalid ticket sequence.');
+  if (strict && storedSequence !== value.ticketSequence)
+    throw new Error('Invalid ticket sequence.');
   // Never hand out a reference that already exists, even if the counter was lost.
   const ticketSequence = Object.keys(tickets).reduce(
     (highest, ticketId) => Math.max(highest, Number(TICKET_ID.exec(ticketId)?.[1] ?? 0)),
@@ -420,11 +736,16 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
       if (strict) throw new Error('Invalid ticket categories.');
     } else {
       for (const [ticketType, categoryId] of Object.entries(value.ticketCategories)) {
-        if (TICKET_TYPE.test(ticketType) && isSnowflake(categoryId)) ticketCategories[ticketType] = categoryId;
+        if (TICKET_TYPE.test(ticketType) && isSnowflake(categoryId))
+          ticketCategories[ticketType] = categoryId;
         else if (strict) throw new Error('Invalid ticket category entry.');
       }
     }
   }
+  const security =
+    value.security === undefined
+      ? EMPTY_SECURITY_STATE
+      : validateSecurityState(value.security, strict);
   return {
     entries,
     features,
@@ -434,6 +755,7 @@ function validateGuild(value: unknown, strict: boolean): DiscordGuildRuntimeStat
     ticketCategories,
     tickets,
     ticketSequence,
+    security,
   };
 }
 
@@ -453,7 +775,11 @@ function parseWelcome(value: Record<string, unknown>, strict: boolean): WelcomeC
     return base;
   }
   const raw = value.welcome;
-  const pick = <T>(key: keyof WelcomeConfig, valid: (candidate: unknown) => candidate is T, fallback: T): T => {
+  const pick = <T>(
+    key: keyof WelcomeConfig,
+    valid: (candidate: unknown) => candidate is T,
+    fallback: T,
+  ): T => {
     if (valid(raw[key])) return raw[key];
     if (strict) throw new Error(`Invalid welcome setting ${key}.`);
     return fallback;
@@ -462,10 +788,15 @@ function parseWelcome(value: Record<string, unknown>, strict: boolean): WelcomeC
   const isOptionalSnowflake = (candidate: unknown): candidate is string | null =>
     candidate === null || isSnowflake(candidate);
   const isDelay = (candidate: unknown): candidate is number =>
-    typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0 && candidate <= MAX_WELCOME_DELETE_SECONDS;
+    typeof candidate === 'number' &&
+    Number.isInteger(candidate) &&
+    candidate >= 0 &&
+    candidate <= MAX_WELCOME_DELETE_SECONDS;
   const isMessage = (candidate: unknown): candidate is string | null =>
     candidate === null ||
-    (typeof candidate === 'string' && candidate.trim().length > 0 && candidate.length <= MAX_WELCOME_MESSAGE_LENGTH);
+    (typeof candidate === 'string' &&
+      candidate.trim().length > 0 &&
+      candidate.length <= MAX_WELCOME_MESSAGE_LENGTH);
   return {
     enabled: pick('enabled', isBoolean, base.enabled),
     channelId: pick('channelId', isOptionalSnowflake, null),
@@ -473,7 +804,10 @@ function parseWelcome(value: Record<string, unknown>, strict: boolean): WelcomeC
     rulesChannelId: pick('rulesChannelId', isOptionalSnowflake, null),
     rolesChannelId: pick('rolesChannelId', isOptionalSnowflake, null),
     // Added after the first WelcomeConfig release; absent in those documents.
-    whitelistChannelId: raw.whitelistChannelId === undefined ? null : pick('whitelistChannelId', isOptionalSnowflake, null),
+    whitelistChannelId:
+      raw.whitelistChannelId === undefined
+        ? null
+        : pick('whitelistChannelId', isOptionalSnowflake, null),
     initialRoleId: pick('initialRoleId', isOptionalSnowflake, null),
     showMemberCount: pick('showMemberCount', isBoolean, DEFAULT_WELCOME.showMemberCount),
     generateCard: pick('generateCard', isBoolean, DEFAULT_WELCOME.generateCard),
@@ -488,7 +822,8 @@ function parseTicketConfig(value: unknown): TicketConfig | null | undefined {
   if (!isRecord(value)) return undefined;
   const ids = [value.ticketPanelChannelId, value.ticketLogChannelId, value.ticketStaffRoleId];
   if (!ids.every(isSnowflake)) return undefined;
-  if (!(value.ticketPanelMessageId === null || isSnowflake(value.ticketPanelMessageId))) return undefined;
+  if (!(value.ticketPanelMessageId === null || isSnowflake(value.ticketPanelMessageId)))
+    return undefined;
   return {
     ticketPanelChannelId: value.ticketPanelChannelId as string,
     ticketLogChannelId: value.ticketLogChannelId as string,
@@ -542,7 +877,8 @@ function assertSafe(value: unknown, parent = ''): void {
   }
   if (!isRecord(value)) return;
   for (const [key, item] of Object.entries(value)) {
-    if (SENSITIVE_KEY.test(key)) throw new Error(`Sensitive field ${parent}${key} cannot be persisted.`);
+    if (SENSITIVE_KEY.test(key))
+      throw new Error(`Sensitive field ${parent}${key} cannot be persisted.`);
     assertSafe(item, `${parent}${key}.`);
   }
 }

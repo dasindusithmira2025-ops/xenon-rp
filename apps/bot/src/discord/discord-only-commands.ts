@@ -1,6 +1,7 @@
 import { ChannelType, MessageFlags, PermissionFlagsBits, SlashCommandBuilder } from 'discord.js';
 
 import { MAX_WELCOME_DELETE_SECONDS, MAX_WELCOME_MESSAGE_LENGTH } from './runtime-store';
+import { SECURITY_COMMANDS } from './security/commands';
 
 /** Channels a server owner may bind explicitly with `/xenon setup adopt`. */
 export const ADOPT_CHANNEL_OPTIONS = [
@@ -46,8 +47,12 @@ const xenon = new SlashCommandBuilder()
               .setRequired(true),
           ),
       )
-      .addSubcommand((sub) => sub.setName('validate').setDescription('Validate permissions and hierarchy'))
-      .addSubcommand((sub) => sub.setName('permissions').setDescription('Show server permission audit'))
+      .addSubcommand((sub) =>
+        sub.setName('validate').setDescription('Validate permissions and hierarchy'),
+      )
+      .addSubcommand((sub) =>
+        sub.setName('permissions').setDescription('Show server permission audit'),
+      )
       .addSubcommand((sub) => sub.setName('assets').setDescription('Show emoji and sticker assets'))
       .addSubcommand((sub) => {
         sub.setName('adopt').setDescription('Adopt existing server channels and roles');
@@ -85,7 +90,9 @@ const xenon = new SlashCommandBuilder()
       .setDescription('Configure Discord join messages')
       .addSubcommand((sub) => sub.setName('enable').setDescription('Enable welcome messages'))
       .addSubcommand((sub) => sub.setName('disable').setDescription('Disable welcome messages'))
-      .addSubcommand((sub) => sub.setName('dm-enable').setDescription('Send new members a welcome DM'))
+      .addSubcommand((sub) =>
+        sub.setName('dm-enable').setDescription('Send new members a welcome DM'),
+      )
       .addSubcommand((sub) => sub.setName('dm-disable').setDescription('Stop sending welcome DMs'))
       .addSubcommand((sub) =>
         sub
@@ -117,13 +124,19 @@ const xenon = new SlashCommandBuilder()
               .addChannelTypes(ChannelType.GuildText, ChannelType.GuildAnnouncement),
           )
           .addRoleOption((option) =>
-            option.setName('initial_role').setDescription('Harmless starter role given on join, such as Citizen'),
+            option
+              .setName('initial_role')
+              .setDescription('Harmless starter role given on join, such as Citizen'),
           )
-          .addBooleanOption((option) => option.setName('dm_enabled').setDescription('Also send new members a welcome DM'))
+          .addBooleanOption((option) =>
+            option.setName('dm_enabled').setDescription('Also send new members a welcome DM'),
+          )
           .addBooleanOption((option) =>
             option.setName('show_member_count').setDescription('Show the live member number'),
           )
-          .addBooleanOption((option) => option.setName('generate_card').setDescription('Attach the Xenon welcome card image'))
+          .addBooleanOption((option) =>
+            option.setName('generate_card').setDescription('Attach the Xenon welcome card image'),
+          )
           .addIntegerOption((option) =>
             option
               .setName('delete_after')
@@ -134,12 +147,18 @@ const xenon = new SlashCommandBuilder()
           .addStringOption((option) =>
             option
               .setName('message')
-              .setDescription('Custom text. Tokens: {mention} {displayName} {memberCount} {rulesChannel} {whitelistChannel}')
+              .setDescription(
+                'Custom text. Tokens: {mention} {displayName} {memberCount} {rulesChannel} {whitelistChannel}',
+              )
               .setMaxLength(MAX_WELCOME_MESSAGE_LENGTH),
           ),
       )
-      .addSubcommand((sub) => sub.setName('status').setDescription('Show welcome configuration and readiness'))
-      .addSubcommand((sub) => sub.setName('preview').setDescription('Privately preview the welcome using yourself')),
+      .addSubcommand((sub) =>
+        sub.setName('status').setDescription('Show welcome configuration and readiness'),
+      )
+      .addSubcommand((sub) =>
+        sub.setName('preview').setDescription('Privately preview the welcome using yourself'),
+      ),
   )
   .addSubcommandGroup((group) =>
     group
@@ -148,7 +167,9 @@ const xenon = new SlashCommandBuilder()
       .addSubcommand((sub) =>
         sub
           .setName('publish')
-          .setDescription('Create ticket categories, bind existing channels and post or update the ticket panel')
+          .setDescription(
+            'Create ticket categories, bind existing channels and post or update the ticket panel',
+          )
           .addChannelOption((option) =>
             option
               .setName('panel_channel')
@@ -164,10 +185,15 @@ const xenon = new SlashCommandBuilder()
               .setRequired(true),
           )
           .addRoleOption((option) =>
-            option.setName('staff_role').setDescription('Existing role that handles tickets').setRequired(true),
+            option
+              .setName('staff_role')
+              .setDescription('Existing role that handles tickets')
+              .setRequired(true),
           ),
       )
-      .addSubcommand((sub) => sub.setName('status').setDescription('Show ticket configuration and counts')),
+      .addSubcommand((sub) =>
+        sub.setName('status').setDescription('Show ticket configuration and counts'),
+      ),
   )
   .toJSON();
 
@@ -175,31 +201,45 @@ const room = new SlashCommandBuilder()
   .setName('room')
   .setDescription('Control the temporary voice room you own')
   .addSubcommand((sub) =>
-    sub.setName('rename').setDescription('Rename your room').addStringOption((option) =>
-      option.setName('name').setDescription('New name').setRequired(true).setMaxLength(32),
-    ),
+    sub
+      .setName('rename')
+      .setDescription('Rename your room')
+      .addStringOption((option) =>
+        option.setName('name').setDescription('New name').setRequired(true).setMaxLength(32),
+      ),
   )
   .addSubcommand((sub) =>
-    sub.setName('limit').setDescription('Set room capacity').addIntegerOption((option) =>
-      option.setName('size').setDescription('0-25').setMinValue(0).setMaxValue(25).setRequired(true),
-    ),
+    sub
+      .setName('limit')
+      .setDescription('Set room capacity')
+      .addIntegerOption((option) =>
+        option
+          .setName('size')
+          .setDescription('0-25')
+          .setMinValue(0)
+          .setMaxValue(25)
+          .setRequired(true),
+      ),
   )
   .addSubcommand((sub) => sub.setName('lock').setDescription('Lock your room'))
   .addSubcommand((sub) => sub.setName('unlock').setDescription('Unlock your room'))
   .addSubcommand((sub) =>
-    sub.setName('permit').setDescription('Allow someone into a locked room').addUserOption((option) =>
-      option.setName('member').setDescription('Who').setRequired(true),
-    ),
+    sub
+      .setName('permit')
+      .setDescription('Allow someone into a locked room')
+      .addUserOption((option) => option.setName('member').setDescription('Who').setRequired(true)),
   )
   .addSubcommand((sub) =>
-    sub.setName('remove').setDescription('Disconnect someone from your room').addUserOption((option) =>
-      option.setName('member').setDescription('Who').setRequired(true),
-    ),
+    sub
+      .setName('remove')
+      .setDescription('Disconnect someone from your room')
+      .addUserOption((option) => option.setName('member').setDescription('Who').setRequired(true)),
   )
   .addSubcommand((sub) =>
-    sub.setName('transfer').setDescription('Transfer your room to someone inside').addUserOption((option) =>
-      option.setName('member').setDescription('Who').setRequired(true),
-    ),
+    sub
+      .setName('transfer')
+      .setDescription('Transfer your room to someone inside')
+      .addUserOption((option) => option.setName('member').setDescription('Who').setRequired(true)),
   )
   .toJSON();
 
@@ -207,37 +247,79 @@ export const DISABLED_PLATFORM_RESPONSE =
   'Xenon Platform integration is not enabled on this deployment.';
 
 export function respondPlatformUnavailable(interaction: {
-  readonly reply: (payload: { readonly content: string; readonly flags: MessageFlags.Ephemeral }) => Promise<unknown>;
+  readonly reply: (payload: {
+    readonly content: string;
+    readonly flags: MessageFlags.Ephemeral;
+  }) => Promise<unknown>;
 }): Promise<unknown> {
   return interaction.reply({ content: DISABLED_PLATFORM_RESPONSE, flags: MessageFlags.Ephemeral });
 }
 
 export const DISCORD_ONLY_COMMANDS = [
-  new SlashCommandBuilder().setName('status').setDescription('Show Discord bot and guild status').toJSON(),
-  new SlashCommandBuilder().setName('profile').setDescription('Show your Xenon platform profile').addUserOption((option) =>
-    option.setName('member').setDescription('Whose profile to show').setRequired(false),
-  ).toJSON(),
-  new SlashCommandBuilder().setName('application').setDescription('Show a Xenon platform application').addStringOption((option) =>
-    option.setName('reference').setDescription('Application reference').setRequired(false),
-  ).toJSON(),
-  new SlashCommandBuilder().setName('review').setDescription('Review a platform application').addStringOption((option) =>
-    option.setName('reference').setDescription('Application reference').setRequired(true),
-  ).toJSON(),
-  new SlashCommandBuilder().setName('link').setDescription('Link your FiveM identity').addStringOption((option) =>
-    option.setName('code').setDescription('Link code').setRequired(true),
-  ).toJSON(),
-  new SlashCommandBuilder().setName('queue').setDescription('Show the platform application queue').toJSON(),
-  new SlashCommandBuilder().setName('player').setDescription('Look up a platform player').addStringOption((option) =>
-    option.setName('reference').setDescription('Player reference').setRequired(true),
-  ).toJSON(),
+  new SlashCommandBuilder()
+    .setName('status')
+    .setDescription('Show Discord bot and guild status')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('profile')
+    .setDescription('Show your Xenon platform profile')
+    .addUserOption((option) =>
+      option.setName('member').setDescription('Whose profile to show').setRequired(false),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('application')
+    .setDescription('Show a Xenon platform application')
+    .addStringOption((option) =>
+      option.setName('reference').setDescription('Application reference').setRequired(false),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('review')
+    .setDescription('Review a platform application')
+    .addStringOption((option) =>
+      option.setName('reference').setDescription('Application reference').setRequired(true),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('link')
+    .setDescription('Link your FiveM identity')
+    .addStringOption((option) =>
+      option.setName('code').setDescription('Link code').setRequired(true),
+    )
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('queue')
+    .setDescription('Show the platform application queue')
+    .toJSON(),
+  new SlashCommandBuilder()
+    .setName('player')
+    .setDescription('Look up a platform player')
+    .addStringOption((option) =>
+      option.setName('reference').setDescription('Player reference').setRequired(true),
+    )
+    .toJSON(),
   new SlashCommandBuilder()
     .setName('announce')
     .setDescription('Post an announcement to Xenon announcements')
-    .addStringOption((option) => option.setName('title').setDescription('Announcement title').setRequired(true).setMaxLength(100))
-    .addStringOption((option) => option.setName('message').setDescription('Announcement message').setRequired(true).setMaxLength(3500))
+    .addStringOption((option) =>
+      option
+        .setName('title')
+        .setDescription('Announcement title')
+        .setRequired(true)
+        .setMaxLength(100),
+    )
+    .addStringOption((option) =>
+      option
+        .setName('message')
+        .setDescription('Announcement message')
+        .setRequired(true)
+        .setMaxLength(3500),
+    )
     .toJSON(),
   xenon,
   room,
+  ...SECURITY_COMMANDS,
 ];
 
 export function isPlatformDataCommand(name: string): boolean {

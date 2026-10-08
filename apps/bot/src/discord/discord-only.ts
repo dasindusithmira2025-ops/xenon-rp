@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import {
   ActivityType,
+  ApplicationFlags,
   ChannelType,
   Client,
   Events,
@@ -52,9 +53,24 @@ import {
   publishTicketPanel,
   ticketStatus,
 } from './discord-only-tickets';
-import { handleWelcomeCommand, handleWelcomeJoin, membersIntentAvailable } from './discord-only-welcome';
+import {
+  handleWelcomeCommand,
+  handleWelcomeJoin,
+  membersIntentAvailable,
+} from './discord-only-welcome';
 import { discordGuildAdapter } from './provisioning/guild-adapter';
-import { JsonDiscordRuntimeStore, type DiscordGuildRuntimeState, type DiscordRuntimeStore } from './runtime-store';
+import {
+  acquireRuntimeInstanceLock,
+  JsonDiscordRuntimeStore,
+  type DiscordGuildRuntimeState,
+  type DiscordRuntimeStore,
+} from './runtime-store';
+import {
+  handleModerationCommand,
+  handleSecurityCommand,
+  isSecurityOrModerationCommand,
+} from './security/commands';
+import { SecurityService } from './security/service';
 
 const MAX_TEMP_ROOMS = 25;
 const roomCreationTime = new Map<string, number>();
@@ -68,7 +84,10 @@ interface StandaloneContext {
   readonly plan: ReturnType<typeof planGuild>;
   readonly emojis: ReadonlyMap<string, EmojiRef>;
   readonly panelContext: PanelContext;
-  readonly render: (panel: DesiredPanel, emojiMap?: ReadonlyMap<string, EmojiRef>) => ReturnType<typeof renderPanel>;
+  readonly render: (
+    panel: DesiredPanel,
+    emojiMap?: ReadonlyMap<string, EmojiRef>,
+  ) => ReturnType<typeof renderPanel>;
   readonly readAsset: (asset: { file: string }) => Promise<Buffer>;
 }
 
@@ -81,59 +100,56 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
   if (token === undefined || applicationId === undefined || guildId === undefined)
     throw new Error('Discord-only configuration was not fully validated.');
 
-  const client = new Client({
-    intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers, GatewayIntentBits.GuildVoiceStates],
-    partials: [Partials.User, Partials.Channel],
+  let stopRuntime: ((reason: string) => void) | null = null;
+  const instanceLock = await acquireRuntimeInstanceLock(undefined, {
+    onLost: (detail) => {
+      logger.error({ detail }, 'Runtime instance lock lost; stopping to avoid duplicate actions');
+      process.exitCode = 1;
+      if (stopRuntime === null) process.exit(1);
+      else stopRuntime('INSTANCE_LOCK_LOST');
+    },
   });
   const runtimeStore: DiscordRuntimeStore = new JsonDiscordRuntimeStore();
-
-  client.on('error', (error) => {
-    logger.error({ err: error }, 'Discord client error');
-  });
-  client.on('shardDisconnect', (event, shardId) => {
-    logger.warn({ shardId, code: event.code }, 'Discord shard disconnected; reconnecting');
-  });
-  client.on(Events.InteractionCreate, (interaction) => {
-    if (!interaction.isChatInputCommand() && !interaction.isButton() && !interaction.isStringSelectMenu()) return;
-    void (async () => {
-      if (interaction.isChatInputCommand()) {
-        await handleCommand(interaction, client, runtimeStore);
-      } else if (interaction.isButton()) {
-        await handleButton(interaction, runtimeStore);
-      } else {
-        await handleSelect(interaction, runtimeStore);
-      }
-    })().catch((error: unknown) => {
-      logger.error({ err: error }, 'Discord-only interaction failed');
-    });
-  });
-  client.on(Events.GuildMemberAdd, (member) => {
-    if (member.guild.id !== guildId) return;
-    void handleWelcomeJoin(member, runtimeStore).catch((error: unknown) => {
-      logger.warn({ err: error, guildId: member.guild.id }, 'Discord welcome handler failed');
-    });
-  });
-  client.on(Events.VoiceStateUpdate, (before, after) => {
-    if (after.guild.id !== guildId) return;
-    void handleVoiceState(before.member ?? after.member, before.channel, after.channel, runtimeStore)
-      .catch((error: unknown) => {
-        logger.warn({ err: error }, 'Temporary voice handling failed');
-      });
-  });
-
-  const ready = new Promise<void>((resolveReady) => {
-    client.once(Events.ClientReady, () => {
-      resolveReady();
-    });
-  });
+  const securityService = new SecurityService(runtimeStore);
+  const initialSecurity = await runtimeStore.getGuild(guildId);
+  const textScanningEnabled =
+    initialSecurity.security.config.enabled &&
+    (initialSecurity.security.config.modules.spam ||
+      initialSecurity.security.config.modules.linkGuard);
+  let contentIntentRequested = true;
+  let client = createDiscordClient(true, true);
+  let ready = waitForClientReady(client);
+  attachRuntimeEvents(client, guildId, runtimeStore, securityService);
   try {
     await client.login(token);
   } catch (error) {
-    if (error instanceof Error && /disallowed intents/i.test(error.message))
-      logger.error(
-        'Discord rejected the Server Members Intent. Enable Bot → Privileged Gateway Intents → Server Members Intent in the Discord Developer Portal.',
+    if (isDisallowedIntent(error)) {
+      logger.warn(
+        'Message Content privileged intent was rejected. Restarting without content scanning; native AutoMod and non-content protections remain active. Enable Message Content in the Developer Portal to activate Xenon spam/link scanning.',
       );
-    throw error;
+      await client.destroy();
+      contentIntentRequested = false;
+      client = createDiscordClient(false, true);
+      ready = waitForClientReady(client);
+      attachRuntimeEvents(client, guildId, runtimeStore, securityService);
+      try {
+        await client.login(token);
+      } catch (retryError) {
+        if (isDisallowedIntent(retryError)) {
+          logger.error(
+            'Discord rejected the Server Members privileged intent. Enable Bot → Privileged Gateway Intents → Server Members Intent in the Developer Portal.',
+          );
+        }
+        throw retryError;
+      }
+    } else {
+      if (isDisallowedIntent(error)) {
+        logger.error(
+          'Discord rejected the Server Members privileged intent. Enable Bot → Privileged Gateway Intents → Server Members Intent in the Developer Portal.',
+        );
+      }
+      throw error;
+    }
   }
   if (!client.isReady()) {
     let timeout: ReturnType<typeof setTimeout> | undefined;
@@ -159,14 +175,52 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
   }
   logger.info({ user: client.user.tag }, 'Discord connected');
   if (!membersIntentAvailable(client))
-    logger.warn('Server Members Intent is not enabled for this application; Xenon welcomes and starter roles will not run.');
-
+    logger.warn(
+      'Server Members Intent is not enabled for this application; join-based raid protection and welcomes are DEGRADED.',
+    );
+  const contentApproved =
+    client.application?.flags.any([
+      ApplicationFlags.GatewayMessageContent,
+      ApplicationFlags.GatewayMessageContentLimited,
+    ]) === true;
+  securityService.setMessageContentAvailable(contentIntentRequested && contentApproved);
+  if (textScanningEnabled && !securityService.isMessageContentAvailable())
+    logger.warn(
+      'Message Content is unavailable; custom spam/link inspection is disabled. Native AutoMod remains active. Enable the privileged intent in the Developer Portal.',
+    );
+  if (initialSecurity.ticketConfig !== null && !securityService.isMessageContentAvailable())
+    logger.warn(
+      'Message Content is unavailable; ticket transcripts will omit message text and attachments.',
+    );
   const guild = await client.guilds.fetch(guildId);
   logger.info({ guildId: guild.id, name: guild.name }, 'Guild resolved');
   logger.info({ shardId: client.shard?.ids[0] ?? 0, latencyMs: client.ws.ping }, 'Gateway READY');
 
   await guild.commands.set(DISCORD_ONLY_COMMANDS);
-  logger.info({ count: DISCORD_ONLY_COMMANDS.length, guildId }, 'Discord slash commands registered');
+  await securityService.snapshotIfStale(guild).catch((error: unknown) => {
+    logger.warn({ err: error, guildId }, 'Initial security snapshot failed');
+  });
+  const snapshotTimer = setInterval(
+    () => {
+      void securityService.snapshotIfStale(guild).catch((error: unknown) => {
+        logger.warn({ err: error, guildId }, 'Periodic security snapshot failed');
+      });
+    },
+    6 * 60 * 60 * 1_000,
+  );
+  snapshotTimer.unref();
+  const checkRaidRecovery = (): void => {
+    void securityService.checkRaidRecovery(guild).catch((error: unknown) => {
+      logger.warn({ err: error, guildId }, 'Raid recovery check failed');
+    });
+  };
+  checkRaidRecovery();
+  const raidRecoveryTimer = setInterval(checkRaidRecovery, 60_000);
+  raidRecoveryTimer.unref();
+  logger.info(
+    { count: DISCORD_ONLY_COMMANDS.length, guildId },
+    'Discord slash commands registered',
+  );
   await cleanEmptyRooms(guild, runtimeStore);
   client.user.setActivity('XenonRP Discord', { type: ActivityType.Watching });
 
@@ -178,8 +232,15 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
     logger.info({ signal }, 'Stopping Xenon Discord service');
-    void client.destroy();
+    clearInterval(snapshotTimer);
+    clearInterval(raidRecoveryTimer);
+    void client.destroy().finally(() => {
+      void instanceLock.release().catch((error: unknown) => {
+        logger.warn({ err: error }, 'Runtime instance lock release failed');
+      });
+    });
   };
+  stopRuntime = shutdown;
   process.once('SIGINT', () => {
     shutdown('SIGINT');
   });
@@ -188,7 +249,145 @@ export async function startDiscordOnlyRuntime(): Promise<void> {
   });
 }
 
-async function loadContext(guild: Guild, runtimeStore: DiscordRuntimeStore): Promise<StandaloneContext> {
+function createDiscordClient(
+  requestMessageContent: boolean,
+  requestGuildMessages: boolean,
+): Client {
+  const intents = [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
+    GatewayIntentBits.GuildModeration,
+    GatewayIntentBits.GuildVoiceStates,
+  ];
+  if (requestGuildMessages) intents.push(GatewayIntentBits.GuildMessages);
+  if (requestMessageContent) intents.push(GatewayIntentBits.MessageContent);
+  return new Client({ intents, partials: [Partials.User, Partials.Channel] });
+}
+
+function waitForClientReady(client: Client): Promise<void> {
+  if (client.isReady()) return Promise.resolve();
+  return new Promise<void>((resolve) => {
+    client.once(Events.ClientReady, () => {
+      resolve();
+    });
+  });
+}
+
+function isDisallowedIntent(error: unknown): boolean {
+  return error instanceof Error && /disallowed intents/i.test(error.message);
+}
+
+function attachRuntimeEvents(
+  client: Client,
+  guildId: string,
+  runtimeStore: DiscordRuntimeStore,
+  securityService: SecurityService,
+): void {
+  client.on('error', (error) => {
+    logger.error({ err: error }, 'Discord client error');
+  });
+  client.on('shardDisconnect', (event, shardId) => {
+    logger.warn({ shardId, code: event.code }, 'Discord shard disconnected; reconnecting');
+  });
+  client.on(Events.InteractionCreate, (interaction) => {
+    if (
+      !interaction.isChatInputCommand() &&
+      !interaction.isButton() &&
+      !interaction.isStringSelectMenu()
+    )
+      return;
+    void (async () => {
+      if (interaction.isChatInputCommand()) {
+        if (interaction.guildId !== guildId) {
+          await interaction.reply({
+            content: 'Xenon commands are only available in the configured XenonRP server.',
+            flags: MessageFlags.Ephemeral,
+          });
+          return;
+        }
+        await handleCommand(interaction, client, runtimeStore, securityService);
+      } else if (interaction.isButton()) {
+        await handleButton(interaction, runtimeStore);
+      } else {
+        await handleSelect(interaction, runtimeStore);
+      }
+    })().catch(async (error: unknown) => {
+      logger.error({ err: error }, 'Discord-only interaction failed');
+      try {
+        const response = {
+          content:
+            'Xenon could not complete this operation. Check the bot log and Discord permissions.',
+        };
+        if (interaction.deferred || interaction.replied) await interaction.editReply(response);
+        else await interaction.reply({ ...response, flags: MessageFlags.Ephemeral });
+      } catch (responseError) {
+        logger.warn(
+          { err: responseError },
+          'Discord interaction failure response could not be delivered',
+        );
+      }
+    });
+  });
+  client.on(Events.GuildMemberAdd, (member) => {
+    if (member.guild.id !== guildId) return;
+    void Promise.all([
+      handleWelcomeJoin(member, runtimeStore),
+      securityService.handleJoin(member),
+    ]).catch((error: unknown) => {
+      logger.warn({ err: error, guildId: member.guild.id }, 'Discord member-join handler failed');
+    });
+  });
+  client.on(Events.GuildMemberRemove, (member) => {
+    if (member.guild.id === guildId) securityService.handleLeave(member.id);
+  });
+  client.on(Events.VoiceStateUpdate, (before, after) => {
+    if (after.guild.id !== guildId) return;
+    void handleVoiceState(
+      before.member ?? after.member,
+      before.channel,
+      after.channel,
+      runtimeStore,
+    ).catch((error: unknown) => {
+      logger.warn({ err: error }, 'Temporary voice handling failed');
+    });
+  });
+  client.on(Events.GuildAuditLogEntryCreate, (entry, guild) => {
+    if (guild.id !== guildId) return;
+    void securityService.handleAuditEntry(entry, guild).catch((error: unknown) => {
+      logger.error({ err: error, guildId }, 'Security audit-log handler failed');
+    });
+  });
+  const reportUnattributed = (
+    guild: Guild,
+    kind: 'CHANNEL_DELETE' | 'ROLE_DELETE' | 'MEMBER_BAN',
+    targetId: string,
+  ): void => {
+    if (guild.id !== guildId) return;
+    void securityService.handleUnattributedEvent(guild, kind, targetId).catch((error: unknown) => {
+      logger.warn({ err: error, guildId, kind }, 'Unattributed security event handler failed');
+    });
+  };
+  client.on(Events.ChannelDelete, (channel) => {
+    if (!channel.isDMBased()) reportUnattributed(channel.guild, 'CHANNEL_DELETE', channel.id);
+  });
+  client.on(Events.GuildRoleDelete, (role) => {
+    reportUnattributed(role.guild, 'ROLE_DELETE', role.id);
+  });
+  client.on(Events.GuildBanAdd, (ban) => {
+    reportUnattributed(ban.guild, 'MEMBER_BAN', ban.user.id);
+  });
+  client.on(Events.MessageCreate, (message) => {
+    if (message.guildId !== guildId) return;
+    void securityService.handleMessage(message).catch((error: unknown) => {
+      logger.warn({ err: error, guildId }, 'Security message handler failed');
+    });
+  });
+}
+
+async function loadContext(
+  guild: Guild,
+  runtimeStore: DiscordRuntimeStore,
+): Promise<StandaloneContext> {
   const adapter = discordGuildAdapter(guild);
   const registry = runtimeStore.registry(guild.id);
   const [entries, saved] = await Promise.all([registry.list(), runtimeStore.getGuild(guild.id)]);
@@ -217,7 +416,12 @@ async function loadContext(guild: Guild, runtimeStore: DiscordRuntimeStore): Pro
   const emojiMap = new Map<string, EmojiRef>();
   for (const asset of state.assets) {
     const entry = entries.find((candidate) => candidate.logicalKey === asset.key);
-    if (asset.type === 'EMOJI' && entry?.discordId !== null && entry?.discordId !== undefined && liveEmojiIds.has(entry.discordId)) {
+    if (
+      asset.type === 'EMOJI' &&
+      entry?.discordId !== null &&
+      entry?.discordId !== undefined &&
+      liveEmojiIds.has(entry.discordId)
+    ) {
       emojiMap.set(asset.key, { id: entry.discordId, name: asset.name, animated: asset.animated });
     }
   }
@@ -266,10 +470,17 @@ export async function handleCommand(
   interaction: ChatInputCommandInteraction,
   client: Client,
   runtimeStore: DiscordRuntimeStore,
+  securityService = new SecurityService(runtimeStore),
 ): Promise<void> {
   const guild = interaction.guild;
   if (guild === null) {
     await ephemeral(interaction, 'Use this command in the Xenon Discord server.');
+    return;
+  }
+  if (isSecurityOrModerationCommand(interaction.commandName)) {
+    if (interaction.commandName === 'security')
+      await handleSecurityCommand(interaction, guild, runtimeStore, securityService);
+    else await handleModerationCommand(interaction, guild, runtimeStore, securityService);
     return;
   }
   if (isPlatformDataCommand(interaction.commandName)) {
@@ -278,7 +489,8 @@ export async function handleCommand(
   }
   if (interaction.commandName === 'status') {
     const configuredGuildId = botEnv.DISCORD_GUILD_ID;
-    const configured = configuredGuildId === undefined ? guild : await client.guilds.fetch(configuredGuildId);
+    const configured =
+      configuredGuildId === undefined ? guild : await client.guilds.fetch(configuredGuildId);
     await ephemeral(
       interaction,
       `Discord gateway: ${client.isReady() ? 'READY' : 'CONNECTING'}\nGuild: ${configured.name}\nRuntime: discord-only`,
@@ -306,7 +518,10 @@ async function handleXenon(
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
   if (!isGuildManager(interaction)) {
-    await ephemeral(interaction, 'Only the Discord server owner or a member with Manage Server can use this command.');
+    await ephemeral(
+      interaction,
+      'Only the Discord server owner or a member with Manage Server can use this command.',
+    );
     return;
   }
   const group = interaction.options.getSubcommandGroup(true);
@@ -329,11 +544,17 @@ async function handleXenon(
     if (subcommand === 'status') {
       const settings = await runtimeStore.getGuild(guild.id);
       const rules = context.entries.filter((entry) => entry.resourceType === 'AUTOMOD');
-      await ephemeral(interaction, `AutoMod configured: ${String(parseFeatures(settings.features).automod)}\nManaged rules: ${String(rules.length)}`);
+      await ephemeral(
+        interaction,
+        `AutoMod configured: ${String(parseFeatures(settings.features).automod)}\nManaged rules: ${String(rules.length)}`,
+      );
       return;
     }
     const enable = subcommand === 'enable';
-    const nextFeatures = { ...parseFeatures((await runtimeStore.getGuild(guild.id)).features), automod: enable };
+    const nextFeatures = {
+      ...parseFeatures((await runtimeStore.getGuild(guild.id)).features),
+      automod: enable,
+    };
     if (enable) {
       await runtimeStore.saveFeatures(guild.id, nextFeatures);
       const refreshed = await loadContext(guild, runtimeStore);
@@ -357,19 +578,34 @@ async function handleXenon(
       return;
     }
     if (subcommand === 'status') {
-      await ephemeral(interaction, `${String(context.entries.length)} managed Discord resources are recorded. ${planSummary(context)}`);
+      await ephemeral(
+        interaction,
+        `${String(context.entries.length)} managed Discord resources are recorded. ${planSummary(context)}`,
+      );
       return;
     }
     if (subcommand === 'permissions' || subcommand === 'validate') {
-      const diagnostics = [...context.plan.blueprintAudit.diagnostics, ...context.plan.liveAudit.diagnostics];
-      await ephemeral(interaction, diagnostics.length === 0
-        ? `Permission validation passed. ${String(context.plan.counts.unchanged)} resources match the current plan.`
-        : diagnostics.slice(0, 8).map((diagnostic) => `${diagnostic.severity.toUpperCase()}: ${diagnostic.message}`).join('\n'));
+      const diagnostics = [
+        ...context.plan.blueprintAudit.diagnostics,
+        ...context.plan.liveAudit.diagnostics,
+      ];
+      await ephemeral(
+        interaction,
+        diagnostics.length === 0
+          ? `Permission validation passed. ${String(context.plan.counts.unchanged)} resources match the current plan.`
+          : diagnostics
+              .slice(0, 8)
+              .map((diagnostic) => `${diagnostic.severity.toUpperCase()}: ${diagnostic.message}`)
+              .join('\n'),
+      );
       return;
     }
     if (subcommand === 'assets') {
       const assets = context.state.assets;
-      await ephemeral(interaction, `Curated assets: ${String(assets.length)} enabled\nEmojis: ${String(assets.filter((asset) => asset.type === 'EMOJI').length)}\nStickers: ${String(assets.filter((asset) => asset.type === 'STICKER').length)}`);
+      await ephemeral(
+        interaction,
+        `Curated assets: ${String(assets.length)} enabled\nEmojis: ${String(assets.filter((asset) => asset.type === 'EMOJI').length)}\nStickers: ${String(assets.filter((asset) => asset.type === 'STICKER').length)}`,
+      );
       return;
     }
     if (subcommand === 'adopt') {
@@ -378,7 +614,10 @@ async function handleXenon(
     }
     const confirmation = interaction.options.getString('confirm', true);
     if (confirmation !== PROVISION_PHRASE) {
-      await ephemeral(interaction, `No changes applied. Type exactly “${PROVISION_PHRASE}” in the confirm option.`);
+      await ephemeral(
+        interaction,
+        `No changes applied. Type exactly “${PROVISION_PHRASE}” in the confirm option.`,
+      );
       return;
     }
     if (!context.plan.blueprintAudit.passed) {
@@ -394,12 +633,19 @@ async function handleXenon(
     const panelKeys = new Set(context.state.panels.map((panel) => panel.key));
     if (subcommand === 'status') {
       const panels = context.plan.items.filter((item) => item.resourceType === 'PANEL');
-      await ephemeral(interaction, `Persistent Discord panels: ${String(panels.length)}\n${panels.slice(0, 12).map((item) => `${item.key}: ${item.kind.toLowerCase()}`).join('\n')}`);
+      await ephemeral(
+        interaction,
+        `Persistent Discord panels: ${String(panels.length)}\n${panels
+          .slice(0, 12)
+          .map((item) => `${item.key}: ${item.kind.toLowerCase()}`)
+          .join('\n')}`,
+      );
       return;
     }
-    const result = subcommand === 'setup'
-      ? await execute(context, 'apply', panelKeys)
-      : await execute(context, 'repair', panelKeys);
+    const result =
+      subcommand === 'setup'
+        ? await execute(context, 'apply', panelKeys)
+        : await execute(context, 'repair', panelKeys);
     await ephemeral(interaction, executionSummary(result));
   }
 }
@@ -496,7 +742,12 @@ async function resolveExplicitChannels(
     ) {
       return `${binding.label} must be a text or announcement channel in this server. Nothing was saved.`;
     }
-    selections.push({ logicalKey: binding.logicalKey, label: binding.label, id: channel.id, name: channel.name });
+    selections.push({
+      logicalKey: binding.logicalKey,
+      label: binding.label,
+      id: channel.id,
+      name: channel.name,
+    });
   }
 
   if (new Set(selections.map((selection) => selection.id)).size !== selections.length)
@@ -525,20 +776,37 @@ export async function handleButton(
     await claimTicketFromButton(interaction, xenonId.argument, runtimeStore);
     return;
   }
-  if (xenonId?.namespace !== 'role' || xenonId.action !== 'toggle' || interaction.guild === null || xenonId.argument === null) {
+  if (
+    xenonId?.namespace !== 'role' ||
+    xenonId.action !== 'toggle' ||
+    interaction.guild === null ||
+    xenonId.argument === null
+  ) {
     await ephemeral(interaction, DISABLED_PLATFORM_RESPONSE);
     return;
   }
   const context = await loadContext(interaction.guild, runtimeStore);
-  const desiredRole = context.state.roles.find((role) => role.key === xenonId.argument && role.selfAssignable);
-  const entry = context.entries.find((candidate) => candidate.logicalKey === xenonId.argument && candidate.resourceType === 'ROLE' && candidate.managed);
+  const desiredRole = context.state.roles.find(
+    (role) => role.key === xenonId.argument && role.selfAssignable,
+  );
+  const entry = context.entries.find(
+    (candidate) =>
+      candidate.logicalKey === xenonId.argument &&
+      candidate.resourceType === 'ROLE' &&
+      candidate.managed,
+  );
   if (desiredRole === undefined || entry?.discordId === null || entry?.discordId === undefined) {
     await ephemeral(interaction, 'That self-role is not currently available.');
     return;
   }
   const role = await interaction.guild.roles.fetch(entry.discordId).catch(() => null);
   const me = await interaction.guild.members.fetchMe();
-  if (role === null || role.managed || role.permissions.bitfield !== 0n || role.position >= me.roles.highest.position) {
+  if (
+    role === null ||
+    role.managed ||
+    role.permissions.bitfield !== 0n ||
+    role.position >= me.roles.highest.position
+  ) {
     await ephemeral(interaction, 'That role is unavailable or is not safe to self-assign.');
     return;
   }
@@ -569,11 +837,24 @@ async function handleVoiceState(
   if (member === null) return;
   const guildId = member.guild.id;
   const state = await runtimeStore.getGuild(guildId);
-  const lobby = state.entries.find((entry) => entry.logicalKey === 'voice.create-room' && entry.resourceType === 'CHANNEL' && entry.discordId !== null);
-  if (lobby !== undefined && afterChannel?.id === lobby.discordId && beforeChannel?.id !== afterChannel.id) {
+  const lobby = state.entries.find(
+    (entry) =>
+      entry.logicalKey === 'voice.create-room' &&
+      entry.resourceType === 'CHANNEL' &&
+      entry.discordId !== null,
+  );
+  if (
+    lobby !== undefined &&
+    afterChannel?.id === lobby.discordId &&
+    beforeChannel?.id !== afterChannel.id
+  ) {
     await createTemporaryRoom(member, afterChannel, runtimeStore, state);
   }
-  if (beforeChannel !== null && beforeChannel.id !== afterChannel?.id && state.rooms[beforeChannel.id] !== undefined) {
+  if (
+    beforeChannel !== null &&
+    beforeChannel.id !== afterChannel?.id &&
+    state.rooms[beforeChannel.id] !== undefined
+  ) {
     const room = await member.guild.channels.fetch(beforeChannel.id).catch(() => null);
     if (room?.type === ChannelType.GuildVoice && room.members.size === 0) {
       await room.delete('Xenon temporary voice room is empty').catch(() => undefined);
@@ -605,7 +886,9 @@ async function createTemporaryRoom(
   const now = Date.now();
   const last = roomCreationTime.get(member.id) ?? 0;
   if (now - last < 30_000) {
-    await member.voice.disconnect('Please wait before creating another room').catch(() => undefined);
+    await member.voice
+      .disconnect('Please wait before creating another room')
+      .catch(() => undefined);
     return;
   }
   roomCreationTime.set(member.id, now);
@@ -648,7 +931,8 @@ async function handleRoomCommand(
 ): Promise<void> {
   const state = await runtimeStore.getGuild(guild.id);
   const saved = Object.values(state.rooms).find((room) => room.ownerId === interaction.user.id);
-  const room = saved === undefined ? null : await guild.channels.fetch(saved.channelId).catch(() => null);
+  const room =
+    saved === undefined ? null : await guild.channels.fetch(saved.channelId).catch(() => null);
   if (saved === undefined || room?.type !== ChannelType.GuildVoice) {
     await ephemeral(interaction, 'You do not own an active Xenon temporary voice room.');
     return;
@@ -668,7 +952,8 @@ async function handleRoomCommand(
   } else if (action === 'remove') {
     const target = interaction.options.getUser('member', true);
     const member = await guild.members.fetch(target.id).catch(() => null);
-    if (member?.voice.channelId === room.id) await member.voice.disconnect('Removed from Xenon room');
+    if (member?.voice.channelId === room.id)
+      await member.voice.disconnect('Removed from Xenon room');
     await room.permissionOverwrites.edit(target, { Connect: false });
   } else if (action === 'transfer') {
     const target = interaction.options.getUser('member', true);
@@ -688,17 +973,25 @@ async function handleAnnouncement(
   runtimeStore: DiscordRuntimeStore,
 ): Promise<void> {
   if (!isGuildManager(interaction)) {
-    await ephemeral(interaction, 'Only the Discord server owner or a member with Manage Server can post announcements.');
+    await ephemeral(
+      interaction,
+      'Only the Discord server owner or a member with Manage Server can post announcements.',
+    );
     return;
   }
   const entry = (await runtimeStore.getGuild(guild.id)).entries.find(
-    (candidate) => candidate.logicalKey === 'channel.announcements' && candidate.resourceType === 'CHANNEL',
+    (candidate) =>
+      candidate.logicalKey === 'channel.announcements' && candidate.resourceType === 'CHANNEL',
   );
-  const channel = entry?.discordId === null || entry?.discordId === undefined
-    ? null
-    : await guild.channels.fetch(entry.discordId).catch(() => null);
+  const channel =
+    entry?.discordId === null || entry?.discordId === undefined
+      ? null
+      : await guild.channels.fetch(entry.discordId).catch(() => null);
   if (channel?.isTextBased() !== true || !('send' in channel)) {
-    await ephemeral(interaction, 'The announcements channel is not mapped. Run /xenon setup adopt and select an announcements channel.');
+    await ephemeral(
+      interaction,
+      'The announcements channel is not mapped. Run /xenon setup adopt and select an announcements channel.',
+    );
     return;
   }
   const embed = XenonAnnouncementPanel({
@@ -711,11 +1004,19 @@ async function handleAnnouncement(
 }
 
 function isGuildManager(interaction: ChatInputCommandInteraction): boolean {
-  return interaction.guild?.ownerId === interaction.user.id || interaction.memberPermissions?.has(P.ManageGuild) === true;
+  return (
+    interaction.guild?.ownerId === interaction.user.id ||
+    interaction.memberPermissions?.has(P.ManageGuild) === true
+  );
 }
 
 function sanitiseRoomName(raw: string): string {
-  const value = raw.normalize('NFKC').replace(/[\p{C}@#`*_~|<>]/gu, '').replace(/\s+/g, ' ').trim().slice(0, 32);
+  const value = raw
+    .normalize('NFKC')
+    .replace(/[\p{C}@#`*_~|<>]/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 32);
   return value.length >= 2 ? value : 'Room';
 }
 
@@ -735,7 +1036,12 @@ function planSummary(context: StandaloneContext): string {
 function executionSummary(result: Awaited<ReturnType<typeof executePlan>>): string {
   const messages = [
     `Applied ${String(result.applied.length)} Discord changes.`,
-    result.failed.length === 0 ? '' : `Failed: ${result.failed.slice(0, 4).map((entry) => `${entry.key} (${entry.message})`).join('; ')}`,
+    result.failed.length === 0
+      ? ''
+      : `Failed: ${result.failed
+          .slice(0, 4)
+          .map((entry) => `${entry.key} (${entry.message})`)
+          .join('; ')}`,
     result.skipped.length === 0 ? '' : `Skipped: ${String(result.skipped.length)} items.`,
   ].filter(Boolean);
   return messages.join('\n');

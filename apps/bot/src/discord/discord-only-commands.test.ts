@@ -12,7 +12,9 @@ describe('Discord-only command degradation', () => {
   it('identifies platform data commands for a clean integration-disabled response', async () => {
     for (const name of ['profile', 'application', 'review', 'link', 'queue', 'player'])
       expect(isPlatformDataCommand(name)).toBe(true);
-    expect(DISABLED_PLATFORM_RESPONSE).toBe('Xenon Platform integration is not enabled on this deployment.');
+    expect(DISABLED_PLATFORM_RESPONSE).toBe(
+      'Xenon Platform integration is not enabled on this deployment.',
+    );
     const reply = vi.fn().mockResolvedValue(undefined);
     await respondPlatformUnavailable({ reply });
     expect(reply).toHaveBeenCalledWith({
@@ -26,6 +28,49 @@ describe('Discord-only command degradation', () => {
       expect.arrayContaining(['status', 'announce', 'xenon', 'room']),
     );
   });
+  it('registers the complete Xenon security and moderation command surface', () => {
+    const names = DISCORD_ONLY_COMMANDS.map((command) => command.name);
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'security',
+        'warn',
+        'warnings',
+        'timeout',
+        'untimeout',
+        'kick',
+        'ban',
+        'unban',
+        'softban',
+        'purge',
+        'case',
+        'cases',
+      ]),
+    );
+    const security = DISCORD_ONLY_COMMANDS.find((command) => command.name === 'security');
+    expect(security?.options?.map((option) => option.name)).toEqual(
+      expect.arrayContaining([
+        'setup',
+        'status',
+        'scan',
+        'raid',
+        'raid-mode',
+        'trust',
+        'automod',
+        'config',
+        'lockdown',
+        'unlock',
+        'quarantine',
+        'unquarantine',
+      ]),
+    );
+    expect(security?.default_member_permissions).toBeNull();
+    const configGroup = security?.options?.find((option) => option.name === 'config');
+    const configCommands =
+      configGroup !== undefined && 'options' in configGroup ? (configGroup.options ?? []) : [];
+    expect(configCommands.map((option) => option.name)).toEqual(
+      expect.arrayContaining(['channels', 'link-policy', 'raid-thresholds', 'spam', 'keyword']),
+    );
+  });
 
   it('registers /xenon setup adopt with optional text-channel bindings and no confirmation', () => {
     const xenon = DISCORD_ONLY_COMMANDS.find((command) => command.name === 'xenon');
@@ -36,7 +81,13 @@ describe('Discord-only command degradation', () => {
         : undefined;
     expect(adopt).toMatchObject({ description: 'Adopt existing server channels and roles' });
     const options = adopt !== undefined && 'options' in adopt ? (adopt.options ?? []) : [];
-    expect(options.map((option) => option.name)).toEqual(['announcements', 'logs', 'review', 'welcome', 'rules']);
+    expect(options.map((option) => option.name)).toEqual([
+      'announcements',
+      'logs',
+      'review',
+      'welcome',
+      'rules',
+    ]);
     for (const option of options) {
       expect(option).toMatchObject({
         type: ApplicationCommandOptionType.Channel,

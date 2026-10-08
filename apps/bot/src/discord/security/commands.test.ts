@@ -1,0 +1,606 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import {
+  ChannelType,
+  Collection,
+  DiscordAPIError,
+  PermissionsBitField,
+  PermissionFlagsBits as P,
+  type ChatInputCommandInteraction,
+  type Guild,
+} from 'discord.js';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { JsonDiscordRuntimeStore } from '../runtime-store';
+
+import { computePostureLabel, handleModerationCommand, handleSecurityCommand } from './commands';
+import { createCase } from './model';
+
+import type { SecurityService } from './service';
+
+const guildId = '12345678901234567';
+const ownerId = '22345678901234567';
+const moderatorId = '32345678901234567';
+const targetId = '42345678901234567';
+
+function makeInteraction(
+  commandName: string,
+  userId: string,
+  options: {
+    readonly getSubcommandGroup?: () => string | null;
+    readonly getSubcommand?: () => string;
+    readonly getUser?: (name: string) => { readonly id: string } | null;
+    readonly getString?: (name: string) => string | null;
+  },
+): ChatInputCommandInteraction {
+  return {
+    commandName,
+    user: { id: userId },
+    options,
+    memberPermissions: new PermissionsBitField(P.ManageGuild | P.ManageMessages),
+    deferred: true,
+    replied: false,
+    deferReply: vi.fn(() => Promise.resolve(undefined)),
+    editReply: vi.fn(() => Promise.resolve(undefined)),
+    reply: vi.fn(() => Promise.resolve(undefined)),
+  } as unknown as ChatInputCommandInteraction;
+}
+
+describe('security command authorization', () => {
+  let directory = '';
+
+  afterEach(async () => {
+    if (directory !== '') await rm(directory, { recursive: true, force: true });
+    directory = '';
+  });
+
+  it('rejects a moderation target at the same highest role as the human moderator', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-moderation-hierarchy-'));
+    const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+    await store.updateGuild(guildId, (current) => ({
+      ...current,
+      security: {
+        ...current.security,
+        config: {
+          ...current.security.config,
+          trustedActors: {
+            ...current.security.config.trustedActors,
+            [moderatorId]: 'NORMAL_STAFF',
+          },
+        },
+      },
+    }));
+    const moderator = {
+      roles: { highest: { comparePositionTo: () => 0 } },
+    };
+    const target = {
+      id: targetId,
+      manageable: true,
+      roles: { highest: { position: 4 } },
+      send: vi.fn(() => Promise.resolve(undefined)),
+    };
+    const guild = {
+      id: guildId,
+      name: 'XenonRP',
+      ownerId,
+      members: {
+        fetch: vi.fn((input: string | { readonly user: string }) => {
+          const id = typeof input === 'string' ? input : input.user;
+          return Promise.resolve(id === moderatorId ? moderator : target);
+        }),
+      },
+    } as unknown as Guild;
+    const interaction = makeInteraction('warn', moderatorId, {
+      getUser: () => ({ id: targetId }),
+      getString: () => 'Test warning',
+    });
+
+    await handleModerationCommand(interaction, guild, store, new Object() as SecurityService);
+
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content: 'Your highest role must strictly outrank the target member.',
+      embeds: [],
+    });
+    expect(target.send).not.toHaveBeenCalled();
+  });
+
+  it('rechecks both trust records inside the serialized mutation after snapshot work', async () => {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-trust-race-'));
+    const store = new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+    await store.updateGuild(guildId, (current) => ({
+      ...current,
+      security: {
+        ...current.security,
+        config: {
+          ...current.security.config,
+          trustedActors: {
+            ...current.security.config.trustedActors,
+            [moderatorId]: 'SECURITY_ADMIN',
+            [targetId]: 'NORMAL_STAFF',
+          },
+        },
+      },
+    }));
+    const guild = { id: guildId, ownerId } as Guild;
+    const service = {
+      saveSnapshot: async () => {
+        await store.updateGuild(guildId, (current) => ({
+          ...current,
+          security: {
+            ...current.security,
+            config: {
+              ...current.security.config,
+              trustedActors: {
+                ...current.security.config.trustedActors,
+                [targetId]: 'SECURITY_ADMIN',
+              },
+            },
+          },
+        }));
+        return undefined;
+      },
+    } as unknown as SecurityService;
+    const interaction = makeInteraction('security', moderatorId, {
+      getSubcommandGroup: () => 'trust',
+      getSubcommand: () => 'add',
+      getUser: () => ({ id: targetId }),
+      getString: () => 'TRUSTED_STAFF',
+    });
+
+    await handleSecurityCommand(interaction, guild, store, service);
+
+    expect((await store.getGuild(guildId)).security.config.trustedActors[targetId]).toBe(
+      'SECURITY_ADMIN',
+    );
+    expect(interaction.editReply).toHaveBeenCalledWith({
+      content:
+        'Trust was not changed: only the owner or a security admin may change trust; the owner alone may change SECURITY_ADMIN trust.',
+      embeds: [],
+    });
+  });
+});
+
+interface FakeOptions {
+  readonly group?: string | null;
+  readonly subcommand?: string;
+  readonly user?: string;
+  readonly strings?: Readonly<Record<string, string>>;
+  readonly integers?: Readonly<Record<string, number>>;
+}
+
+function fakeInteraction(
+  commandName: string,
+  userId: string,
+  permissions: bigint,
+  options: FakeOptions = {},
+): ChatInputCommandInteraction {
+  return {
+    commandName,
+    user: { id: userId },
+    options: {
+      getSubcommandGroup: () => options.group ?? null,
+      getSubcommand: () => options.subcommand ?? '',
+      getUser: () => (options.user === undefined ? null : { id: options.user }),
+      getString: (name: string) => options.strings?.[name] ?? null,
+      getInteger: (name: string) => options.integers?.[name] ?? null,
+      getBoolean: () => null,
+    },
+    memberPermissions: new PermissionsBitField(permissions),
+    deferred: true,
+    replied: false,
+    deferReply: vi.fn(() => Promise.resolve(undefined)),
+    editReply: vi.fn(() => Promise.resolve(undefined)),
+    reply: vi.fn(() => Promise.resolve(undefined)),
+  } as unknown as ChatInputCommandInteraction;
+}
+
+function lastReply(interaction: ChatInputCommandInteraction): string {
+  const calls = vi.mocked(interaction.editReply).mock.calls;
+  const last = calls.at(-1)?.[0];
+  return typeof last === 'object' && 'content' in last ? (last.content ?? '') : '';
+}
+
+describe('computePostureLabel', () => {
+  const base = {
+    lockdownActive: false,
+    enabled: true,
+    findings: [],
+    incidents: [],
+    raidLevel: 'NORMAL' as const,
+    degraded: false,
+  };
+
+  it('applies the documented precedence', () => {
+    const critical = [{ severity: 'CRITICAL' as const }];
+    expect(computePostureLabel(base)).toBe('PROTECTED');
+    expect(computePostureLabel({ ...base, degraded: true })).toBe('DEGRADED');
+    expect(computePostureLabel({ ...base, degraded: true, findings: critical })).toBe('AT RISK');
+    expect(computePostureLabel({ ...base, findings: critical, enabled: false })).toBe('DISABLED');
+    expect(
+      computePostureLabel({ ...base, findings: critical, enabled: false, lockdownActive: true }),
+    ).toBe('LOCKDOWN');
+  });
+
+  it('treats open high/critical incidents and raid levels as at risk, but not handled ones', () => {
+    const open = (severity: 'HIGH' | 'MEDIUM', status: 'OPEN' | 'RESOLVED') => ({
+      severity,
+      status,
+    });
+    expect(computePostureLabel({ ...base, incidents: [open('HIGH', 'OPEN')] })).toBe('AT RISK');
+    expect(computePostureLabel({ ...base, incidents: [open('HIGH', 'RESOLVED')] })).toBe(
+      'PROTECTED',
+    );
+    expect(computePostureLabel({ ...base, incidents: [open('MEDIUM', 'OPEN')] })).toBe('PROTECTED');
+    expect(computePostureLabel({ ...base, raidLevel: 'RAID' })).toBe('AT RISK');
+    expect(computePostureLabel({ ...base, raidLevel: 'CRITICAL' })).toBe('AT RISK');
+    expect(computePostureLabel({ ...base, raidLevel: 'WARNING' })).toBe('PROTECTED');
+  });
+});
+
+describe('security and moderation command behavior', () => {
+  let directory = '';
+
+  afterEach(async () => {
+    if (directory !== '') await rm(directory, { recursive: true, force: true });
+    directory = '';
+  });
+
+  async function makeStore(): Promise<JsonDiscordRuntimeStore> {
+    directory = await mkdtemp(join(tmpdir(), 'xenon-commands-'));
+    return new JsonDiscordRuntimeStore(join(directory, 'discord-runtime.json'));
+  }
+
+  function moderationGuild(botPermissions: bigint, overrides: Record<string, unknown> = {}) {
+    const target = {
+      id: targetId,
+      manageable: true,
+      moderatable: true,
+      roles: { highest: { position: 1 } },
+      kick: vi.fn(() => Promise.resolve(undefined)),
+    };
+    const members = {
+      me: { permissions: new PermissionsBitField(botPermissions) },
+      fetch: vi.fn(() => Promise.resolve(target)),
+      ban: vi.fn(() => Promise.resolve(undefined)),
+      unban: vi.fn(() => Promise.resolve(undefined)),
+    };
+    const bans = { fetch: vi.fn(() => Promise.reject(new Error('not banned'))) };
+    const guild = {
+      id: guildId,
+      name: 'XenonRP',
+      ownerId,
+      members,
+      bans,
+      channels: { cache: new Collection() },
+      ...overrides,
+    } as unknown as Guild;
+    return { guild, target, members, bans };
+  }
+
+  const kickInteraction = () =>
+    fakeInteraction('kick', ownerId, P.KickMembers, {
+      user: targetId,
+      strings: { reason: 'Rule break' },
+    });
+
+  it('does not save a case when Discord rejects the kick, and exposes only the API code', async () => {
+    const store = await makeStore();
+    const { guild, target } = moderationGuild(P.KickMembers);
+    target.kick.mockRejectedValue(
+      new DiscordAPIError(
+        { code: 50013, message: 'Missing Permissions for token abc' },
+        50013,
+        403,
+        'PUT',
+        'url',
+        {},
+      ),
+    );
+    const saveCase = vi.fn();
+    const interaction = kickInteraction();
+
+    await handleModerationCommand(interaction, guild, store, {
+      saveCase,
+    } as unknown as SecurityService);
+
+    expect(saveCase).not.toHaveBeenCalled();
+    expect(lastReply(interaction)).toContain('50013');
+    expect(lastReply(interaction)).not.toContain('token abc');
+  });
+
+  it('rejects the action without a case when the bot lacks the permission', async () => {
+    const store = await makeStore();
+    const { guild, target } = moderationGuild(0n);
+    const saveCase = vi.fn();
+    const interaction = kickInteraction();
+
+    await handleModerationCommand(interaction, guild, store, {
+      saveCase,
+    } as unknown as SecurityService);
+
+    expect(target.kick).not.toHaveBeenCalled();
+    expect(saveCase).not.toHaveBeenCalled();
+    expect(lastReply(interaction)).toContain('Kick Members');
+  });
+
+  it('rejects banning a user who is already banned', async () => {
+    const store = await makeStore();
+    const { guild, members, bans } = moderationGuild(P.BanMembers);
+    bans.fetch.mockResolvedValue(undefined as never);
+    const saveCase = vi.fn();
+    const interaction = fakeInteraction('ban', ownerId, P.BanMembers, {
+      user: targetId,
+      strings: { reason: 'Spam' },
+    });
+
+    await handleModerationCommand(interaction, guild, store, {
+      saveCase,
+    } as unknown as SecurityService);
+
+    expect(members.ban).not.toHaveBeenCalled();
+    expect(saveCase).not.toHaveBeenCalled();
+    expect(lastReply(interaction)).toContain('already banned');
+  });
+
+  it('rejects unbanning a user who is not banned', async () => {
+    const store = await makeStore();
+    const { guild, members, bans } = moderationGuild(P.BanMembers);
+    bans.fetch.mockRejectedValue(
+      new DiscordAPIError({ code: 10026, message: 'Unknown Ban' }, 10026, 404, 'GET', 'url', {}),
+    );
+    const interaction = fakeInteraction('unban', ownerId, P.BanMembers, {
+      strings: { reason: 'Appeal', user_id: targetId },
+    });
+
+    await handleModerationCommand(interaction, guild, store, {
+      saveCase: vi.fn(),
+    } as unknown as SecurityService);
+
+    expect(members.unban).not.toHaveBeenCalled();
+    expect(lastReply(interaction)).toContain('not banned');
+  });
+
+  it('rejects a duplicate of a case recorded within the last 15 seconds', async () => {
+    const store = await makeStore();
+    await store.updateGuild(guildId, (current) => ({
+      ...current,
+      security: {
+        ...current.security,
+        cases: [
+          createCase({
+            action: 'KICK',
+            moderatorId: ownerId,
+            targetId,
+            reason: 'first',
+            durationSeconds: null,
+            evidenceReference: null,
+          }),
+        ],
+      },
+    }));
+    const { guild, target } = moderationGuild(P.KickMembers);
+    const interaction = kickInteraction();
+
+    await handleModerationCommand(interaction, guild, store, {
+      saveCase: vi.fn(),
+    } as unknown as SecurityService);
+
+    expect(target.kick).not.toHaveBeenCalled();
+    expect(lastReply(interaction)).toContain('no duplicate');
+  });
+
+  it('performs an identical concurrent action only once', async () => {
+    const store = await makeStore();
+    const { guild, target } = moderationGuild(P.KickMembers);
+    let release: () => void = () => undefined;
+    target.kick.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve) => {
+          release = () => {
+            resolve(undefined);
+          };
+        }),
+    );
+    const service = {
+      saveCase: vi.fn(() => Promise.resolve(undefined)),
+    } as unknown as SecurityService;
+    const first = kickInteraction();
+    const running = handleModerationCommand(first, guild, store, service);
+    await vi.waitFor(() => {
+      expect(target.kick).toHaveBeenCalledTimes(1);
+    });
+    const second = kickInteraction();
+
+    await handleModerationCommand(second, guild, store, service);
+    release();
+    await running;
+
+    expect(target.kick).toHaveBeenCalledTimes(1);
+    expect(lastReply(second)).toContain('no duplicate');
+    expect(lastReply(first)).toContain('Completed kick');
+  });
+
+  it('rejects /security for a user with Discord permission but no Xenon trust', async () => {
+    const store = await makeStore();
+    const guild = { id: guildId, ownerId } as Guild;
+    const service = { saveSnapshot: vi.fn() } as unknown as SecurityService;
+    const interaction = fakeInteraction('security', moderatorId, P.ManageGuild, {
+      subcommand: 'setup',
+    });
+
+    await handleSecurityCommand(interaction, guild, store, service);
+
+    expect(lastReply(interaction)).toContain('Not authorized');
+    expect(service.saveSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('handles an unknown subcommand without throwing', async () => {
+    const store = await makeStore();
+    const guild = { id: guildId, ownerId } as Guild;
+    const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
+      subcommand: 'bogus',
+    });
+
+    await handleSecurityCommand(interaction, guild, store, {} as SecurityService);
+
+    expect(lastReply(interaction)).toBe('Unsupported security command.');
+  });
+
+  it('persists optional raid recovery and slowmode settings and keeps unset ones', async () => {
+    const store = await makeStore();
+    const guild = { id: guildId, ownerId } as Guild;
+    const service = {
+      saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
+    } as unknown as SecurityService;
+    const thresholds = {
+      warning10s: 3,
+      raid10s: 6,
+      critical10s: 12,
+      warning30s: 5,
+      raid30s: 10,
+      critical30s: 20,
+    };
+    const run = (extra: Record<string, number>) =>
+      handleSecurityCommand(
+        fakeInteraction('security', ownerId, P.ManageGuild, {
+          group: 'config',
+          subcommand: 'raid-thresholds',
+          integers: { ...thresholds, ...extra },
+        }),
+        guild,
+        store,
+        service,
+      );
+
+    await run({ recovery_minutes: 45, slowmode_seconds: 0 });
+    await run({ recovery_minutes: 60 });
+
+    const config = (await store.getGuild(guildId)).security.config;
+    expect(config.raidRecoveryMinutes).toBe(60);
+    expect(config.raidSlowmodeSeconds).toBe(0);
+    expect(config.raidThresholds.raid10s).toBe(6);
+  });
+
+  it('releases raid response after switching raid mode off and reports it', async () => {
+    const store = await makeStore();
+    const guild = { id: guildId, ownerId } as Guild;
+    const service = {
+      saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
+      recordManualRaidMode: vi.fn(() => Promise.resolve(undefined)),
+      checkRaidRecovery: vi.fn(() => Promise.resolve(true)),
+    } as unknown as SecurityService;
+    const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
+      group: 'raid-mode',
+      subcommand: 'off',
+    });
+
+    await handleSecurityCommand(interaction, guild, store, service);
+
+    expect(service.checkRaidRecovery).toHaveBeenCalledOnce();
+    expect((await store.getGuild(guildId)).security.config.raidMode).toBe('OFF');
+    expect(lastReply(interaction)).toContain('released');
+  });
+
+  it('creates nothing on repeated setup when the guild is already configured', async () => {
+    const store = await makeStore();
+    const channelOf = (id: string, name: string) => ({
+      id,
+      name,
+      type: ChannelType.GuildText,
+      parent: null,
+    });
+    const channels = new Collection<string, unknown>([
+      ['70000000000000001', channelOf('70000000000000001', 'security-alerts')],
+      ['70000000000000002', channelOf('70000000000000002', 'security-audit')],
+      ['70000000000000003', channelOf('70000000000000003', 'mod-logs')],
+    ]);
+    const roles = new Collection<string, unknown>([
+      [
+        '80000000000000001',
+        {
+          id: '80000000000000001',
+          name: 'Xenon Quarantine',
+          managed: false,
+          permissions: { bitfield: 0n },
+        },
+      ],
+    ]);
+    const create = vi.fn();
+    const roleCreate = vi.fn();
+    const guild = {
+      id: guildId,
+      ownerId,
+      channels: { cache: channels, create },
+      roles: { cache: roles, create: roleCreate },
+    } as unknown as Guild;
+    const service = {
+      saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
+      syncAutoMod: vi.fn(() =>
+        Promise.resolve({ created: [], updated: [], conflicts: [], unavailable: null }),
+      ),
+    } as unknown as SecurityService;
+
+    for (let run = 0; run < 2; run += 1) {
+      await handleSecurityCommand(
+        fakeInteraction('security', ownerId, P.ManageGuild, { subcommand: 'setup' }),
+        guild,
+        store,
+        service,
+      );
+    }
+
+    expect(create).not.toHaveBeenCalled();
+    expect(roleCreate).not.toHaveBeenCalled();
+    const config = (await store.getGuild(guildId)).security.config;
+    expect(config.channels).toEqual({
+      alerts: '70000000000000001',
+      audit: '70000000000000002',
+      modLogs: '70000000000000003',
+    });
+    expect(config.quarantineRoleId).toBe('80000000000000001');
+  });
+
+  it('does not adopt a same-name quarantine role that holds permissions', async () => {
+    const store = await makeStore();
+    const setPermissions = vi.fn();
+    const roleCreate = vi.fn();
+    const guild = {
+      id: guildId,
+      ownerId,
+      channels: { cache: new Collection(), create: vi.fn(() => Promise.reject(new Error('no'))) },
+      roles: {
+        cache: new Collection<string, unknown>([
+          [
+            '80000000000000002',
+            {
+              id: '80000000000000002',
+              name: 'xenon quarantine',
+              managed: false,
+              permissions: { bitfield: P.BanMembers },
+              setPermissions,
+            },
+          ],
+        ]),
+        create: roleCreate,
+      },
+    } as unknown as Guild;
+    const service = {
+      saveSnapshot: vi.fn(() => Promise.resolve(undefined)),
+      syncAutoMod: vi.fn(() =>
+        Promise.resolve({ created: [], updated: [], conflicts: [], unavailable: null }),
+      ),
+    } as unknown as SecurityService;
+    const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
+      subcommand: 'setup',
+    });
+
+    await handleSecurityCommand(interaction, guild, store, service);
+
+    expect((await store.getGuild(guildId)).security.config.quarantineRoleId).toBeNull();
+    expect(setPermissions).not.toHaveBeenCalled();
+    expect(roleCreate).not.toHaveBeenCalled();
+    expect(lastReply(interaction)).toContain('marker disabled');
+  });
+});

@@ -120,9 +120,15 @@ pnpm --filter @xenon/web start     # port 3200
 pnpm --filter @xenon/bot start
 ```
 
-Under a process manager — systemd, PM2, Docker — with restart-on-failure. Both
-processes are stateless; scale the web tier horizontally if you need to. Run
-**one** bot process: a second one would double every Discord side effect.
+Under a process manager — systemd, PM2, Docker — with restart-on-failure. The
+web tier is stateless; scale it horizontally if you need to. Run **one** bot
+process: a second one would double every Discord side effect. With
+`BOT_RUNTIME_MODE=discord-only` the bot keeps security configuration, trust,
+cases, incidents, lockdown/quarantine/raid recovery journals, and snapshots in
+`.data/discord-runtime.json` (no secrets). Mount `.data/` on a persistent
+volume, include it in backups, and keep the working directory stable. The
+runtime enforces a single instance with `.data/discord-runtime.json.lock`; see
+[DISCORD_SETUP.md § Single instance and recovery](DISCORD_SETUP.md#single-instance-and-recovery).
 
 ---
 

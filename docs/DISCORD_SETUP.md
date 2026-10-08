@@ -84,36 +84,246 @@ configured in `DISCORD_BOT_TOKEN`. Do not create a replacement bot or reset the
 token. Under **Installation**, enable guild
 installation and the `bot` and `applications.commands` scopes.
 
-The implemented bot needs these guild permissions:
+The existing bot’s integrated mode needs View Channels, Send Messages, Embed
+Links, Read Message History, and Manage Roles when Xenon role mappings are
+enabled. The **Discord-only runtime security controller** additionally needs:
 
-- View Channels
-- Send Messages
-- Embed Links
-- Read Message History
-- Manage Roles, when Xenon role mappings are enabled
+- View Audit Log — audit-event attribution and anti-nuke correlation
+- Manage Channels — create security channels during setup
+- Manage Roles — edit lockdown/quarantine overwrites, contain dangerous roles,
+  and optionally assign the quarantine marker
+- Per-channel permission authority — `View Channels` and (in voice/stage)
+  `Connect`/`Speak` for quarantine. Lockdown targets also need `Send Messages`,
+  `Send Messages In Threads`, `Create Public Threads`, and `Create Private Threads`.
+- Manage Messages — spam deletion and `/purge`
+- Moderate Members — timeout actions
+- Kick Members and Ban Members — explicit moderation commands
+- Manage Server — native AutoMod setup/reconciliation
 
-Do not grant Administrator. Xenon uses the `Guilds` and `GuildVoiceStates`
-(temporary voice rooms, not privileged) Gateway intents. `GuildMembers` is
-added only when a Xenon welcome setting that needs join events is enabled.
-Guild Presences is never enabled, and no Gateway intent requests message content. Membership checks use a
-targeted server-side REST lookup for a known Discord user ID. Install the bot to
-the Xenon guild and move the Xenon bot role above every Discord role that Xenon
-is configured to manage. Discord cannot grant or remove roles at or above the
-bot’s highest role.
+`/security scan` reports missing global bot permissions; execution also reports
+channel-specific access failures instead of claiming unverified containment.
+Manage Webhooks is not required: Xenon observes webhook audit events but never
+changes webhooks. Do not grant Administrator. Discord moderators must have a
+highest role strictly above the target for moderation actions; Xenon separately
+checks the bot’s hierarchy for operations that require it.
 
-When enabling public or DM join welcomes, open the same application in the
-Discord Developer Portal and enable **Bot → Privileged Gateway Intents → Server
-Members Intent**. This portal switch is required in addition to the conditional
-`GuildMembers` intent in bot code. The Discord-only runtime always requests it;
-it logs a startup warning when the portal switch is off, and `/xenon welcome
-status` reports NOT READY until it is enabled.
+The Discord-only runtime uses Guilds, GuildModeration, GuildMembers, and
+GuildVoiceStates. GuildModeration delivers audit-log events used by anti-nuke;
+GuildMembers is needed for join/leave raid signals and welcome events. It also
+requests GuildMessages and MessageContent so commissioned support-ticket
+transcripts can include message text and enabled spam/link protections can scan
+messages. Message Content is a privileged intent. If Discord rejects it, Xenon
+retries without that intent and continues in degraded mode: native AutoMod and
+non-content protections remain available, custom spam/link scanning is
+disabled, and support-ticket transcripts omit message text and attachments.
+Enable **Bot → Privileged Gateway Intents → Message Content Intent** in the
+Developer Portal for complete operation. Do not enable Guild Presences; Xenon
+does not use presence data.
 
-Discord-only support tickets save a plain-text transcript to the ticket log
-before deleting a closed ticket channel. Discord only returns message text and
-attachments to a bot whose **Message Content Intent** portal switch is enabled,
-so enable it for the Xenon application when running tickets. Without it,
-transcripts contain authors and timestamps only, `/xenon tickets publish` warns
-about it, and each close log is marked "Transcript incomplete".
+Enable **Bot → Privileged Gateway Intents → Server Members Intent** for the
+Discord-only runtime. If Discord rejects it, join-based raid protection and
+welcomes cannot operate; the startup log gives the required portal setting.
+The integrated runtime separately requests GuildMembers only when a configured
+welcome feature needs it.
+
+## 3.1 Commission the Discord-only security controller
+
+The standalone security system persists configuration, trust, incidents,
+moderation cases, lockdown and quarantine patch journals, and forensic snapshots
+in the existing local `.data/discord-runtime.json` file. Back up that file with
+the bot’s deployment data; it contains no bot token or other secrets. No
+website, PostgreSQL, or Redis process is needed for the Discord-only runtime.
+
+After enabling the required permissions/intents, restart the existing
+persistent bot process and run:
+
+1. `/security setup` as the guild owner or an internally trusted security
+   administrator. It identifies existing equivalent channels/roles and
+   creates missing `#security-alerts`, `#security-audit`, `#mod-logs`, and the
+   optional `Xenon Quarantine` marker role without creating duplicates. Current
+   setup does not add role-wide denies; member-specific overwrites enforce
+   quarantine. Older versions may have written channel overwrites for this
+   role; recover legacy quarantines and inspect/remove stale overwrites manually.
+2. `/security scan` and `/security status`. Resolve HIGH/CRITICAL findings,
+   especially missing `Manage Roles` for overwrite containment, missing
+   `Manage Channels` for security-channel setup, `BOT_MISSING_VIEW_AUDIT_LOG`,
+   and public security logs. Marker-role hierarchy warnings affect labeling,
+   not member-specific restriction enforcement. The scan reports findings; it
+   never edits permissions.
+
+3. `/security trust add @user level:SECURITY_ADMIN` as the guild owner. Only
+   the owner can grant or revoke SECURITY_ADMIN. Manage all other trust using
+   `/security trust add`, `/security trust remove`, and `/security trust list`.
+4. `/security automod status`, then `/security automod sync`. Xenon changes only
+   rules whose IDs are recorded as Xenon-owned; same-name collisions are
+   reported and left untouched.
+5. Configure `/security config channels`, `/security config raid-thresholds`
+   (join thresholds plus optional `recovery_minutes` and `slowmode_seconds`),
+   `/security config spam` (limits and exemptions), `/security config link-policy`
+   (including domain removal), and `/security config keyword` as needed.
+   Check the privacy of pre-existing log channels manually; setup does not
+   rewrite their existing overwrites.
+6. `/security snapshot take` to record a known-good baseline after the server is
+   configured.
+
+### Default detection behavior
+
+- **Raid detection:** AUTO raises signals at 5/10s or 10/30s joins (warning),
+  9/10s or 18/30s (raid), and 15/10s or 28/30s (critical). Window edges are
+  inclusive (a join exactly 10 000 ms old still counts). When at least five
+  arrivals are counted, a 60% share of accounts younger than seven days or two
+  bot joins in 30 seconds strengthens an existing count-based signal; account
+  age alone never triggers containment, and nobody is banned automatically. A
+  member leaving and rejoining within 60 seconds raises WARNING. Every
+  RAID/CRITICAL arrival is quarantined with member-specific channel overwrites;
+  a configured marker role is optional. Entering RAID/CRITICAL also applies
+  slowmode (default 30 s, `0` disables) to the configured lockdown text and
+  announcement channels and records the prior values durably; CRITICAL can
+  activate lockdown. After `recovery_minutes` (default 10) without an elevated
+  join, Xenon restores slowmode only on channels still at the value it applied
+  and reports others as conflicts. `/security raid-mode off` or
+  `/security raid disable` releases the raid response immediately;
+  `/security raid-mode on` keeps it and applies the same restrictions to
+  non-owner arrivals without internal trust or marked `UNTRUSTED`. Raid
+  response state survives restart; the release check runs every 60 seconds.
+- **Anti-nuke:** Xenon uses Discord audit-log gateway events, which carry the
+  actor, and counts each audit entry once per actor/action window. Default
+  high/critical thresholds include 2/3 channel deletions, 1/2 role deletions,
+  1/2 permission escalations, 2/4 bans, and 3/6 kicks within their 30–60 second
+  windows. HIGH raises an alert only; CRITICAL can remove dangerous roles below
+  the bot’s highest role (or time out the actor) and activate lockdown. The
+  guild owner, SECURITY_ADMIN, TRUSTED_STAFF, and members above XenonBot are
+  never contained. Without `View Audit Log`, Xenon still counts guild-wide
+  channel deletions (3/60s), role deletions (2/60s), and bans (5/60s) and
+  raises an alert-only incident with attribution `UNAVAILABLE`; it never
+  guesses the actor or contains anyone in that mode. Audit events arrive after
+  Discord accepts the action; Xenon cannot prevent that initial mutation or
+  recreate deleted Discord objects.
+- **Spam and links:** Custom scanning defaults to 7 messages/8s, 3 identical or
+  near-identical messages (≥ 85% similar, 12+ characters), 2 invite-bearing
+  messages/30s, 6 mentions, 4 links/30s, 20 emoji, and activity across 4+
+  channels. Responses escalate Observe → Warn → Delete → Timeout (10 minutes,
+  1 hour, 6 hours for repeat offenders) → Staff escalation (HIGH incident in
+  `#security-alerts`). After an automatic case, further detections for the
+  same member within 15 s only delete messages, so one burst creates one case.
+  Link warnings DM a member at most once per minute. Link policy defaults to
+  WARN; Discord invites are blocked. URL checks are local heuristics, not
+  reputation or malware scanning. Spam role/channel exemptions skip only the
+  custom spam detector; they do not exempt those users from LinkGuard or native
+  AutoMod rules. Spam never bans.
+- **Native AutoMod:** Xenon reconciles three identified rules: mention spam,
+  invite links, and security keywords. It leaves same-name rules with unknown
+  ownership untouched. Add at most 98 custom keywords; two baseline phrases
+  use Discord’s 100-keyword limit.
+- **Trust:** The guild owner is the implicit OWNER level and is shown first in
+  `/security trust list`; it cannot be assigned. The guild owner,
+  SECURITY_ADMIN, and TRUSTED_STAFF are exempt from anti-nuke detection.
+  NORMAL_STAFF is not. Discord Administrator alone grants no Xenon authority:
+  privileged commands require both the specific Discord permission and the
+  corresponding Xenon trust level.
+- **Alerts:** Every incident is persisted. Repeated alerts with the same
+  source, rule, and actor are posted at most once per 60 s (10 s for CRITICAL);
+  the next posted alert lists the suppressed count and incident IDs. A higher
+  severity is never suppressed.
+- **Persistence:** Configuration, trust, cases, incidents, lockdown and
+  quarantine journals, raid response state, and the last five guild snapshots
+  survive restart. Detector rolling windows are process-local; incidents remain
+  durable.
+
+Available security controls include `/security raid status|enable|disable`,
+`/security raid-mode on|off|auto`, `/security quarantine`, `/security
+unquarantine`, `/security lockdown`, `/security unlock`,
+`/security snapshot take|list|compare|restore-permissions`, and
+`/security incident list|view|resolve`. Manual controls require both the
+command’s Discord permission and Xenon’s internal trust level.
+`/warn`, `/warnings`, `/timeout`, `/untimeout`, `/kick`, `/ban`, `/unban`,
+`/softban`, `/purge`, `/case`, and `/cases` use persistent case IDs. They check
+the moderator’s and XenonBot’s hierarchy and permissions, reject a repeat of
+the same action on the same target while one is in flight or within 15 s,
+reject banning an already-banned user, unbanning a user who is not banned, and
+removing a timeout that does not exist, and record no case when Discord rejects
+the action. Staff evidence is returned ephemerally and moderation logs should
+remain private.
+
+`/security snapshot compare [index]` lists roles and channels deleted since a
+snapshot (with their names, permissions, and overwrites for manual
+recreation), changed role permissions, changed channel overwrites, and new
+roles holding dangerous permissions. `/security snapshot restore-permissions`
+is a dry run unless `confirm:true`; it only rewrites permission bitfields of
+roles that still exist, are not managed by an integration, sit below
+XenonBot’s highest role, and would not receive permissions XenonBot lacks. It
+takes a fresh snapshot first and records an incident. Deleted roles, channels,
+messages, and Discord IDs cannot be restored.
+
+Lockdown records a patch journal for each changed overwrite bit on selected
+public text, announcement, forum, and media channels. It denies
+`SendMessages`, `SendMessagesInThreads`, `CreatePublicThreads`, and
+`CreatePrivateThreads` through `@everyone`, role, and non-exempt member
+overwrites. The guild owner and Administrator roles bypass channel overwrites;
+trusted users and the bot retain only their pre-lockdown effective posting
+bits. Known Administrator roles are reported. Lockdown does not cover voice
+channels or channels created afterward.
+
+Quarantine uses member-specific denies for `ViewChannel` in text, announcement,
+forum, and media channels and `ViewChannel`, `Connect`, and `Speak` in voice/stage channels.
+Administrator targets and the guild owner are unsupported; an already
+connected voice member may remain connected until disconnected. Newly created
+channels are not covered by an existing quarantine.
+
+The configured quarantine role is an optional marker, not enforcement. Xenon
+records whether it added the member’s role assignment and removes only a
+recorded Xenon-added assignment on release; pre-existing assignments remain.
+If Discord accepts the assignment but the ownership record cannot be saved,
+manual marker cleanup may be required.
+
+Unlock and unquarantine re-fetch each channel and restore only Xenon-managed
+bits that still match Xenon’s last confirmed state. Unrelated overwrite changes
+are preserved; edits to the same managed bits become conflicts for manual
+recovery. Discord offers no conditional overwrite update, so an external edit
+between Xenon’s final read and write can still race. Legacy lockdown snapshots
+without a patch journal require manual recovery. Missing Discord objects and
+IDs cannot be fully restored.
+Discord-native Verification Level, moderator 2FA, explicit-media filtering,
+Community/Rules Screening, and Discord Raid Protection (Safety Setup) remain
+owner-managed settings. `/security status` and `/security scan` read what the
+API exposes (verification level, MFA level, explicit content filter, guild
+features) and report `MANUAL ACTION REQUIRED` for anything Xenon cannot verify
+or change; Xenon never edits them.
+
+`/security status` reports PROTECTED, DEGRADED (missing log channels, bot
+permissions, Message Content, or AutoMod rules), AT RISK (a CRITICAL scan
+finding, an open HIGH/CRITICAL incident, or an active RAID/CRITICAL state), or
+LOCKDOWN, plus live raid state, native safety, bot hierarchy health, gateway
+intents, and manual actions.
+
+### Single instance and recovery
+
+Run exactly one Discord-only runtime per state file. Before connecting, the
+runtime takes an OS-owned host mutex (a Windows named pipe or Linux abstract
+socket, released automatically if the process dies) and the lease file
+`.data/discord-runtime.json.lock`, renewed every 30 seconds.
+
+- A second process on the same host exits immediately with an error.
+- A lock left by a crashed process on the same host is replaced on the next
+  start.
+- A lock written by another host or container is honoured until it has gone
+  120 seconds without renewal. After a container is recreated with a new
+  hostname, the new container exits until that lease expires; with a
+  restart-on-failure policy it then starts normally. A fixed `hostname:` for
+  the bot container lets a restarted container take over immediately, but only
+  use it when no second bot container (replica or blue/green copy) can run:
+  containers sharing a hostname cannot see each other’s host mutex, so the
+  older one would run for up to 30 seconds before detecting the takeover.
+- If a runtime finds that another runtime has taken over its lease, or cannot
+  renew it within the lease, it logs `Runtime instance lock lost` and stops with
+  exit code 1 rather than act twice. The state file must not be shared by
+  concurrently running bots on different machines: the lease is a safety net,
+  not a distributed lock.
+- An unreadable lock file blocks startup. Delete it only after confirming no
+  bot process is running.
+
+On macOS (development only) the host mutex is unavailable, so the lock falls
+back to process-ID checks.
 
 ## 4. Configure Xenon guild, channels, and roles
 
