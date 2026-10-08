@@ -1,12 +1,37 @@
 import { ApplicationCommandOptionType, ChannelType, MessageFlags } from 'discord.js';
 import { describe, expect, it, vi } from 'vitest';
 
+import { commandDefinitions } from './commands';
 import {
   DISABLED_PLATFORM_RESPONSE,
   DISCORD_ONLY_COMMANDS,
   isPlatformDataCommand,
   respondPlatformUnavailable,
 } from './discord-only-commands';
+
+interface CommandOptionNode {
+  readonly name: string;
+  readonly type?: number;
+  readonly required?: boolean;
+  readonly options?: readonly CommandOptionNode[];
+}
+
+/** Discord rejects registration when a required option follows an optional sibling. */
+function optionOrderViolations(node: CommandOptionNode, path: string): string[] {
+  const children = node.options ?? [];
+  const violations: string[] = [];
+  let optionalSeen: string | null = null;
+  for (const child of children) {
+    const isParameter =
+      child.type !== ApplicationCommandOptionType.Subcommand &&
+      child.type !== ApplicationCommandOptionType.SubcommandGroup;
+    if (isParameter && child.required !== true) optionalSeen ??= child.name;
+    else if (isParameter && optionalSeen !== null)
+      violations.push(`${path}: required '${child.name}' follows optional '${optionalSeen}'`);
+    violations.push(...optionOrderViolations(child, `${path} ${child.name}`));
+  }
+  return violations;
+}
 
 describe('Discord-only command degradation', () => {
   it('identifies platform data commands for a clean integration-disabled response', async () => {
@@ -95,5 +120,12 @@ describe('Discord-only command degradation', () => {
       });
       expect(option.required ?? false).toBe(false);
     }
+  });
+
+  it('orders required options before optional ones in every registered command', () => {
+    const violations = [...DISCORD_ONLY_COMMANDS, ...commandDefinitions].flatMap((command) =>
+      optionOrderViolations(command, `/${command.name}`),
+    );
+    expect(violations).toEqual([]);
   });
 });

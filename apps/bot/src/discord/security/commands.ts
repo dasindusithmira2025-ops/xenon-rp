@@ -561,19 +561,19 @@ export const SECURITY_COMMANDS = [
     .setDescription('Ban a member with a case record')
     .setDefaultMemberPermissions(P.BanMembers)
     .addUserOption((option) => option.setName('member').setDescription('Member').setRequired(true))
-    .addIntegerOption((option) =>
-      option
-        .setName('delete_days')
-        .setDescription('Delete recent message days (0–7)')
-        .setMinValue(0)
-        .setMaxValue(7),
-    )
     .addStringOption((option) =>
       option
         .setName('reason')
         .setDescription('Reason for the ban')
         .setRequired(true)
         .setMaxLength(500),
+    )
+    .addIntegerOption((option) =>
+      option
+        .setName('delete_days')
+        .setDescription('Delete recent message days (0–7)')
+        .setMinValue(0)
+        .setMaxValue(7),
     )
     .toJSON(),
   new SlashCommandBuilder()
