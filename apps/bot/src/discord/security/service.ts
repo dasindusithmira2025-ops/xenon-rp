@@ -1969,22 +1969,6 @@ export class SecurityService {
         remediation:
           'Server Settings › Roles: remove every permission from the quarantine marker role, or set a different permission-less role.',
       });
-    for (const role of guild.roles.cache.values()) {
-      if (
-        !role.managed &&
-        role.permissions.has(P.Administrator) &&
-        role.id !== guild.roles.everyone.id &&
-        !config.protectedRoleIds.includes(role.id)
-      )
-        findings.push({
-          severity: 'HIGH',
-          code: 'UNEXPECTED_ADMINISTRATOR_ROLE',
-          subject: role.name,
-          detail: 'Role is not recorded as a protected security role; review manually.',
-          remediation:
-            'Remove Administrator from this role if it is not required, or record it as a protected role.',
-        });
-    }
     for (const member of guild.members.cache.values()) {
       if (!member.user.bot || member.id === guild.client.user.id) continue;
       if (member.permissions.has(P.Administrator))
@@ -2037,6 +2021,7 @@ export class SecurityService {
           .filter(
             (overwrite) =>
               overwrite.type === OverwriteType.Member &&
+              overwrite.id !== guild.client.user.id &&
               (overwrite.allow.has(P.ManageChannels) || overwrite.allow.has(P.ManageRoles)),
           )
           .map((overwrite) => overwrite.id);
@@ -2045,7 +2030,7 @@ export class SecurityService {
             severity: 'MEDIUM',
             code: 'PRIVATE_CHANNEL_PERMISSION_DELEGATION',
             subject: channel.name,
-            detail: `Member-specific overwrites grant Manage Channel or Manage Permissions in a private channel: ${delegates.slice(0, 5).join(', ')}.`,
+            detail: `Member-specific overwrites grant Manage Channel or Manage Permissions in a private channel: ${delegates.join(', ')}.`,
             remediation: `Remove the member-specific Manage Channel / Manage Permissions overwrites on ${channel.name} and delegate through a reviewed staff role instead.`,
           });
       }

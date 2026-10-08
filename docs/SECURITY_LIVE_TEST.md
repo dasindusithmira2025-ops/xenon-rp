@@ -189,8 +189,9 @@ warning30s:1 raid30s:2 critical30s:3 recovery_minutes:2 slowmode_seconds:10`
    correlation, response, and status.
 2. `/security incident resolve id:<id> note:verified` → status RESOLVED;
    resolving again reports already resolved.
-3. `/security scan` lists findings with remediation; native settings that the
-   API cannot change are marked `MANUAL ACTION REQUIRED`.
+3. `/security scan` lists findings with descriptions and remediation; large
+   reports are split into numbered ephemeral follow-ups with severity counts.
+   Native settings that the API cannot change are marked `MANUAL ACTION REQUIRED`.
 
 ## 14. Single-instance verification
 

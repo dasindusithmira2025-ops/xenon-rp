@@ -132,9 +132,10 @@ supplies join/leave security signals. Neither presence intent nor Administrator
 is used.
 
 `/security scan` reports missing global bot permissions and role risks without
-editing permissions. Xenon verifies target-channel access and re-fetches
-overwrites before and after each patch; failures are reported as partial
-containment, not success.
+editing permissions. Large reports are split into numbered ephemeral messages
+with severity counts, complete finding details, and remediation. Xenon verifies
+target-channel access and re-fetches overwrites before and after each patch;
+failures are reported as partial containment, not success.
 
 `/security snapshot restore-permissions confirm:true` edits only role
 permission bitfields of existing, non-managed roles below XenonBot’s highest

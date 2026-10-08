@@ -699,8 +699,12 @@ export async function handleSecurityCommand(
         );
         return;
       }
-      const { content, embeds } = renderScan(findings);
-      await interaction.editReply({ content, embeds });
+      const pages = renderScan(findings);
+      const firstPage = pages[0];
+      if (firstPage === undefined) throw new Error('Scan renderer returned no pages for findings.');
+      await interaction.editReply(firstPage);
+      for (const page of pages.slice(1))
+        await interaction.followUp({ ...page, flags: MessageFlags.Ephemeral });
       return;
     }
     if (group === 'snapshot') {
@@ -2055,44 +2059,75 @@ function formatIncident(incident: SecurityIncident): string {
   ].join('\n');
 }
 
-function renderScan(findings: readonly PermissionFinding[]): {
-  readonly content: string;
-  readonly embeds: EmbedBuilder[];
-} {
+const SCAN_DESCRIPTION_LIMIT = 3_500;
+
+export function renderScan(
+  findings: readonly PermissionFinding[],
+): { readonly content: string; readonly embeds: EmbedBuilder[] }[] {
   const sorted = [...findings].sort(
     (a, b) => SEVERITY_ORDER.indexOf(a.severity) - SEVERITY_ORDER.indexOf(b.severity),
   );
+  const severityCounts = new Map(SEVERITY_ORDER.map((severity) => [severity, 0]));
+  for (const finding of sorted)
+    severityCounts.set(finding.severity, (severityCounts.get(finding.severity) ?? 0) + 1);
   const counts = SEVERITY_ORDER.map(
-    (severity) =>
-      `${severity} ${String(sorted.filter((item) => item.severity === severity).length)}`,
+    (severity) => `${severity} ${String(severityCounts.get(severity) ?? 0)}`,
   ).join(' · ');
-  const chunks: string[] = [];
+  const descriptions: string[] = [];
   let current = '';
-  let shown = 0;
   for (const finding of sorted) {
-    const line = clip(
-      `**${finding.severity} · ${finding.code}** — ${finding.subject}: ${finding.detail}\n↳ Fix: ${finding.remediation}`,
-      700,
-    );
-    if (current.length + line.length + 2 > 3_500) {
-      chunks.push(current);
-      current = '';
+    const report = [
+      `**${finding.severity} · ${finding.code}**`,
+      `Subject: ${finding.subject}`,
+      `Description: ${finding.detail}`,
+      `Remediation: ${finding.remediation}`,
+    ].join('\n');
+    let offset = 0;
+    while (offset < report.length) {
+      const separator = current === '' ? '' : '\n\n';
+      const available = SCAN_DESCRIPTION_LIMIT - current.length - separator.length;
+      if (available <= 0) {
+        descriptions.push(current);
+        current = '';
+        continue;
+      }
+      let end = Math.min(offset + available, report.length);
+      if (
+        end < report.length &&
+        end > offset &&
+        report.charCodeAt(end - 1) >= 0xd800 &&
+        report.charCodeAt(end - 1) <= 0xdbff &&
+        report.charCodeAt(end) >= 0xdc00 &&
+        report.charCodeAt(end) <= 0xdfff
+      )
+        end -= 1;
+      if (end === offset) {
+        descriptions.push(current);
+        current = '';
+        continue;
+      }
+      current = `${current}${separator}${report.slice(offset, end)}`;
+      offset = end;
+      if (offset < report.length) {
+        descriptions.push(current);
+        current = '';
+      }
     }
-    if (chunks.length === 3) break;
-    current = current === '' ? line : `${current}\n\n${line}`;
-    shown += 1;
   }
-  if (chunks.length < 3 && current !== '') chunks.push(current);
-  const hidden = sorted.length - shown;
-  return {
-    content: `Scan findings: ${counts}${hidden > 0 ? ` · ${String(hidden)} more not shown` : ''}`,
-    embeds: chunks.map((chunk, position) =>
-      new EmbedBuilder()
-        .setColor(0x475569)
-        .setTitle(`Scan findings ${String(position + 1)}/${String(chunks.length)}`)
-        .setDescription(chunk),
-    ),
-  };
+  if (current !== '') descriptions.push(current);
+  const pageCount = descriptions.length;
+  return descriptions.map((description, index) => {
+    const page = index + 1;
+    return {
+      content: `Scan findings ${String(page)}/${String(pageCount)} · ${counts}`,
+      embeds: [
+        new EmbedBuilder()
+          .setColor(0x475569)
+          .setTitle(`Security scan · ${String(page)}/${String(pageCount)}`)
+          .setDescription(description),
+      ],
+    };
+  });
 }
 
 function formatCaseSummary(record: {

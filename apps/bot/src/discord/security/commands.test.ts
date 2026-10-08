@@ -6,6 +6,7 @@ import {
   ChannelType,
   Collection,
   DiscordAPIError,
+  MessageFlags,
   PermissionsBitField,
   PermissionFlagsBits as P,
   type ChatInputCommandInteraction,
@@ -19,9 +20,10 @@ import {
   computePostureLabel,
   handleModerationCommand,
   handleSecurityCommand,
+  renderScan,
   SECURITY_COMMANDS,
 } from './commands';
-import { createCase, type TrustLevel } from './model';
+import { createCase, type PermissionFinding, type TrustLevel } from './model';
 
 import type { SecurityService } from './service';
 
@@ -29,6 +31,18 @@ const guildId = '12345678901234567';
 const ownerId = '22345678901234567';
 const moderatorId = '32345678901234567';
 const targetId = '42345678901234567';
+
+const SCAN_TEST_SEVERITIES = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW', 'INFO'] as const;
+
+function scanTestFindings(count: number): PermissionFinding[] {
+  return Array.from({ length: count }, (_, index) => ({
+    severity: SCAN_TEST_SEVERITIES[index % SCAN_TEST_SEVERITIES.length]!,
+    code: `SCAN_TEST_${String(index).padStart(3, '0')}`,
+    subject: `ticket-🎟️-${'界'.repeat(35)}-${String(index)}`,
+    detail: `Permission detail ${String(index)} 🔐 ${'🔐'.repeat(index === 34 ? 2_500 : 3)}`,
+    remediation: `Review ticket access ${String(index)} and retain only required permissions →`,
+  }));
+}
 
 function makeInteraction(
   commandName: string,
@@ -198,6 +212,7 @@ function fakeInteraction(
     replied: false,
     deferReply: vi.fn(() => Promise.resolve(undefined)),
     editReply: vi.fn(() => Promise.resolve(undefined)),
+    followUp: vi.fn(() => Promise.resolve(undefined)),
     reply: vi.fn(() => Promise.resolve(undefined)),
   } as unknown as ChatInputCommandInteraction;
 }
@@ -264,6 +279,57 @@ describe('computePostureLabel', () => {
   });
 });
 
+describe('security scan report rendering', () => {
+  it.each([35, 100, 200])(
+    'preserves every finding and respects Discord limits for %i findings',
+    (count) => {
+      const findings = scanTestFindings(count);
+      const pages = renderScan(findings);
+      const reportText = pages
+        .flatMap((page) => page.embeds.map((embed) => embed.toJSON().description ?? ''))
+        .join('');
+
+      expect(pages.length).toBeGreaterThan(1);
+      for (const finding of findings) {
+        expect(reportText.split(finding.code)).toHaveLength(2);
+        expect(reportText).toContain(`Subject: ${finding.subject}`);
+        expect(reportText).toContain(`Description: ${finding.detail}`);
+        expect(reportText).toContain(`Remediation: ${finding.remediation}`);
+      }
+      const expectedCounts = SCAN_TEST_SEVERITIES.map(
+        (severity) =>
+          `${severity} ${String(findings.filter((finding) => finding.severity === severity).length)}`,
+      ).join(' · ');
+      for (const page of pages) {
+        expect(page.content.length).toBeLessThanOrEqual(2_000);
+        expect(page.embeds.length).toBeLessThanOrEqual(10);
+        const embeds = page.embeds.map((embed) => embed.toJSON());
+        let totalEmbedCharacters = 0;
+        for (const embed of embeds) {
+          expect(embed.title?.length ?? 0).toBeLessThanOrEqual(256);
+          expect(embed.description?.length ?? 0).toBeLessThanOrEqual(4_096);
+          totalEmbedCharacters +=
+            (embed.title?.length ?? 0) +
+            (embed.description?.length ?? 0) +
+            (embed.author?.name.length ?? 0) +
+            (embed.footer?.text.length ?? 0) +
+            (embed.fields?.reduce(
+              (total, field) => total + field.name.length + field.value.length,
+              0,
+            ) ?? 0);
+        }
+        expect(totalEmbedCharacters).toBeLessThanOrEqual(6_000);
+        expect(page.content).toContain('CRITICAL');
+        expect(page.content).toContain('HIGH');
+        expect(page.content).toContain('MEDIUM');
+        expect(page.content).toContain('LOW');
+        expect(page.content).toContain('INFO');
+        expect(page.content).toContain(expectedCounts);
+      }
+    },
+  );
+});
+
 describe('security and moderation command behavior', () => {
   let directory = '';
 
@@ -309,6 +375,27 @@ describe('security and moderation command behavior', () => {
       user: targetId,
       strings: { reason: 'Rule break' },
     });
+
+  it('sends subsequent scan pages as ephemeral follow-ups', async () => {
+    const store = await makeStore();
+    const { guild } = moderationGuild(P.ManageGuild);
+    const findings = scanTestFindings(100);
+    const interaction = fakeInteraction('security', ownerId, P.ManageGuild, {
+      subcommand: 'scan',
+    });
+
+    await handleSecurityCommand(
+      interaction,
+      guild,
+      store,
+      fakeService({ scanPermissions: vi.fn(() => Promise.resolve(findings)) }),
+    );
+
+    expect(vi.mocked(interaction.editReply)).toHaveBeenCalledOnce();
+    expect(vi.mocked(interaction.followUp).mock.calls.length).toBeGreaterThan(0);
+    for (const [payload] of vi.mocked(interaction.followUp).mock.calls)
+      expect(payload).toEqual(expect.objectContaining({ flags: MessageFlags.Ephemeral }));
+  });
 
   it('does not save a case when Discord rejects the kick, and exposes only the API code', async () => {
     const store = await makeStore();

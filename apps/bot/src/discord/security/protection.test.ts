@@ -643,6 +643,59 @@ describe('security protection behaviour', () => {
       for (const finding of findings) expect(finding.remediation.trim()).not.toBe('');
     });
 
+    it('excludes XenonBot ticket-channel overwrites from user-delegation findings', async () => {
+      const ticketChannel = channel('42345678901234563', 'xenon-ticket-queue', [
+        overwrite(guildId, 0, 0n, P.ViewChannel),
+        overwrite(botId, 1, P.ManageChannels | P.ManageRoles, 0n),
+      ]);
+
+      const findings = await new SecurityService(store).scanPermissions(
+        buildGuild({ channels: [ticketChannel] }),
+      );
+
+      expect(
+        findings.filter((finding) => finding.code === 'PRIVATE_CHANNEL_PERMISSION_DELEGATION'),
+      ).toHaveLength(0);
+    });
+
+    it('reports an unexpected Administrator role only once', async () => {
+      const administratorRole = {
+        id: '72345678901234991',
+        name: 'Legacy Admin',
+        position: 2,
+        managed: false,
+        permissions: new PermissionsBitField(P.Administrator),
+      };
+
+      const findings = await new SecurityService(store).scanPermissions(
+        buildGuild({ extraRoles: [administratorRole] }),
+      );
+      const roleFindings = findings.filter((finding) => finding.subject === administratorRole.name);
+
+      expect(roleFindings).toHaveLength(1);
+      expect(roleFindings[0]?.code).toBe('UNEXPECTED_DANGEROUS_ROLE');
+    });
+
+    it('retains every member delegation in a private-channel finding', async () => {
+      const delegateIds = Array.from(
+        { length: 6 },
+        (_, index) => `9234567890123400${String(index + 1)}`,
+      );
+      const privateChannel = channel('42345678901234564', 'support-queue', [
+        overwrite(guildId, 0, 0n, P.ViewChannel),
+        ...delegateIds.map((id) => overwrite(id, 1, P.ManageChannels, 0n)),
+      ]);
+
+      const findings = await new SecurityService(store).scanPermissions(
+        buildGuild({ channels: [privateChannel] }),
+      );
+
+      expect(
+        findings.find((finding) => finding.code === 'PRIVATE_CHANNEL_PERMISSION_DELEGATION')
+          ?.detail,
+      ).toContain(delegateIds.join(', '));
+    });
+
     it('rates a non-administrator @everyone dangerous grant as high', async () => {
       const findings = await new SecurityService(store).scanPermissions(
         buildGuild({ everyonePermissions: P.ManageRoles }),
