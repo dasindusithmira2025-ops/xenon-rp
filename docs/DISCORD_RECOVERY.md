@@ -2,7 +2,7 @@
 
 ## Something was deleted or changed in Discord
 
-1. `/xenon setup status` (or **Status** in Server setup). Deleted or edited
+1. `/xenon setup status` in Discord (Xenon Guardian). Deleted or edited
    managed resources appear as `DRIFT`; permission leaks appear as critical
    diagnostics.
 2. `/xenon setup repair`, review, confirm with `PROVISION XENON`. Strict fields
@@ -11,8 +11,9 @@
 3. Channels recreated by repair are new channels — Discord history of the
    deleted one is gone. Panels are re-posted.
 
-With enforcement set to `ENFORCE`, the critical integration resources are
-restored automatically by the 30-minute sweep.
+Repair is on demand. The automatic 30-minute drift sweep belonged to the
+retired database-backed bot runtime and is not part of Guardian; Guardian's own
+anti-nuke protection and `/security snapshot` cover unauthorized changes.
 
 ## An apply failed halfway
 
@@ -20,12 +21,11 @@ Nothing is lost: every success is already in the registry.
 
 - Fix the cause (usually a missing permission or the Xenon role sitting too
   low), generate a new plan and apply again. Only the remainder runs.
-- To undo instead: **History → Clean up** on the failed run (destructive
-  capability, `DELETE XENON RESOURCES`), or
-  `pnpm discord:setup:cleanup -- --run <id> --confirm "DELETE XENON RESOURCES"`.
-  Only resources that exact run created are deleted. Channels with member
-  messages, and roles (membership cannot be verified without the privileged
-  members intent), are kept unless `--force`.
+- To undo instead, remove the resources that run created by hand: the
+  database-backed `discord:setup:cleanup` CLI and the Control Center clean-up
+  button were retired with the single-bot runtime (Guardian holds no database
+  credential). Keep channels with member messages and roles whose membership
+  you cannot verify.
 
 Discord has no transactions; this is cleanup, not rollback.
 

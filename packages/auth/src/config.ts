@@ -3,7 +3,7 @@ import Discord from 'next-auth/providers/discord';
 import { serverEnv, discordCallbackUrl } from '@xenon/config/server';
 import { prisma } from '@xenon/database';
 import { DiscordIdentityConflictError, syncDiscordIdentity } from '@xenon/domain';
-import { enqueueBestEffort } from '@xenon/jobs';
+import { enqueueDurable } from '@xenon/jobs';
 import { createLogger } from '@xenon/logger';
 
 import { xenonAdapter } from './adapter';
@@ -41,6 +41,10 @@ function discordProviders() {
     Discord({
       clientId,
       clientSecret,
+      // Discord returns `iss=https://discord.com` on the callback (RFC 9207).
+      // Without a matching issuer Auth.js compares it to its placeholder
+      // `https://authjs.dev` and rejects every sign-in.
+      issuer: 'https://discord.com',
       authorization: { params: { scope: DISCORD_SCOPES.join(' ') } },
       // Map Discord's shape to the adapter's expectations. Without this the
       // display name would be the legacy `username#1234` rather than the name
@@ -140,7 +144,7 @@ export const authConfig: NextAuthConfig = {
           locale: discord.locale ?? null,
         });
 
-        await enqueueBestEffort('discord.membership.sync', {
+        await enqueueDurable('discord.membership.sync', {
           userId: xenonUserId,
           reason: 'oauth.signin',
         });

@@ -16,7 +16,7 @@ lives in the managed resource registry, not in the file.
 
 ## Xenon's emoji set
 
-`pnpm discord:assets:generate` renders `xenon_online`, `xenon_degraded`,
+`pnpm guardian:assets:generate` renders `xenon_online`, `xenon_degraded`,
 `xenon_offline`, `xenon_idle`, `xenon_mark` (required) and `xenon_check`,
 `xenon_cross`, `xenon_pending`, `xenon_alert`, `xenon_arrow` from SVG. Output is
 deterministic. Panels use them where uploaded and fall back to Unicode.
@@ -24,8 +24,8 @@ deterministic. Panels use them where uploaded and fall back to Unicode.
 ## Importing a pack
 
 ```powershell
-pnpm discord:assets:import ./assets/discord/imports/xenon-pack.zip
-pnpm discord:assets:import ./pack.zip --enable   # skip curation
+pnpm guardian:assets:import ./assets/discord/imports/xenon-pack.zip
+pnpm guardian:assets:import ./pack.zip --enable   # skip curation
 ```
 
 Only import packs you have the right to use. Xenon never downloads packs.
@@ -49,15 +49,15 @@ The importer treats the archive as hostile:
 Imported entries arrive with `"enabled": false`. Edit the manifest to enable
 the good ones and set `priority` (lower uploads first) or `required`.
 
-`pnpm discord:assets:scan` re-validates every manifest entry against disk.
+`pnpm guardian:assets:scan` re-validates every manifest entry against disk.
 
 ## Uploading
 
 Assets are part of the normal plan (phase `ASSETS`). Capacity is derived from
 the guild's boost tier at runtime; required and higher-priority assets are
 planned first and the rest are reported `CAPACITY_BLOCKED` — the provision does
-not fail. `pnpm discord:assets:sync -- --confirm "PROVISION XENON"` uploads
-assets only.
+not fail. The separate database-backed `discord:assets:sync` upload command was
+retired; assets upload as part of `/xenon setup apply`.
 
 Unchanged assets are never re-uploaded. A managed emoji deleted in Discord is
 `DRIFT` (repair re-uploads it). One replaced by a different emoji under the

@@ -85,12 +85,6 @@ export const authSchema = z.object({
     .transform((value) => value === 'true'),
 });
 
-export const discordSchema = z.object({
-  DISCORD_BOT_TOKEN: optional(z.string().min(1)),
-  DISCORD_APPLICATION_ID: optional(discordSnowflake),
-  DISCORD_GUILD_ID: optional(discordSnowflake),
-});
-
 /** Public community invite used when no Control Center invite setting exists. */
 export const discordInviteUrl = optional(z.url());
 
@@ -133,7 +127,6 @@ export function validateDiscordMode<TShape extends z.ZodRawShape>(schema: z.ZodO
         'AUTH_DISCORD_ID',
         'AUTH_DISCORD_SECRET',
         'DISCORD_APPLICATION_ID',
-        'DISCORD_BOT_TOKEN',
         'DISCORD_GUILD_ID',
       ]) {
         if (declared.has(key) && record[key] === undefined) {
@@ -154,7 +147,7 @@ export function validateDiscordMode<TShape extends z.ZodRawShape>(schema: z.ZodO
       ctx.addIssue({
         code: 'custom',
         path: ['DISCORD_APPLICATION_ID'],
-        message: 'must match AUTH_DISCORD_ID; OAuth and bot must use the same application',
+        message: 'must match AUTH_DISCORD_ID; the web tier signs users in with this application',
       });
     }
 

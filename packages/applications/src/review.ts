@@ -9,8 +9,8 @@ import {
   type Prisma,
   transaction,
 } from '@xenon/database';
-import { grantRoleKeys, grantWhitelist, recordAudit } from '@xenon/domain';
-import { enqueueBestEffort } from '@xenon/jobs';
+import { eventSubject, grantRoleKeys, grantWhitelist, recordAudit } from '@xenon/domain';
+import { emitIntegrationEvent, enqueueDurable } from '@xenon/jobs';
 import { createNotification, dispatchPending, notificationCopy } from '@xenon/notifications';
 import { type Actor, requirePermission, requireUser } from '@xenon/permissions';
 
@@ -26,9 +26,10 @@ import { appendEvent } from './submissions';
  * capability check, the state machine, the audit entry and the queued side
  * effects cannot be forgotten by one caller and remembered by another.
  *
- * The ordering rule the whole platform depends on: canonical state commits
- * first, external effects are enqueued afterwards. Discord being unreachable
- * during an approval must cost a message, never the approval.
+ * The ordering rule the whole platform depends on: canonical state and the
+ * side effects it owes commit together, as outbox jobs written in the same
+ * transaction. Discord being unreachable during an approval costs a delay,
+ * never the approval.
  */
 
 async function loadForReview(db: Db, reference: string) {
@@ -105,11 +106,11 @@ async function applyTransition(
     });
 
     await options.withinTransaction?.(tx);
+    await enqueueDurable('discord.review.update', { submissionId }, { db: tx });
 
     return updated;
   });
 
-  await enqueueBestEffort('discord.review.update', { submissionId });
   return submission;
 }
 
@@ -216,11 +217,11 @@ export async function assignReviewer(
       before: { assigneeId: current.assigneeId },
       after: { assigneeId },
     });
+    await enqueueDurable('discord.review.update', { submissionId: current.id }, { db: tx });
 
     return tx.applicationSubmission.findUniqueOrThrow({ where: { id: current.id } });
   });
 
-  await enqueueBestEffort('discord.review.update', { submissionId: current.id });
   return submission;
 }
 
@@ -514,28 +515,29 @@ export async function approveApplication(
       },
     });
 
+    const copy = notificationCopy.approved(
+      current.publicId,
+      current.template.name,
+      input.publicNote ?? null,
+    );
+    const notification = await createNotification(tx, { userId: current.applicantId, ...copy });
+    await dispatchPending([notification], tx);
+
+    // `grantWhitelist` above records WHITELIST_APPROVED and its own syncs in
+    // this same transaction; these are the approval's own effects.
+    const reason = `application.approved:${current.publicId}`;
+    await enqueueDurable('discord.review.update', { submissionId: current.id }, { db: tx });
+    await enqueueDurable('discord.role.sync', { userId: current.applicantId, reason }, { db: tx });
+    if (current.template.grantsWhitelist) {
+      await enqueueDurable(
+        'fivem.whitelist.sync',
+        { userId: current.applicantId, reason },
+        { db: tx },
+      );
+    }
+
     return updated;
   });
-
-  const copy = notificationCopy.approved(
-    current.publicId,
-    current.template.name,
-    input.publicNote ?? null,
-  );
-  const notification = await createNotification(db, { userId: current.applicantId, ...copy });
-  await dispatchPending([notification]);
-
-  await enqueueBestEffort('discord.review.update', { submissionId: current.id });
-  await enqueueBestEffort('discord.role.sync', {
-    userId: current.applicantId,
-    reason: `application.approved:${current.publicId}`,
-  });
-  if (current.template.grantsWhitelist) {
-    await enqueueBestEffort('fivem.whitelist.sync', {
-      userId: current.applicantId,
-      reason: `application.approved:${current.publicId}`,
-    });
-  }
 
   return submission;
 }
@@ -575,6 +577,17 @@ export async function rejectApplication(
           source: actor.source,
         },
       });
+      if (current.template.grantsWhitelist) {
+        await emitIntegrationEvent(tx, {
+          type: 'WHITELIST_REJECTED',
+          payload: {
+            ...(await eventSubject(tx, current.applicantId)),
+            applicationPublicId: current.publicId,
+          },
+          idempotencyKey: `application.rejected:${current.id}`,
+          source: actor.source,
+        });
+      }
     },
   });
 

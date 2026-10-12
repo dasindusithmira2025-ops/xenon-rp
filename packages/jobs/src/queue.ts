@@ -26,15 +26,20 @@ export interface EnqueueOptions {
   readonly repeatCron?: string;
   /** Higher runs first. Defaults to normal priority. */
   readonly priority?: number;
+  /**
+   * BullMQ job id when the catalogue does not fix one. The outbox relay passes
+   * one derived from the outbox row so a re-dispatch after a crash collapses.
+   * Must not contain `:`.
+   */
+  readonly jobId?: string;
 }
 
 /**
- * Enqueue a side effect.
+ * Put a job straight onto the BullMQ queue.
  *
- * Deliberately swallows nothing: if Redis is unreachable this throws, and the
- * caller decides. Domain services call it *after* their transaction commits and
- * treat a failure as a logged warning, because a missing notification must not
- * roll back an approval that already happened.
+ * Throws when Redis is unreachable. Only the outbox relay calls this: every
+ * domain side effect is recorded with `enqueueDurable` inside the transaction
+ * that decided it, and the relay moves it here once it has committed.
  */
 export async function enqueue<TName extends JobName>(
   name: TName,
@@ -46,7 +51,7 @@ export async function enqueue<TName extends JobName>(
   const jobOptions: JobsOptions = {
     attempts: policy.attempts,
     backoff: { type: 'exponential', delay: policy.backoffMs },
-    jobId: jobIdFor(name, payload),
+    jobId: jobIdFor(name, payload) ?? options.jobId,
     ...(options.delayMs === undefined ? {} : { delay: options.delayMs }),
     ...(options.priority === undefined ? {} : { priority: options.priority }),
     ...(options.repeatCron === undefined ? {} : { repeat: { pattern: options.repeatCron } }),
@@ -54,28 +59,6 @@ export async function enqueue<TName extends JobName>(
 
   const job = await jobQueue().add(name, payload, jobOptions);
   return job.id;
-}
-
-/**
- * Enqueue without letting a queue outage propagate.
- *
- * The rule the whole platform is built on: canonical state has already
- * committed, so a failure to schedule the side effect is an operational problem
- * to be retried by the reconciliation sweep, not a reason to fail the request.
- * Returns false when the job could not be scheduled.
- */
-export async function enqueueBestEffort<TName extends JobName>(
-  name: TName,
-  payload: JobPayloads[TName],
-  options: EnqueueOptions = {},
-): Promise<boolean> {
-  try {
-    await enqueue(name, payload, options);
-    return true;
-  } catch (error) {
-    console.error(`[jobs] failed to enqueue ${name}`, error);
-    return false;
-  }
 }
 
 export interface QueueDepth {

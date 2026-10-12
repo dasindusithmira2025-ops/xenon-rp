@@ -8,6 +8,7 @@ import { Badge, Panel } from '@xenon/ui';
 import type { Metadata } from 'next';
 
 import { ApplicationForm } from '~/components/applications/application-form';
+import { ApplicationStatusBanner } from '~/components/applications/status-banner';
 import { ApplicationTimeline } from '~/components/applications/timeline';
 import { PortalPage, PortalSection } from '~/components/portal/portal-page';
 import { currentActor, requireUserId } from '~/server/context';
@@ -65,6 +66,8 @@ export default async function ApplicationPage({
         <ArrowLeft className="size-3.5" /> All applications
       </Link>
 
+      <ApplicationStatusBanner status={submission.status} decisionNote={submission.decisionNote} />
+
       <div className="grid gap-10 lg:grid-cols-[1fr_17rem] lg:gap-12">
         <div className="min-w-0">
           <ApplicationForm
@@ -118,26 +121,6 @@ export default async function ApplicationPage({
               </div>
             </PortalSection>
           )}
-
-          {submission.status === 'APPROVED' || submission.status === 'REJECTED' ? (
-            submission.decisionNote === null ? null : (
-              <PortalSection title="Decision">
-                <Panel
-                  tone="flat"
-                  pad="md"
-                  className={
-                    submission.status === 'APPROVED'
-                      ? 'border-xenon/30 bg-xenon-deep/10'
-                      : 'border-danger/30 bg-danger/5'
-                  }
-                >
-                  <p className="text-sm leading-relaxed whitespace-pre-wrap text-ink-secondary">
-                    {submission.decisionNote}
-                  </p>
-                </Panel>
-              </PortalSection>
-            )
-          ) : null}
         </aside>
       </div>
     </PortalPage>

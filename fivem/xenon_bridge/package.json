@@ -8,6 +8,7 @@
     "build": "node build.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
     "clean": "rimraf dist .turbo *.tsbuildinfo"
   },
   "devDependencies": {
@@ -15,6 +16,7 @@
     "@xenon/config": "workspace:*",
     "esbuild": "0.28.2",
     "eslint": "10.11.0",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "vitest": "5.0.1"
   }
 }

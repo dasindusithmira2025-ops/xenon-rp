@@ -10,14 +10,14 @@ the next connect rather than at the next restart.
 
 ## What the bridge does
 
-| Direction    | Endpoint                     | Purpose                       |
-| ------------ | ---------------------------- | ----------------------------- |
-| Game → Xenon | `POST /api/bridge/whitelist` | The connect gate              |
-| Game → Xenon | `POST /api/bridge/link`      | Redeeming a link code         |
-| Game → Xenon | `POST /api/bridge/presence`  | Pushed player counts          |
-| Xenon → Game | `POST /xenon/status`         | Polled player counts          |
-| Xenon → Game | `POST /xenon/whitelist`      | Whitelist change notification |
-| Xenon → Game | `POST /xenon/presence`       | "Is this identifier online?"  |
+| Direction    | Endpoint                     | Purpose                                       |
+| ------------ | ---------------------------- | --------------------------------------------- |
+| Game → Xenon | `POST /api/bridge/whitelist` | The connect gate                              |
+| Game → Xenon | `POST /api/bridge/presence`  | Pushed player counts                          |
+| Game → Xenon | `POST /api/bridge/events`    | Connect/drop, txAdmin restart and ban notices |
+| Xenon → Game | `POST /xenon/status`         | Polled player counts                          |
+| Xenon → Game | `POST /xenon/whitelist`      | Whitelist change notification                 |
+| Xenon → Game | `POST /xenon/presence`       | "Is this identifier online?"                  |
 
 Every request in both directions is HMAC-signed. See [SECURITY.md](SECURITY.md).
 
@@ -88,66 +88,68 @@ bridge already handles.
 
 ## Account linking
 
-The player proves they hold both the Xenon session and the FiveM client:
+Players link their **Cfx.re account on the website** before they are
+whitelisted — there is no in-game step. **Account → Connect Cfx.re** sends them
+to forum.cfx.re to approve Xenon; Xenon reads the numeric Cfx.re account id,
+which is exactly the `fivem:<id>` identifier FXServer reports, and binds it to
+their Xenon account. The full protocol, threat model and staging checks are in
+[CFX_LINKING.md](CFX_LINKING.md).
 
-1. In the portal, **Account → FiveM**, they generate a code — `XEN-7K4P9`.
-2. In game, they type `/link XEN-7K4P9`.
-3. The bridge sends the code **plus the identifiers FXServer observed**.
-4. Xenon redeems the code and binds those identifiers to that account.
+At connect time the bridge sends the identifiers FXServer read itself. Only the
+`fivem:` identifier admits a player, plus Rockstar licences proven by the
+retired in-game code flow (`FIVEM_ADMISSION_MODE=cfx-or-legacy`, the default)
+or granted by staff as an exception. Client-reported `discord:`, `steam:`,
+`xbl:` and `live:` identifiers never admit anyone. Identifiers that resolve to
+more than one Xenon account are refused with "Identity conflict — contact
+staff".
 
-The identifiers come from the game server, never from the player. A
-self-declared licence would let anyone claim anyone's account.
-
-Properties of the code, and where each is enforced:
-
-| Property      | How                                                            |
-| ------------- | -------------------------------------------------------------- |
-| Unguessable   | 5 characters from a 31-symbol alphabet, drawn with `randomInt` |
-| Short-lived   | 10 minutes                                                     |
-| Single use    | Consumed inside the redeeming transaction                      |
-| Rate limited  | 5 per 15 minutes per user                                      |
-| Not in a dump | Only the SHA-256 is stored; the code is shown once             |
-
-The alphabet omits `0/O`, `1/I/L` and friends, because these get read aloud in
-voice chat and typed from screenshots.
-
-Expired, reused, revoked and unknown codes all produce the **same** message.
-Distinguishing them would turn the endpoint into an oracle for guessing live
-codes.
-
-An identifier already bound to a different account is refused rather than
-moved. One Steam account cannot be two players; that case needs a support
-ticket and a human.
+A player whose client reports no `fivem:` identifier is told to sign in to
+Cfx.re in FiveM (Settings → Account) and reconnect. If that is impossible, staff
+with `players.manage` can add the player's Rockstar licence as an audited
+exception with `POST /api/v1/players/<XN-id>/licence-exception`
+(`{"licence": "<40 hex chars>", "reason": "…"}`). There is no control-centre
+button for this yet.
 
 ---
 
-## When Xenon is unreachable, the gate fails **open**
+## When Xenon is unreachable: `xenon_fail_mode`
 
-Connections are admitted and the reason is logged.
+By default (`set xenon_fail_mode "open"`, or unset) connections are admitted
+and the reason is logged. A website outage then never empties the city, and the
+gate closes again the moment Xenon returns because whitelist state is
+re-checked on every connection.
 
-This is deliberate. The alternative — refusing everybody — means a website
-outage empties the city, which is a worse and far more visible failure than a
-handful of unwhitelisted connections during a few minutes of downtime.
-Whitelist state is re-checked on every connection, so the gate closes again the
-moment Xenon returns.
+`set xenon_fail_mode "closed"` refuses connections with "Xenon is temporarily
+unavailable" while Xenon cannot be reached. Any other value is treated as
+`closed` and logged, so a typo cannot quietly open the gate. Make the choice
+knowingly.
 
-To fail closed instead, change the `deferrals.done()` call in the
-`Xenon unreachable` branch of `fivem/xenon_bridge/src/server.ts` to pass a
-message. Make that choice knowingly.
+Only an outage counts as "unreachable": no response or a 5xx. When Xenon
+answers and refuses the check itself — a wrong `xenon_secret`, a replayed or
+malformed request, an exhausted rate limit — the player is refused in either
+mode, so a misconfiguration or a flood of reconnects can never open the gate.
+
+## txAdmin
+
+txAdmin enforces its own bans in its own `playerConnecting` handler; Xenon
+never overrides a txAdmin rejection. The bridge forwards
+`txAdmin:events:scheduledRestart` (a restart notice in Link's events channel)
+and `txAdmin:events:playerBanned` (a FiveM-scope moderation case in Xenon,
+visible to staff; it does not change the Xenon account). Both are listened to as
+server-local events only, and events raised by a player are ignored.
 
 ---
 
 ## Troubleshooting
 
-| Symptom                                   | Cause                                                               |
-| ----------------------------------------- | ------------------------------------------------------------------- |
-| `[xenon_bridge] Not configured`           | `xenon_endpoint` unset, or the secret is under 32 characters        |
-| Everyone gets in regardless of whitelist  | Bridge unconfigured, or Xenon unreachable — check the log           |
-| `/link` says "not valid" for a fresh code | Clock skew over 5 minutes between the two machines                  |
-| Bridge endpoints return 401               | Secrets differ between `.env` and `server.cfg`                      |
-| Bridge endpoints return 503               | `FIVEM_BRIDGE_SECRET` is empty on the Xenon side                    |
-| Bridge endpoints return 409               | Replayed nonce — usually a retry storm, not an attack               |
-| Status page shows **unknown**             | No snapshot within five minutes; Xenon says so rather than guessing |
+| Symptom                                  | Cause                                                               |
+| ---------------------------------------- | ------------------------------------------------------------------- |
+| `[xenon_bridge] Not configured`          | `xenon_endpoint` unset, or the secret is under 32 characters        |
+| Everyone gets in regardless of whitelist | Bridge unconfigured, or Xenon unreachable — check the log           |
+| Bridge endpoints return 401              | Secrets differ between `.env` and `server.cfg`                      |
+| Bridge endpoints return 503              | `FIVEM_BRIDGE_SECRET` is empty on the Xenon side                    |
+| Bridge endpoints return 409              | Replayed nonce — usually a retry storm, not an attack               |
+| Status page shows **unknown**            | No snapshot within five minutes; Xenon says so rather than guessing |
 
 The signing scheme is duplicated in the resource, because it runs outside the
 workspace and cannot import `@xenon/fivem`. A golden vector in

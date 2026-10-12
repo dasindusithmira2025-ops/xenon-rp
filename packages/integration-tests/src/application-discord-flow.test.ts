@@ -1,17 +1,4 @@
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-
-const queuedEffects = vi.hoisted(() => [] as { name: string; payload: unknown }[]);
-const enqueueEffect = vi.hoisted(() =>
-  vi.fn((name: string, payload: unknown) => {
-    queuedEffects.push({ name, payload });
-    return Promise.resolve(true);
-  }),
-);
-
-vi.mock('@xenon/jobs', async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...(actual as Record<string, unknown>), enqueueBestEffort: enqueueEffect };
-});
+import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   approveApplication,
@@ -30,6 +17,16 @@ import {
   fillRequiredAnswers,
   resetDatabase,
 } from './harness';
+
+/** Side effects recorded in the outbox, in the order they were written. */
+async function queuedEffects(): Promise<{ name: string; payload: unknown }[]> {
+  const rows = await prisma.outboxMessage.findMany({
+    where: { kind: 'JOB' },
+    orderBy: { createdAt: 'asc' },
+    select: { name: true, payload: true },
+  });
+  return rows.map((row) => ({ name: row.name, payload: row.payload }));
+}
 
 const SITE_URL = 'https://xenon.example.test';
 
@@ -142,8 +139,6 @@ beforeAll(async () => {
 });
 
 beforeEach(async () => {
-  queuedEffects.length = 0;
-  enqueueEffect.mockClear();
   await resetDatabase();
 });
 
@@ -172,7 +167,7 @@ describe('website submission to Discord review and back', () => {
     });
     const submitted = await submitApplication(prisma, await actorFor(applicant), draft.id);
     expect(submitted.status).toBe('SUBMITTED');
-    expect(queuedEffects).toContainEqual({
+    expect(await queuedEffects()).toContainEqual({
       name: 'discord.review.post',
       payload: { submissionId: draft.id },
     });
@@ -203,8 +198,9 @@ describe('website submission to Discord review and back', () => {
     if (discordActor === null) throw new Error('Discord staff account did not resolve to Xenon');
 
     await approveApplication(prisma, discordActor, { reference: submitted.publicId });
-    expect(queuedEffects.some((job) => job.name === 'discord.review.update')).toBe(true);
-    expect(queuedEffects.some((job) => job.name === 'discord.role.sync')).toBe(true);
+    const effects = await queuedEffects();
+    expect(effects.some((job) => job.name === 'discord.review.update')).toBe(true);
+    expect(effects.some((job) => job.name === 'discord.role.sync')).toBe(true);
     expect(await prisma.notification.count({ where: { userId: applicant.id } })).toBeGreaterThan(0);
 
     const event = await prisma.applicationEvent.findFirstOrThrow({

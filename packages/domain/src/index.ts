@@ -5,6 +5,7 @@ export * from './content';
 export * from './departments';
 export * from './hashing';
 export * from './health';
+export * from './integration-events';
 export * from './reports';
 export * from './roles';
 export * from './rules';

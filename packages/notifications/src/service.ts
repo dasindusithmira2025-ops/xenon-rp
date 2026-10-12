@@ -5,7 +5,7 @@ import type {
   NotificationType,
   Prisma,
 } from '@xenon/database';
-import { enqueueBestEffort } from '@xenon/jobs';
+import { enqueueDurable } from '@xenon/jobs';
 
 /**
  * The notification service.
@@ -14,9 +14,10 @@ import { enqueueBestEffort } from '@xenon/jobs';
  * "approved in Discord" and "approved on the website" produce the same record
  * and the same delivery attempts.
  *
- * Ordering is the whole point: the row is written inside the caller's
- * transaction, and delivery is enqueued afterwards. A Discord outage therefore
- * costs a DM, never the decision that caused it.
+ * Ordering is the whole point: the row and its delivery job are written to
+ * Postgres (pass the caller's transaction to commit them with the decision),
+ * and the worker delivers afterwards. A Discord or Redis outage therefore
+ * delays a DM, never loses it, and never fails the decision that caused it.
  */
 
 export interface NotifyInput {
@@ -34,8 +35,8 @@ export interface NotifyInput {
  * Create a notification row.
  *
  * Takes a `Db` so it can join the caller's transaction. Does **not** enqueue:
- * call `dispatchPending` after the transaction commits, or use `notifyNow`
- * when there is no surrounding transaction.
+ * call `dispatchPending` with the same handle, or use `notifyNow` when there
+ * is no surrounding transaction.
  */
 export async function createNotification(db: Db, input: NotifyInput): Promise<Notification> {
   const channels = input.channels ?? ['WEB', 'DISCORD_DM'];
@@ -56,18 +57,29 @@ export async function createNotification(db: Db, input: NotifyInput): Promise<No
   });
 }
 
-/** Enqueue delivery for notifications already written. Safe to call twice. */
-export async function dispatchPending(notifications: readonly Notification[]): Promise<void> {
+/**
+ * Record delivery jobs for notifications already written. Safe to call twice:
+ * each notification owes exactly one DM, so the outbox key collapses repeats.
+ * Pass the transaction handle that wrote the notifications.
+ */
+export async function dispatchPending(
+  notifications: readonly Notification[],
+  db?: Db,
+): Promise<void> {
   for (const notification of notifications) {
     if (notification.discordState !== 'PENDING') continue;
-    await enqueueBestEffort('discord.dm', { notificationId: notification.id });
+    await enqueueDurable(
+      'discord.dm',
+      { notificationId: notification.id },
+      { ...(db === undefined ? {} : { db }), dedupeKey: `discord.dm:${notification.id}` },
+    );
   }
 }
 
 /** Create and immediately schedule delivery. For callers outside a transaction. */
 export async function notifyNow(db: Db, input: NotifyInput): Promise<Notification> {
   const notification = await createNotification(db, input);
-  await dispatchPending([notification]);
+  await dispatchPending([notification], db);
   return notification;
 }
 
@@ -81,7 +93,7 @@ export async function notifyMany(
   for (const userId of userIds) {
     created.push(await createNotification(db, { ...input, userId }));
   }
-  await dispatchPending(created);
+  await dispatchPending(created, db);
   return created.length;
 }
 

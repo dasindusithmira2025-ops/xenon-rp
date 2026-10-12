@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   allocatePublicId: vi.fn(),
   enforceRateLimit: vi.fn(),
-  enqueueBestEffort: vi.fn(),
+  enqueueDurable: vi.fn(),
   recordAudit: vi.fn(),
   hashIp: vi.fn(),
 }));
@@ -14,7 +14,7 @@ vi.mock('@xenon/database', () => ({
 }));
 vi.mock('@xenon/jobs', () => ({
   enforceRateLimit: mocks.enforceRateLimit,
-  enqueueBestEffort: mocks.enqueueBestEffort,
+  enqueueDurable: mocks.enqueueDurable,
 }));
 vi.mock('@xenon/notifications', () => ({
   createNotification: vi.fn(),
@@ -37,7 +37,7 @@ describe('canonical ticket creation', () => {
     vi.clearAllMocks();
     mocks.allocatePublicId.mockResolvedValue('XN-TK-1042');
     mocks.enforceRateLimit.mockResolvedValue(undefined);
-    mocks.enqueueBestEffort.mockResolvedValue(undefined);
+    mocks.enqueueDurable.mockResolvedValue(undefined);
     mocks.hashIp.mockReturnValue('ip-hash');
   });
 
@@ -92,8 +92,10 @@ describe('canonical ticket creation', () => {
       actor,
       expect.objectContaining({ action: 'SUPPORT_TICKET_CREATED' }),
     );
-    expect(mocks.enqueueBestEffort).toHaveBeenCalledWith('discord.ticket.created', {
-      ticketId: 'ticket-row-id',
-    });
+    expect(mocks.enqueueDurable).toHaveBeenCalledWith(
+      'discord.ticket.created',
+      { ticketId: 'ticket-row-id' },
+      { db },
+    );
   });
 });

@@ -14,15 +14,19 @@
   "dependencies": {
     "@xenon/applications": "workspace:*",
     "@xenon/config": "workspace:*",
+    "@xenon/contracts": "workspace:*",
     "@xenon/core": "workspace:*",
+    "@xenon/core-api": "workspace:*",
     "@xenon/database": "workspace:*",
     "@xenon/discord": "workspace:*",
     "@xenon/domain": "workspace:*",
     "@xenon/fivem": "workspace:*",
     "@xenon/jobs": "workspace:*",
+    "@xenon/logger": "workspace:*",
     "@xenon/notifications": "workspace:*",
     "@xenon/permissions": "workspace:*",
-    "@xenon/validation": "workspace:*"
+    "@xenon/validation": "workspace:*",
+    "@xenon/worker": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

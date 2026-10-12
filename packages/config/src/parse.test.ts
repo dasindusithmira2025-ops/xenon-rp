@@ -5,7 +5,8 @@ import { EnvironmentValidationError, lazyEnv, parseEnv } from './parse';
 import {
   authSchema,
   discordMode,
-  discordSchema,
+  discordSnowflake,
+  optional,
   requireInProduction,
   runtimeSchema,
   siteSchema,
@@ -131,10 +132,16 @@ describe('requireInProduction', () => {
 
 describe('Discord configuration', () => {
   const schema = validateDiscordMode(
-    runtimeSchema.extend(authSchema.shape).extend(discordSchema.shape).extend({
-      DISCORD_MODE: discordMode,
-      NEXT_PUBLIC_SITE_URL: siteSchema.shape.NEXT_PUBLIC_SITE_URL,
-    }),
+    runtimeSchema
+      .extend(authSchema.shape)
+      .extend({
+        DISCORD_APPLICATION_ID: optional(discordSnowflake),
+        DISCORD_GUILD_ID: optional(discordSnowflake),
+      })
+      .extend({
+        DISCORD_MODE: discordMode,
+        NEXT_PUBLIC_SITE_URL: siteSchema.shape.NEXT_PUBLIC_SITE_URL,
+      }),
   );
 
   const configured = {
@@ -145,7 +152,6 @@ describe('Discord configuration', () => {
     AUTH_DISCORD_SECRET: 'rotated-secret',
     AUTH_URL: 'http://localhost:3200/api/auth',
     DISCORD_APPLICATION_ID: '12345678901234567',
-    DISCORD_BOT_TOKEN: 'rotated-bot-token',
     DISCORD_GUILD_ID: '23456789012345678',
     NEXT_PUBLIC_SITE_URL: 'http://localhost:3200',
   };
@@ -161,7 +167,7 @@ describe('Discord configuration', () => {
     ).toBe(true);
   });
 
-  it('requires one matching application id for OAuth and the bot', () => {
+  it('requires one matching application id for OAuth and DISCORD_APPLICATION_ID', () => {
     const result = schema.safeParse({
       ...configured,
       DISCORD_APPLICATION_ID: '34567890123456789',
@@ -172,7 +178,7 @@ describe('Discord configuration', () => {
     );
   });
 
-  it('requires complete OAuth and bot credentials when enabled', () => {
+  it('requires complete OAuth credentials and the guild when enabled', () => {
     const result = schema.safeParse({
       NODE_ENV: 'development',
       DISCORD_MODE: 'enabled',
@@ -182,7 +188,7 @@ describe('Discord configuration', () => {
     expect(result.success).toBe(false);
     const paths = result.error?.issues.map((issue) => issue.path[0]);
     expect(paths).toContain('AUTH_DISCORD_ID');
-    expect(paths).toContain('DISCORD_BOT_TOKEN');
+    expect(paths).toContain('DISCORD_GUILD_ID');
   });
 
   it('requires the canonical callback origin in production', () => {

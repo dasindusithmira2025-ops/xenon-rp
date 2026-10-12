@@ -7,15 +7,18 @@ about them.
 
 ## The processes
 
-| Process       | Command                          | Needs                    | If it stops                          |
-| ------------- | -------------------------------- | ------------------------ | ------------------------------------ |
-| Web           | `pnpm --filter @xenon/web start` | Postgres, Redis          | The site is down                     |
-| Bot + workers | `pnpm --filter @xenon/bot start` | Postgres, Redis, Discord | Roles and review cards stop updating |
+| Process  | Command                                   | Needs                          | If it stops                                                         |
+| -------- | ----------------------------------------- | ------------------------------ | ------------------------------------------------------------------- |
+| Web      | `pnpm --filter @xenon/web start`          | Postgres, Redis                | The site is down                                                    |
+| Core API | `pnpm --filter @xenon/core-api start`     | Postgres, Redis                | Link's commands and review buttons answer "temporarily unavailable" |
+| Worker   | `pnpm --filter @xenon/worker start`       | Postgres, Redis, Link (gateway URL, or Link's relay pulls via Core) | Side effects wait in the outbox (roles, cards, DMs, whitelist push) |
+| Link     | `pnpm --filter @xenon/link-bot start`     | Discord, Core API              | Platform commands stop; side effects queue until it returns         |
+| Guardian | `pnpm --filter @xenon/guardian-bot start` | Discord only (`.data/` volume) | Security, moderation, welcome and tickets stop                      |
 
-They are separate processes on purpose. A gateway disconnect must not take the
-website down, and a deploy of the website must not drop the bot's connection.
-
-The bot process runs both the gateway client and the job worker (concurrency 4).
+They are separate processes on purpose. Guardian depends on nothing but
+Discord, so a website, database, Redis or Link outage never weakens server
+security, and none of the platform services depends on Guardian. Run exactly
+one Guardian and one Link; the worker may run more than once.
 
 ---
 

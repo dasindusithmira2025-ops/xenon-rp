@@ -639,7 +639,7 @@ export function planGuild(input: PlanInput): PlanResult {
               ...base,
               kind: 'MANUAL_REVIEW',
               summary:
-                'Source image changed; replacing it means removing the uploaded one (pnpm discord:assets:sync --replace)',
+                'Source image changed; replacing it means deleting the uploaded emoji in Discord, then running /xenon setup repair',
               discordId: entry.discordId,
             },
       );

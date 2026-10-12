@@ -6,7 +6,7 @@ import { headers } from 'next/headers';
 import { withdrawApplication } from '@xenon/applications';
 import { serverEnv } from '@xenon/config/server';
 import { IntegrationError } from '@xenon/core';
-import { prisma } from '@xenon/database';
+import { prisma, transaction } from '@xenon/database';
 import {
   acceptRules,
   createCharacter,
@@ -18,8 +18,8 @@ import {
   updateProfile,
   withdrawAppeal,
 } from '@xenon/domain';
-import { issueLinkCode, unlinkIdentity } from '@xenon/fivem';
-import { enqueue, enforceRateLimit } from '@xenon/jobs';
+import { unlinkIdentity } from '@xenon/fivem';
+import { enforceRateLimit, enqueueDurable } from '@xenon/jobs';
 import { markAllNotificationsRead, markNotificationRead } from '@xenon/notifications';
 import { characterInput, cuid, profileInput, ticketReplyInput } from '@xenon/validation';
 
@@ -76,22 +76,12 @@ export async function acceptRulesAction(): Promise<ActionResult<{ version: numbe
   });
 }
 
-// --- FiveM linking -----------------------------------------------------------
+// --- Game identities ---------------------------------------------------------
 
-export async function issueLinkCodeAction(): Promise<
-  ActionResult<{ code: string; expiresAt: string }>
-> {
-  return runAction(async () => {
-    const actor = await requireSignedIn();
-    const issued = await issueLinkCode(prisma, actor, { ip: await clientIp() });
-
-    revalidatePath('/portal/account');
-    // The plaintext code crosses the wire exactly once, to the person who asked
-    // for it. Only its hash is stored.
-    return { code: issued.code, expiresAt: issued.expiresAt.toISOString() };
-  });
-}
-
+/**
+ * Remove an identifier left by the retired in-game code flow. The verified
+ * Cfx.re account is linked and unlinked through `/api/v1/me/cfx/*` instead.
+ */
 export async function unlinkIdentityAction(identityId: string): Promise<ActionResult> {
   return runAction(async () => {
     const id = parseInput(cuid, identityId);
@@ -103,7 +93,7 @@ export async function unlinkIdentityAction(identityId: string): Promise<ActionRe
   });
 }
 
-/** Ask the persistent bot to refresh this account's current guild membership. */
+/** Ask the worker to refresh this account's current guild membership through Xenon Link. */
 export async function resyncDiscordMembershipAction(): Promise<
   ActionResult<{ requestedAt: string }>
 > {
@@ -127,12 +117,18 @@ export async function resyncDiscordMembershipAction(): Promise<
     }
 
     const requestedAt = new Date();
-    await enqueue('discord.membership.sync', { userId, reason: 'portal.manual_resync' });
-    await recordAudit(prisma, actor, {
-      action: 'discord.membership_resync_requested',
-      entityType: 'discord_account',
-      entityId: account.id,
-      metadata: { discordUserId: account.discordId },
+    await transaction(prisma, async (tx) => {
+      await enqueueDurable(
+        'discord.membership.sync',
+        { userId, reason: 'portal.manual_resync' },
+        { db: tx },
+      );
+      await recordAudit(tx, actor, {
+        action: 'discord.membership_resync_requested',
+        entityType: 'discord_account',
+        entityId: account.id,
+        metadata: { discordUserId: account.discordId },
+      });
     });
 
     revalidatePath('/portal/account');

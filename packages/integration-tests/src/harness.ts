@@ -8,6 +8,7 @@ import {
   type User,
 } from '@xenon/database';
 import { ensureUserFromDiscord } from '@xenon/domain';
+import { redis } from '@xenon/jobs';
 import { type Actor, resolveActor, systemActor } from '@xenon/permissions';
 
 /**
@@ -32,11 +33,21 @@ function nextDiscordFixtureId(): string {
   return `test-discord-${String(discordFixtureCounter).padStart(5, '0')}`;
 }
 
-/** Empty every table and rebuild the baseline. */
+/**
+ * Empty every table, rebuild the baseline, and forget FiveM rate-limit
+ * buckets. Those live in Redis and are keyed by fixture identifiers that every
+ * run reuses, so without this a test would inherit the previous run's attempts.
+ */
 export async function resetDatabase(): Promise<void> {
   await truncateAll(prisma);
   discordFixtureCounter = 0;
   await seedBaseline(prisma);
+  try {
+    const keys = await redis().keys('rl:fivem:*');
+    if (keys.length > 0) await redis().del(...keys);
+  } catch {
+    // No Redis: the limiter fails open, so there is nothing to forget.
+  }
 }
 
 export interface TestUserOptions {

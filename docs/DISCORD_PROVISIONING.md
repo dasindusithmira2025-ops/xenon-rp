@@ -1,10 +1,14 @@
 # Discord provisioning
 
-One engine, three surfaces: `/xenon setup …` in Discord, **Control → Discord →
-Server setup** (`/control/discord/setup`), and `pnpm discord:setup:*`. All of
-them create a row in `discord_provision_runs` and execute it through
-`apps/bot/src/discord/provisioning/runner.ts`. The web tier never talks to
-Discord; it queues a `discord.setup.run` job for the bot.
+Provisioning is Discord administration, so it belongs to **Xenon Guardian**:
+`/xenon setup plan|apply|status|repair|validate` in Discord, with plans and
+state in Guardian's own runtime store. The database-backed surfaces that the
+single bot used to execute — **Control → Discord → Server setup** queuing a
+`discord.setup.run` job, and the `pnpm discord:setup:*` CLI — are retired:
+Guardian holds no database credential and no platform service holds an
+administrative Discord token. The Control Center page still shows past runs and
+saved preferences, and refuses to queue new runs with a pointer to
+`/xenon setup`.
 
 ## Modes
 
@@ -56,9 +60,9 @@ plan.
    permissions the staff roles carry — Discord only lets a bot grant what it
    holds). Temporary Administrator also works.
 2. Move the Xenon role to the top of the role list.
-3. Register commands: `pnpm discord:register`.
-4. `/xenon setup plan` (or **Generate plan**). Resolve every conflict.
-5. **Apply** / `/xenon setup apply`. Progress shows per phase with real counts.
+3. Register commands: `pnpm guardian:register` (Guardian also registers on startup).
+4. `/xenon setup plan`. Resolve every conflict.
+5. `/xenon setup apply`. Progress shows per phase with real counts.
 6. Health validation runs on the live server. `VALIDATION_FAILED` means a
    restricted area is visible to someone it must not be — fix before going on.
 7. Follow the **Onboarding** tab (manual Discord steps).
@@ -87,16 +91,9 @@ changes.
 
 ## CLI
 
-```powershell
-pnpm discord:setup:plan
-pnpm discord:setup:apply -- --plan <runId> --confirm "PROVISION XENON" [--ack-established]
-pnpm discord:setup:status
-pnpm discord:setup:validate
-pnpm discord:setup:repair -- --plan <runId> --confirm "PROVISION XENON" [--soft]
-pnpm discord:setup:cleanup -- --run <failedRunId> --confirm "DELETE XENON RESOURCES" [--force]
-```
-
-`apply` without `--plan` prints a fresh plan and the exact command to approve it.
+There is no provisioning CLI any more. Use `/xenon setup plan`, then
+`/xenon setup apply confirm:PROVISION XENON` (and `repair` / `validate` /
+`status`) in Discord.
 
 ## Audit
 

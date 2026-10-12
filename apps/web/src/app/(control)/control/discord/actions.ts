@@ -4,7 +4,7 @@ import { revalidatePath } from 'next/cache';
 
 import { serverEnv } from '@xenon/config/server';
 import { ConflictError } from '@xenon/core';
-import { prisma } from '@xenon/database';
+import { prisma, transaction } from '@xenon/database';
 import {
   saveSupportSettings,
   saveWelcomeSettings,
@@ -12,7 +12,7 @@ import {
   welcomeSettingsInput,
 } from '@xenon/discord';
 import { recordAudit } from '@xenon/domain';
-import { enqueueBestEffort } from '@xenon/jobs';
+import { emitIntegrationEvent, enqueueDurable } from '@xenon/jobs';
 import { requirePermission } from '@xenon/permissions';
 import { cuid, guildSettingsInput, roleMappingInput } from '@xenon/validation';
 
@@ -72,7 +72,7 @@ export async function saveGuildAction(raw: unknown): Promise<ActionResult> {
       after: { guildId: guild.guildId },
     });
 
-    await enqueueBestEffort('discord.guild.sync', { guildId: guild.id });
+    await enqueueDurable('discord.guild.sync', { guildId: guild.id });
     revalidatePath('/control/discord');
   });
 }
@@ -195,11 +195,26 @@ export async function resyncAllRolesAction(): Promise<ActionResult<{ queued: num
 
     const users = await prisma.user.findMany({
       where: { deletedAt: null, discordAccount: { isNot: null } },
-      select: { id: true },
+      select: { id: true, publicId: true },
     });
 
+    // One small transaction per user: each sync and its request record commit
+    // together, and a large community never holds one long transaction open.
+    const requestedAt = Date.now();
     for (const user of users) {
-      await enqueueBestEffort('discord.role.sync', { userId: user.id, reason: 'manual.resync' });
+      await transaction(prisma, async (tx) => {
+        await enqueueDurable(
+          'discord.role.sync',
+          { userId: user.id, reason: 'manual.resync' },
+          { db: tx },
+        );
+        await emitIntegrationEvent(tx, {
+          type: 'ROLE_SYNC_REQUESTED',
+          payload: { playerPublicId: user.publicId, reason: 'manual.resync' },
+          idempotencyKey: `role_sync.manual:${user.id}:${String(requestedAt)}`,
+          source: actor.source,
+        });
+      });
     }
 
     await recordAudit(prisma, actor, {

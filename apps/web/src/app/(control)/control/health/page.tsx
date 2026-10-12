@@ -118,10 +118,15 @@ export default async function HealthPage(): Promise<React.ReactElement> {
             broken. A fresh install has no game server and no Discord guild.
           </li>
           <li>
-            <strong className="text-ink-secondary">bot</strong> and{' '}
-            <strong className="text-ink-secondary">worker</strong> report by heartbeat. If they read
-            unhealthy, the process is not running - start it with{' '}
-            <code className="font-mono">pnpm --filter @xenon/bot dev</code>.
+            <strong className="text-ink-secondary">core-api</strong>,{' '}
+            <strong className="text-ink-secondary">worker</strong> and{' '}
+            <strong className="text-ink-secondary">link</strong> report by heartbeat (the worker
+            reports Link's gateway health). If one reads unhealthy, start it with{' '}
+            <code className="font-mono">
+              pnpm --filter @xenon/&lt;core-api|worker|link-bot&gt; dev
+            </code>
+            . Xenon Guardian has no database access and reports only on its own{' '}
+            <code className="font-mono">/healthz</code>.
           </li>
           <li>
             Failed jobs are Discord or FXServer refusing something. The canonical state in Postgres

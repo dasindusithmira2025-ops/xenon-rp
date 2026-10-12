@@ -19,7 +19,6 @@ env:
   AUTH_SECRET: ci-only-secret-value-not-used-in-production-32
   AUTH_DISCORD_ID: '000000000000000000'
   AUTH_DISCORD_SECRET: ci-only
-  DISCORD_BOT_TOKEN: ci-only
   DISCORD_APPLICATION_ID: '000000000000000000'
   DISCORD_GUILD_ID: '000000000000000000'
   # Peppers the hash of client addresses. Required in production; a fixed

@@ -506,28 +506,10 @@ export const featureFlagInput = z.object({
 
 // --- FiveM -------------------------------------------------------------------
 
-/**
- * The code a player types in game. Accepts the spaced and lowercase forms
- * people actually produce, and normalises before comparison.
- */
-export const linkCodeInput = z
-  .string()
-  .trim()
-  .toUpperCase()
-  .transform((value) => value.replace(/[\s_]+/g, '-'))
-  .pipe(z.string().regex(/^XEN-[A-Z0-9]{5}$/, 'Link codes look like XEN-7K4P9.'));
-
 export const bridgeIdentityInput = z.object({
   kind: z.enum(['LICENSE', 'LICENSE2', 'STEAM', 'DISCORD', 'FIVEM', 'XBL', 'LIVE']),
   value: z.string().min(1).max(200),
 });
-
-export const bridgeLinkInput = z.object({
-  code: linkCodeInput,
-  identifiers: z.array(bridgeIdentityInput).min(1).max(12),
-  playerName: z.string().max(80).optional(),
-});
-export type BridgeLinkInput = z.infer<typeof bridgeLinkInput>;
 
 export const bridgeWhitelistCheckInput = z.object({
   identifiers: z.array(bridgeIdentityInput).min(1).max(12),

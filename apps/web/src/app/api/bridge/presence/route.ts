@@ -24,7 +24,7 @@ const presenceInput = z.object({
 });
 
 export async function POST(request: Request): Promise<NextResponse> {
-  const verified = await verifyBridgeRequest<unknown>(request);
+  const verified = await verifyBridgeRequest<unknown>(request, 'presence');
   if (!verified.ok) return verified.response;
 
   const parsed = presenceInput.safeParse(verified.body);

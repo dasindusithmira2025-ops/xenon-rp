@@ -1,0 +1,32 @@
+# Secrets and runtime state never enter an image. Each container receives its
+# own env file at run time (infrastructure/env/*.env), and Guardian's state
+# lives on a mounted volume.
+.env
+.env.*
+!.env.example
+**/*.pem
+infrastructure/env/*.env
+**/*.key
+.data/
+.storage/
+
+# Rebuilt inside the image.
+**/node_modules/
+**/dist/
+**/.next/
+**/.turbo/
+**/*.tsbuildinfo
+packages/database/generated/
+
+# Not needed to build or run.
+.git/
+.github/
+.claude/
+.kilo/
+.paralith/
+.firebase/
+**/coverage/
+**/playwright-report/
+**/test-results/
+docs/art/
+assets/art/

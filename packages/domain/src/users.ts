@@ -7,10 +7,12 @@ import {
   type User,
   transaction,
 } from '@xenon/database';
+import { emitIntegrationEvent } from '@xenon/jobs';
 import { type Actor, requirePermission, systemActor } from '@xenon/permissions';
 import type { ProfileInput } from '@xenon/validation';
 
 import { recordAudit } from './audit';
+import { eventDiscordId, eventText } from './integration-events';
 
 /**
  * Identity.
@@ -163,11 +165,7 @@ export async function syncDiscordIdentity(
       // Xenon id so the callback and the subsequent session/queue writes all
       // refer to the same account. Existing Discord ownership still wins:
       // never move an identity to an unverified or missing user.
-      if (
-        !AUTHJS_PROVISIONAL_USER_ID.test(userId) ||
-        byDiscordId !== null ||
-        byUserId !== null
-      ) {
+      if (!AUTHJS_PROVISIONAL_USER_ID.test(userId) || byDiscordId !== null || byUserId !== null) {
         throw new DiscordIdentityConflictError();
       }
 
@@ -269,13 +267,19 @@ function avatarUrlFor(profile: DiscordProfile): string | null {
   return `https://cdn.discordapp.com/avatars/${profile.discordId}/${profile.avatar}.${extension}?size=256`;
 }
 
-/** The ordered onboarding ladder. Index in this array is the progress. */
+/**
+ * The ordered onboarding ladder. Index in this array is the progress.
+ *
+ * The verified Cfx.re link comes straight after Discord: it is a one-click
+ * website step, and staff reviewing a whitelist application want to know which
+ * game account it is for.
+ */
 export const onboardingOrder: readonly OnboardingStep[] = [
   'DISCORD_CONNECTED',
   'GUILD_MEMBERSHIP',
+  'FIVEM_LINK',
   'PROFILE',
   'RULES',
-  'FIVEM_LINK',
   'WHITELIST',
   'COMPLETE',
 ];
@@ -299,8 +303,11 @@ export interface OnboardingState {
  * Derive onboarding state from facts, not from a stored cursor.
  *
  * `User.onboardingStep` is a cache for cheap reads; this recomputes from the
- * underlying rows so a user who links FiveM through the game - never touching
- * the portal - still sees the correct next step.
+ * underlying rows so a player who connects Cfx.re in another tab, or loses
+ * guild membership, sees the correct next step on the next render.
+ *
+ * `fivemLinked` means a verified Cfx.re account (an active FIVEM identity).
+ * Identifiers left over from the retired in-game code flow do not count.
  */
 export async function onboardingState(db: Db, userId: string): Promise<OnboardingState> {
   const user = await db.user.findUnique({
@@ -309,7 +316,11 @@ export async function onboardingState(db: Db, userId: string): Promise<Onboardin
       displayName: true,
       whitelistState: true,
       discordAccount: { select: { isGuildMember: true } },
-      gameIdentities: { where: { unlinkedAt: null }, select: { id: true }, take: 1 },
+      gameIdentities: {
+        where: { kind: 'FIVEM', unlinkedAt: null },
+        select: { id: true },
+        take: 1,
+      },
       ruleAcceptances: {
         select: { ruleSet: { select: { isCurrent: true } } },
       },
@@ -330,9 +341,9 @@ export async function onboardingState(db: Db, userId: string): Promise<Onboardin
   const completed: OnboardingStep[] = [];
   if (checks.discordLinked) completed.push('DISCORD_CONNECTED');
   if (checks.guildMember) completed.push('GUILD_MEMBERSHIP');
+  if (checks.fivemLinked) completed.push('FIVEM_LINK');
   if (checks.profileComplete) completed.push('PROFILE');
   if (checks.rulesAccepted) completed.push('RULES');
-  if (checks.fivemLinked) completed.push('FIVEM_LINK');
   if (checks.whitelisted) completed.push('WHITELIST');
   if (completed.length === onboardingOrder.length - 1) completed.push('COMPLETE');
 
@@ -496,6 +507,10 @@ export async function searchUsers(db: Db, query: UserSearchQuery = {}) {
  *
  * The capability is checked here rather than at the call site, so a Discord
  * command or a worker that reaches this function cannot arrive without one.
+ *
+ * A move into SUSPENDED or BANNED also opens a platform `ModerationCase` and
+ * records PLAYER_SUSPENDED / PLAYER_BANNED, all in the same transaction as the
+ * status itself, so Xenon Link hears about exactly the sanctions that exist.
  */
 export async function setUserStatus(
   db: Db,
@@ -506,26 +521,71 @@ export async function setUserStatus(
 ): Promise<User> {
   requirePermission(actor, 'players.ban');
 
-  const before = await db.user.findUnique({ where: { id: userId }, select: { status: true } });
-  if (before === null) throw new NotFoundError('User', userId);
+  return transaction(db, async (tx) => {
+    const before = await tx.user.findUnique({
+      where: { id: userId },
+      select: { status: true, discordAccount: { select: { discordId: true } } },
+    });
+    if (before === null) throw new NotFoundError('User', userId);
 
-  const user = await db.user.update({ where: { id: userId }, data: { status } });
+    const user = await tx.user.update({ where: { id: userId }, data: { status } });
 
-  await recordAudit(db, actor, {
-    action: `user.status_changed`,
-    entityType: 'user',
-    entityId: userId,
-    entityLabel: user.publicId,
-    before: { status: before.status },
-    after: { status },
-    metadata: reason === null ? undefined : { reason },
+    await recordAudit(tx, actor, {
+      action: `user.status_changed`,
+      entityType: 'user',
+      entityId: userId,
+      entityLabel: user.publicId,
+      before: { status: before.status },
+      after: { status },
+      metadata: reason === null ? undefined : { reason },
+    });
+
+    // Killing the sessions is what makes a ban take effect now rather than at the
+    // next session expiry.
+    if (status !== 'ACTIVE') {
+      await tx.session.deleteMany({ where: { userId } });
+    }
+
+    if ((status === 'SUSPENDED' || status === 'BANNED') && before.status !== status) {
+      const caseReason = eventText(reason, 500, 'No reason recorded');
+      const moderationCase = await tx.moderationCase.create({
+        data: {
+          userId,
+          scope: 'PLATFORM',
+          kind: status === 'BANNED' ? 'BAN' : 'SUSPEND',
+          source: actor.source,
+          reason: caseReason,
+          actorId: actor.userId,
+        },
+        select: { id: true },
+      });
+      const discordId = eventDiscordId(before.discordAccount?.discordId);
+      const idempotencyKey = `moderation_case:${moderationCase.id}`;
+
+      if (status === 'BANNED') {
+        await emitIntegrationEvent(tx, {
+          type: 'PLAYER_BANNED',
+          payload: {
+            playerPublicId: user.publicId,
+            discordId,
+            scope: 'PLATFORM',
+            reason: caseReason,
+            expiresAt: null,
+            caseId: moderationCase.id,
+          },
+          idempotencyKey,
+          source: actor.source,
+        });
+      } else {
+        await emitIntegrationEvent(tx, {
+          type: 'PLAYER_SUSPENDED',
+          payload: { playerPublicId: user.publicId, discordId, until: null, reason: caseReason },
+          idempotencyKey,
+          source: actor.source,
+        });
+      }
+    }
+
+    return user;
   });
-
-  // Killing the sessions is what makes a ban take effect now rather than at the
-  // next session expiry.
-  if (status !== 'ACTIVE') {
-    await db.session.deleteMany({ where: { userId } });
-  }
-
-  return user;
 }

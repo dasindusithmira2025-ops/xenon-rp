@@ -72,39 +72,54 @@ The minimum you must fill into `.env` before anything will boot:
 
 - `AUTH_SECRET` — `openssl rand -base64 32`
 - `AUTH_DISCORD_ID` / `AUTH_DISCORD_SECRET` — from the Discord Developer Portal
-- `DISCORD_BOT_TOKEN`, `DISCORD_APPLICATION_ID`, `DISCORD_GUILD_ID`
+- `DISCORD_APPLICATION_ID`, `DISCORD_GUILD_ID` (web tier)
+- For Xenon Link locally: `LINK_DISCORD_TOKEN`, `LINK_DISCORD_APPLICATION_ID` (a
+  development application), `LINK_CORE_SECRET`, `LINK_GATEWAY_SECRET`,
+  `CORE_API_URL`, and either `LINK_GATEWAY_URL` (default `LINK_GATEWAY_MODE=http`)
+  or `LINK_GATEWAY_MODE=relay` on both Link and the worker (Link pulls worker
+  requests through Core; no gateway URL or listener)
 
 `DATABASE_URL` and `REDIS_URL` already match `docker-compose.yml`.
 
-### Bot runtime modes
+### Two Discord applications
 
-`BOT_RUNTIME_MODE=integrated` (the default) runs the existing Discord, PostgreSQL,
-Redis, website, application, ticket, identity and FiveM integrations.
-`BOT_RUNTIME_MODE=discord-only` runs Discord server features without initializing
-those platform services. Its production environment requires `NODE_ENV=production`,
-`LOG_LEVEL=info`, `DISCORD_MODE=enabled`, `DISCORD_APPLICATION_ID`,
-`DISCORD_BOT_TOKEN`, `DISCORD_GUILD_ID` and `DISCORD_INVITE_URL`; an optional
-public `NEXT_PUBLIC_SITE_URL` adds a website button to the ticket panel. Discord-native
-setup and ticket state is stored atomically in the ignored `.data/discord-runtime.json` file.
+XenonRP runs two separate Discord applications, each its own process
+(see [docs/TWO_BOT_MIGRATION.md](docs/TWO_BOT_MIGRATION.md)):
 
-In Discord-only mode, profile, application, review, identity-link, player and
-queue commands report that Xenon Platform integration is disabled. Server setup,
-panels, welcome messages, moderation, temporary voice rooms, curated image
-assets and support tickets (`/xenon tickets publish`) continue to use Discord and
-its API. Closed ticket channels are deleted after a log entry and plain-text
-transcript are posted to the configured ticket log channel.
+- **Xenon Guardian** (`apps/guardian-bot`, `@xenon/guardian-bot`) — security,
+  moderation, onboarding, tickets, temp voice and announcements. It uses Discord
+  only: no PostgreSQL, Redis, Core API, FiveM or Link credentials, and it never
+  loads the root `.env`. Its environment (see
+  `infrastructure/env/guardian.env.example`) requires `NODE_ENV=production`,
+  `LOG_LEVEL=info`, `GUARDIAN_DISCORD_TOKEN`, `GUARDIAN_DISCORD_APPLICATION_ID`,
+  `DISCORD_GUILD_ID` and `DISCORD_INVITE_URL`; an optional public
+  `NEXT_PUBLIC_SITE_URL` adds a website button to the ticket panel, and
+  `GUARDIAN_HEALTH_HOST`/`GUARDIAN_HEALTH_PORT` (default `127.0.0.1:8081`) serve
+  `GET /healthz`. Discord-native setup and ticket state is stored atomically in
+  the ignored `.data/discord-runtime.json` file.
+- **Xenon Link** (`apps/link-bot`) — website/FiveM identity, whitelist, role
+  sync, status and staff review cards. It has no database or Redis credentials
+  and reaches platform data only through the Core API (`apps/core-api`); the
+  worker (`apps/worker`) runs every queued job and performs Discord side effects
+  through Link's gateway.
 
-Discord-only member welcomes (`/xenon welcome configure|status|preview|enable`)
+Guardian's server setup, panels, welcome messages, moderation, temporary voice
+rooms, curated image assets and support tickets (`/xenon tickets publish`) use
+Discord and its API only. Closed ticket channels are deleted after a log entry
+and plain-text transcript are posted to the configured ticket log channel.
+Profile, application, review, identity-link, player and queue commands belong to
+Link.
+
+Guardian member welcomes (`/xenon welcome configure|status|preview|enable`)
 post one public message with a generated Xenon card (`welcome.png`, rendered by
-sharp with the bundled OFL Rajdhani fonts in `apps/bot/assets/fonts`), and can
-assign a non-privileged starter role and send a DM. `delete_after` uses an
-in-process timer: a welcome whose deletion is still pending when the bot
+sharp with the bundled OFL Rajdhani fonts in `apps/guardian-bot/assets/fonts`),
+and can assign a non-privileged starter role and send a DM. `delete_after` uses
+an in-process timer: a welcome whose deletion is still pending when the bot
 restarts stays posted.
 
-The integrated runtime keeps its existing service-specific production checks
-for PostgreSQL, Redis, object storage, Turnstile and FiveM. Discord-only bot mode
-uses only the Discord environment listed above; the web runtime's requirements
-are unchanged.
+Core API and the worker keep the service-specific production checks for
+PostgreSQL, Redis and FiveM; the web runtime's requirements (object storage,
+Turnstile) are unchanged.
 
 > **Ports.** Postgres is on **5442** and Redis on **6389**, not the defaults.
 > Dev machines commonly already have something on 5432/6379, and a project
@@ -117,7 +132,10 @@ are unchanged.
 ```
 apps/
   web/                 Next.js 16 — public site, player portal, /control
-  bot/                 Persistent discord.js gateway service
+  guardian-bot/        Xenon Guardian — Discord security, moderation, tickets
+  link-bot/            Xenon Link — identity, whitelist, role sync, review cards
+  core-api/            Internal API for Link (domain packages + Postgres/Redis)
+  worker/              BullMQ jobs, outbox relay, sweeps, status polling
 
 packages/
   config/              Validated environment + brand constants + shared presets
@@ -133,6 +151,7 @@ packages/
   storage/             Upload validation and the R2 / local drivers
   notifications/       One notification abstraction across web / DM / channel
   validation/          Shared Zod schemas
+  contracts/           Events, service auth, Core API / Link gateway ops, command ownership
   ui/                  Design system and shared components
   logger/              Structured logging with central redaction
   integration-tests/   Cross-package tests against a real PostgreSQL database

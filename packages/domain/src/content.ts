@@ -1,6 +1,6 @@
 import { NotFoundError, ValidationError } from '@xenon/core';
 import type { Article, Db, GalleryItem, Prisma } from '@xenon/database';
-import { cacheDelete, cached, enqueueBestEffort } from '@xenon/jobs';
+import { cacheDelete, cached, enqueueDurable } from '@xenon/jobs';
 import { type Actor, requirePermission, systemActor } from '@xenon/permissions';
 import type { AnnouncementInput, ArticleInput } from '@xenon/validation';
 
@@ -254,18 +254,22 @@ export async function createAnnouncement(
   });
 
   if (scheduleAt !== null) {
-    await enqueueBestEffort(
+    await enqueueDurable(
       'announcement.publish',
       { articleId: article.id },
-      { delayMs: scheduleAt.getTime() - now.getTime() },
+      { db, delayMs: scheduleAt.getTime() - now.getTime() },
     );
   } else if (input.toDiscord && article.discordChannelId !== null) {
-    await enqueueBestEffort('discord.channel.post', {
-      channelId: article.discordChannelId,
-      kind: 'ANNOUNCEMENT',
-      entityType: 'announcement',
-      entityId: article.id,
-    });
+    await enqueueDurable(
+      'discord.channel.post',
+      {
+        channelId: article.discordChannelId,
+        kind: 'ANNOUNCEMENT',
+        entityType: 'announcement',
+        entityId: article.id,
+      },
+      { db, dedupeKey: `announcement.discord:${article.id}` },
+    );
   }
 
   if (status === 'PUBLISHED') {
@@ -294,10 +298,10 @@ export async function publishScheduledAnnouncement(db: Db, articleId: string): P
   if (article === null) return false;
   const now = new Date();
   if (article.scheduledAt !== null && article.scheduledAt.getTime() > now.getTime()) {
-    await enqueueBestEffort(
+    await enqueueDurable(
       'announcement.publish',
       { articleId },
-      { delayMs: article.scheduledAt.getTime() - now.getTime() },
+      { db, delayMs: article.scheduledAt.getTime() - now.getTime() },
     );
     return false;
   }
@@ -315,12 +319,16 @@ export async function publishScheduledAnnouncement(db: Db, articleId: string): P
     article.discordChannelId !== null &&
     article.announcedAt === null
   ) {
-    await enqueueBestEffort('discord.channel.post', {
-      channelId: article.discordChannelId,
-      kind: 'ANNOUNCEMENT',
-      entityType: 'announcement',
-      entityId: article.id,
-    });
+    await enqueueDurable(
+      'discord.channel.post',
+      {
+        channelId: article.discordChannelId,
+        kind: 'ANNOUNCEMENT',
+        entityType: 'announcement',
+        entityId: article.id,
+      },
+      { db, dedupeKey: `announcement.discord:${article.id}` },
+    );
   }
 
   if (shouldPublishWebsite || article.publishToDiscord) {

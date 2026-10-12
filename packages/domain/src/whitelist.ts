@@ -1,10 +1,11 @@
 import { NotFoundError } from '@xenon/core';
-import type { Db, Whitelist, WhitelistState } from '@xenon/database';
-import { enqueueBestEffort } from '@xenon/jobs';
+import { transaction, type Db, type Whitelist, type WhitelistState } from '@xenon/database';
+import { emitIntegrationEvent, enqueueDurable } from '@xenon/jobs';
 import { createNotification, dispatchPending, notificationCopy } from '@xenon/notifications';
 import type { Actor } from '@xenon/permissions';
 
 import { recordAudit } from './audit';
+import { eventDiscordId } from './integration-events';
 import { refreshOnboardingStep } from './users';
 
 /**
@@ -12,8 +13,10 @@ import { refreshOnboardingStep } from './users';
  *
  * `Whitelist` is authoritative and `User.whitelistState` mirrors it for cheap
  * gating reads; both are written in the same statement so they cannot disagree.
- * The game server learns about the change from a queued job, never from an
- * inline call - an FXServer restart must not be able to fail an approval.
+ * The game server and Discord learn about the change from outbox jobs and an
+ * integration event written in the same transaction, never from an inline
+ * call - an FXServer restart must not be able to fail an approval, and a
+ * Redis outage must not lose the push.
  */
 
 export interface WhitelistChange {
@@ -25,16 +28,26 @@ export interface WhitelistChange {
   readonly silent?: boolean;
 }
 
+interface AppliedState {
+  readonly whitelist: Whitelist;
+  readonly playerPublicId: string;
+  readonly discordId: string | null;
+}
+
 async function applyState(
   db: Db,
   actor: Actor,
   state: WhitelistState,
   change: WhitelistChange,
   extra: { suspendedUntil?: Date | null } = {},
-): Promise<Whitelist> {
+): Promise<AppliedState> {
   const user = await db.user.findUnique({
     where: { id: change.userId },
-    select: { publicId: true, whitelistState: true },
+    select: {
+      publicId: true,
+      whitelistState: true,
+      discordAccount: { select: { discordId: true } },
+    },
   });
   if (user === null) throw new NotFoundError('User', change.userId);
 
@@ -82,7 +95,18 @@ async function applyState(
     metadata: change.reason == null ? undefined : { reason: change.reason },
   });
 
-  return whitelist;
+  return {
+    whitelist,
+    playerPublicId: user.publicId,
+    discordId: eventDiscordId(user.discordAccount?.discordId),
+  };
+}
+
+/** Queue the game-server push and the Discord role mirror inside the deciding transaction. */
+async function queueSync(tx: Db, userId: string, reason: string): Promise<void> {
+  await enqueueDurable('fivem.whitelist.sync', { userId, reason }, { db: tx });
+  // The Discord Whitelisted role mirrors this state.
+  await enqueueDurable('discord.role.sync', { userId, reason }, { db: tx });
 }
 
 /** Grant whitelist access. */
@@ -91,26 +115,41 @@ export async function grantWhitelist(
   actor: Actor,
   change: WhitelistChange,
 ): Promise<Whitelist> {
-  const whitelist = await applyState(db, actor, 'APPROVED', change);
+  return transaction(db, async (tx) => {
+    const applied = await applyState(tx, actor, 'APPROVED', change);
 
-  if (change.silent !== true) {
-    const copy = notificationCopy.whitelistGranted();
-    const notification = await createNotification(db, { userId: change.userId, ...copy });
-    await dispatchPending([notification]);
-  }
+    if (change.silent !== true) {
+      const copy = notificationCopy.whitelistGranted();
+      const notification = await createNotification(tx, { userId: change.userId, ...copy });
+      await dispatchPending([notification], tx);
+    }
 
-  await refreshOnboardingStep(db, change.userId);
-  await enqueueBestEffort('fivem.whitelist.sync', {
-    userId: change.userId,
-    reason: 'whitelist.granted',
+    await refreshOnboardingStep(tx, change.userId);
+    await queueSync(tx, change.userId, 'whitelist.granted');
+
+    const source =
+      change.sourceSubmissionId === undefined || change.sourceSubmissionId === null
+        ? null
+        : await tx.applicationSubmission.findUnique({
+            where: { id: change.sourceSubmissionId },
+            select: { id: true, publicId: true },
+          });
+    await emitIntegrationEvent(tx, {
+      type: 'WHITELIST_APPROVED',
+      payload: {
+        playerPublicId: applied.playerPublicId,
+        discordId: applied.discordId,
+        applicationPublicId: source?.publicId ?? null,
+      },
+      idempotencyKey:
+        source === null
+          ? `whitelist.approved:${applied.whitelist.id}:${String(Date.now())}`
+          : `application.approved:${source.id}`,
+      source: actor.source,
+    });
+
+    return applied.whitelist;
   });
-  // The Discord Whitelisted role mirrors this state.
-  await enqueueBestEffort('discord.role.sync', {
-    userId: change.userId,
-    reason: 'whitelist.granted',
-  });
-
-  return whitelist;
 }
 
 /** Revoke whitelist access. */
@@ -119,26 +158,30 @@ export async function revokeWhitelist(
   actor: Actor,
   change: WhitelistChange,
 ): Promise<Whitelist> {
-  const whitelist = await applyState(db, actor, 'REVOKED', change);
+  return transaction(db, async (tx) => {
+    const applied = await applyState(tx, actor, 'REVOKED', change);
 
-  if (change.silent !== true) {
-    const copy = notificationCopy.whitelistRevoked(change.reason ?? null);
-    const notification = await createNotification(db, { userId: change.userId, ...copy });
-    await dispatchPending([notification]);
-  }
+    if (change.silent !== true) {
+      const copy = notificationCopy.whitelistRevoked(change.reason ?? null);
+      const notification = await createNotification(tx, { userId: change.userId, ...copy });
+      await dispatchPending([notification], tx);
+    }
 
-  await refreshOnboardingStep(db, change.userId);
-  await enqueueBestEffort('fivem.whitelist.sync', {
-    userId: change.userId,
-    reason: 'whitelist.revoked',
+    await refreshOnboardingStep(tx, change.userId);
+    await queueSync(tx, change.userId, 'whitelist.revoked');
+    await emitIntegrationEvent(tx, {
+      type: 'WHITELIST_REVOKED',
+      payload: {
+        playerPublicId: applied.playerPublicId,
+        discordId: applied.discordId,
+        state: 'REVOKED',
+      },
+      idempotencyKey: `whitelist.revoked:${applied.whitelist.id}:${String(Date.now())}`,
+      source: actor.source,
+    });
+
+    return applied.whitelist;
   });
-  // The Discord Whitelisted role mirrors this state.
-  await enqueueBestEffort('discord.role.sync', {
-    userId: change.userId,
-    reason: 'whitelist.revoked',
-  });
-
-  return whitelist;
 }
 
 /** Suspend access temporarily. Expiry is swept, not scheduled per record. */
@@ -147,21 +190,25 @@ export async function suspendWhitelist(
   actor: Actor,
   change: WhitelistChange & { until: Date },
 ): Promise<Whitelist> {
-  const whitelist = await applyState(db, actor, 'SUSPENDED', change, {
-    suspendedUntil: change.until,
-  });
+  return transaction(db, async (tx) => {
+    const applied = await applyState(tx, actor, 'SUSPENDED', change, {
+      suspendedUntil: change.until,
+    });
 
-  await enqueueBestEffort('fivem.whitelist.sync', {
-    userId: change.userId,
-    reason: 'whitelist.suspended',
-  });
-  // The Discord Whitelisted role mirrors this state.
-  await enqueueBestEffort('discord.role.sync', {
-    userId: change.userId,
-    reason: 'whitelist.suspended',
-  });
+    await queueSync(tx, change.userId, 'whitelist.suspended');
+    await emitIntegrationEvent(tx, {
+      type: 'WHITELIST_REVOKED',
+      payload: {
+        playerPublicId: applied.playerPublicId,
+        discordId: applied.discordId,
+        state: 'SUSPENDED',
+      },
+      idempotencyKey: `whitelist.suspended:${applied.whitelist.id}:${String(Date.now())}`,
+      source: actor.source,
+    });
 
-  return whitelist;
+    return applied.whitelist;
+  });
 }
 
 /**

@@ -30,7 +30,8 @@ export default async function DiscordPage(): Promise<React.ReactElement> {
       include: { roleMappings: { include: { role: true } } },
     }),
     prisma.role.findMany({ orderBy: { priority: 'desc' } }),
-    prisma.serviceHeartbeat.findUnique({ where: { service: 'bot' } }),
+    // Written by the worker after probing Xenon Link's gateway health.
+    prisma.serviceHeartbeat.findUnique({ where: { service: 'link' } }),
     loadWelcomeSettings(prisma),
     loadSupportSettings(prisma),
   ]);
@@ -99,16 +100,17 @@ export default async function DiscordPage(): Promise<React.ReactElement> {
       ) : !heartbeatFresh ? (
         <Panel tone="ghost" pad="md" className="border-warning/30 bg-warning/5">
           <p className="text-xs leading-relaxed text-warning">
-            The bot has not sent a heartbeat recently. Role synchronisation, review cards and direct
+            Xenon Link has not reported recently. Role synchronisation, review cards and direct
             messages are queued and will be delivered when it comes back - nothing is lost. Start it
-            with <code className="font-mono">pnpm --filter @xenon/bot dev</code>.
+            with <code className="font-mono">pnpm --filter @xenon/link-bot dev</code> (and the
+            worker, which relays them).
           </p>
         </Panel>
       ) : heartbeat.status === 'DEGRADED' ? (
         <Panel tone="ghost" pad="md" className="border-warning/30 bg-warning/5">
           <p className="text-xs leading-relaxed text-warning">
-            The bot is connected but at least one setup check failed. Review the integration
-            diagnostics below, fix the listed configuration or permissions, then restart the bot.
+            Xenon Link is running but its Discord gateway is not ready. Check its logs and its
+            application credentials, then restart it.
           </p>
         </Panel>
       ) : null}
@@ -239,20 +241,22 @@ export default async function DiscordPage(): Promise<React.ReactElement> {
       <DiscordSupportSettings settings={supportSettings} supportChannelId={supportChannelId} />
 
       <Panel tone="ghost" pad="lg">
-        <p className="x-eyebrow">Bot permissions</p>
+        <p className="x-eyebrow">Xenon Link permissions</p>
         <ul className="mt-3 flex flex-col gap-2 text-xs leading-relaxed text-ink-muted">
           <li>
-            The bot needs <strong className="text-ink-secondary">Manage Roles</strong>, and its own
-            highest role must sit <em>above</em> every role it manages. A mapping shown as blocked
-            below is that problem and nothing else.
+            Role synchronisation runs through{' '}
+            <strong className="text-ink-secondary">Xenon Link</strong>, which needs{' '}
+            <strong className="text-ink-secondary">Manage Roles</strong>; its highest role must sit{' '}
+            <em>above</em> every role it manages and below every staff role. A mapping shown as
+            blocked below is that problem and nothing else.
           </li>
           <li>
-            It does not request <strong className="text-ink-secondary">Message Content</strong>. All
-            interaction is through slash commands and buttons.
+            Link refuses to manage any role carrying moderation or administrative permissions, so a
+            mapping to a staff role is reported instead of synchronised.
           </li>
           <li>
-            Do not grant it Administrator. It needs Manage Roles, View Channels, Send Messages and
-            Embed Links.
+            Do not grant it Administrator. It needs Manage Roles, View Channels, Send Messages,
+            Embed Links and Read Message History, and no privileged intents.
           </li>
         </ul>
       </Panel>

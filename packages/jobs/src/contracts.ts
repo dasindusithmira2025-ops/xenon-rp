@@ -21,8 +21,6 @@ export interface JobPayloads {
   'discord.dm': { notificationId: string };
   /** Notify the linked Discord account that its canonical Xenon ticket opened. */
   'discord.ticket.created': { ticketId: string };
-  /** Delete an automatically welcomed member message after its configured lifetime. */
-  'discord.welcome.delete': { channelId: string; messageId: string };
   /** Publish a scheduled canonical announcement and dispatch its destinations. */
   'announcement.publish': { articleId: string };
   /** Post a message into a configured channel. */
@@ -38,8 +36,9 @@ export interface JobPayloads {
   'discord.guild.sync': { guildId: string };
   /** Look up one known Discord snowflake through the bot's guild REST access. */
   'discord.membership.sync': { userId: string; reason: string };
-  /** Execute one queued Discord provisioning run (plan, apply, repair, …). */
-  'discord.setup.run': { runId: string };
+
+  /** Deliver one outbox integration event to one subscriber, at most once per subscriber. */
+  'integration.event.deliver': { outboxId: string; subscriber: 'link' };
 
   /** Push one user's whitelist state to every configured game server. */
   'fivem.whitelist.sync': { userId: string; reason: string };
@@ -74,15 +73,14 @@ export const retryPolicy: Record<JobName, { attempts: number; backoffMs: number 
   'discord.review.update': { attempts: 8, backoffMs: 5_000 },
   'discord.dm': { attempts: 5, backoffMs: 10_000 },
   'discord.ticket.created': { attempts: 5, backoffMs: 10_000 },
-  'discord.welcome.delete': { attempts: 3, backoffMs: 5_000 },
   'announcement.publish': { attempts: 6, backoffMs: 10_000 },
   'discord.channel.post': { attempts: 6, backoffMs: 5_000 },
   'discord.role.sync': { attempts: 8, backoffMs: 5_000 },
   'discord.guild.sync': { attempts: 3, backoffMs: 30_000 },
   'discord.membership.sync': { attempts: 4, backoffMs: 5_000 },
-  // Never retried automatically: a provisioning run is resumed by an operator
-  // re-running apply against a fresh plan, not by a queue replaying mutations.
-  'discord.setup.run': { attempts: 1, backoffMs: 0 },
+  // Event delivery outlives a long Link outage: 12 exponential attempts from
+  // 30 s spans well over a day before the delivery is given up on.
+  'integration.event.deliver': { attempts: 12, backoffMs: 30_000 },
   'fivem.whitelist.sync': { attempts: 10, backoffMs: 10_000 },
   'fivem.status.poll': { attempts: 2, backoffMs: 5_000 },
   'applications.expire': { attempts: 2, backoffMs: 60_000 },
@@ -112,8 +110,10 @@ export function jobIdFor<TName extends JobName>(
       return `discord.dm~${(payload as JobPayloads['discord.dm']).notificationId}`;
     case 'discord.ticket.created':
       return `discord.ticket.created~${(payload as JobPayloads['discord.ticket.created']).ticketId}`;
-    case 'discord.setup.run':
-      return `discord.setup.run~${(payload as JobPayloads['discord.setup.run']).runId}`;
+    case 'integration.event.deliver': {
+      const delivery = payload as JobPayloads['integration.event.deliver'];
+      return `event~${delivery.outboxId}~${delivery.subscriber}`;
+    }
     case 'announcement.publish':
       return `announcement.publish~${(payload as JobPayloads['announcement.publish']).articleId}`;
     // Role and whitelist syncs deliberately do not collapse: two changes in
@@ -124,7 +124,6 @@ export function jobIdFor<TName extends JobName>(
     case 'discord.guild.sync':
     case 'discord.membership.sync':
     case 'discord.channel.post':
-    case 'discord.welcome.delete':
     case 'discord.role.sync':
     case 'fivem.whitelist.sync':
     case 'fivem.status.poll':

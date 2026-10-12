@@ -46,31 +46,31 @@ PowerShell, from the test working copy:
 
 ```powershell
 pnpm install
-pnpm --filter @xenon/bot build
+pnpm --filter @xenon/guardian-bot build
 $env:NODE_ENV = 'production'
 $env:LOG_LEVEL = 'info'
-$env:BOT_RUNTIME_MODE = 'discord-only'
-$env:DISCORD_MODE = 'enabled'
-$env:DISCORD_APPLICATION_ID = '<test application id>'
-$env:DISCORD_BOT_TOKEN = '<test bot token>'
+$env:GUARDIAN_DISCORD_APPLICATION_ID = '<test application id>'
+$env:GUARDIAN_DISCORD_TOKEN = '<test bot token>'
 $env:DISCORD_GUILD_ID = '<test guild id>'
 $env:DISCORD_INVITE_URL = 'https://discord.gg/<test invite>'
-pnpm --filter @xenon/bot start
+pnpm --filter @xenon/guardian-bot start
 ```
 
 POSIX shell equivalent:
 
 ```bash
-pnpm install && pnpm --filter @xenon/bot build
-NODE_ENV=production LOG_LEVEL=info BOT_RUNTIME_MODE=discord-only DISCORD_MODE=enabled \
-DISCORD_APPLICATION_ID=<test app id> DISCORD_BOT_TOKEN=<test token> \
+pnpm install && pnpm --filter @xenon/guardian-bot build
+NODE_ENV=production LOG_LEVEL=info \
+GUARDIAN_DISCORD_APPLICATION_ID=<test app id> GUARDIAN_DISCORD_TOKEN=<test token> \
 DISCORD_GUILD_ID=<test guild id> DISCORD_INVITE_URL=https://discord.gg/<test invite> \
-pnpm --filter @xenon/bot start
+pnpm --filter @xenon/guardian-bot start
 ```
 
-Expected log lines: `Discord connected`, `Guild resolved`, `Discord slash
-commands registered`, `Xenon Discord service ready`. No `Message Content is
-unavailable` warning (otherwise §2 is incomplete).
+Guardian never reads the repository `.env`; no database, Redis or Link value is
+needed. Expected log lines: `Discord connected`, `Guild resolved`, `Discord
+slash commands registered`, `Xenon Guardian ready`. No `Message Content is
+unavailable` warning (otherwise §2 is incomplete). `curl 127.0.0.1:8081/healthz`
+returns `{"service":"guardian","status":"ok",…}`.
 
 ## 3. `/security setup`
 

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  enqueueBestEffort: vi.fn(),
+  enqueueDurable: vi.fn(),
   cacheDelete: vi.fn(),
   recordAudit: vi.fn(),
   requirePermission: vi.fn(),
@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('@xenon/jobs', () => ({
   cacheDelete: mocks.cacheDelete,
   cached: vi.fn(),
-  enqueueBestEffort: mocks.enqueueBestEffort,
+  enqueueDurable: mocks.enqueueDurable,
 }));
 vi.mock('@xenon/permissions', () => ({
   requirePermission: mocks.requirePermission,
@@ -23,7 +23,7 @@ import { createAnnouncement } from './content';
 describe('canonical announcement publishing', () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mocks.enqueueBestEffort.mockResolvedValue(undefined);
+    mocks.enqueueDurable.mockResolvedValue(undefined);
   });
 
   it('validates a managed Discord destination, records the announcement, and queues delivery', async () => {
@@ -81,11 +81,15 @@ describe('canonical announcement publishing', () => {
       actor,
       expect.objectContaining({ action: 'ANNOUNCEMENT_PUBLISHED' }),
     );
-    expect(mocks.enqueueBestEffort).toHaveBeenCalledWith('discord.channel.post', {
-      channelId: '123456789012345678',
-      kind: 'ANNOUNCEMENT',
-      entityType: 'announcement',
-      entityId: 'article-id',
-    });
+    expect(mocks.enqueueDurable).toHaveBeenCalledWith(
+      'discord.channel.post',
+      {
+        channelId: '123456789012345678',
+        kind: 'ANNOUNCEMENT',
+        entityType: 'announcement',
+        entityId: 'article-id',
+      },
+      { db, dedupeKey: 'announcement.discord:article-id' },
+    );
   });
 });

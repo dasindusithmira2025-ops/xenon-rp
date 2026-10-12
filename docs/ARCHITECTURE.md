@@ -13,14 +13,23 @@ that happen to share a database.
         ┌──────┴──────────────────┴──────────────────┴───────┐
         │        Shared domain services (packages/*)         │
         │  approveApplication  grantWhitelist  linkIdentity  │
-        └──────┬──────────────────┬──────────────────┬───────┘
-               │                  │                  │
-        ┌──────┴───────┐   ┌──────┴───────┐   ┌──────┴───────┐
-        │  PostgreSQL  │   │    Redis     │   │  apps/bot    │
-        │ source of    │   │ jobs + rate  │   │  Discord     │
-        │ truth        │   │ limits       │   │  gateway     │
-        └──────────────┘   └──────────────┘   └──────────────┘
+        └──┬──────────────┬──────────────┬──────────────┬────┘
+           │              │              │              │
+   ┌───────┴──────┐ ┌─────┴──────┐ ┌─────┴──────┐ ┌─────┴──────┐
+   │  PostgreSQL  │ │   Redis    │ │ core-api   │ │  worker    │
+   │ source of    │ │ jobs, rate │ │ /internal  │ │ queue,     │
+   │ truth+outbox │ │ limits     │ │ for Link   │ │ outbox     │
+   └──────────────┘ └────────────┘ └─────┬──────┘ └─────┬──────┘
+                                         │ signed       │ signed
+                                   ┌─────┴──────────────┴─────┐
+                                   │  apps/link-bot (Link)    │  Discord app #2
+                                   └──────────────────────────┘
+
+   apps/guardian-bot (Guardian) — Discord app #1, no edge to any box above.
 ```
+
+The two Discord applications, their commands, permissions and deployment are
+described in [TWO_BOT_MIGRATION.md](TWO_BOT_MIGRATION.md).
 
 A business operation is written **once**, in a domain package, and called from
 every interface. `approveApplication()` is the same function whether it was
@@ -60,13 +69,17 @@ Turborepo refuses to build a cyclic task graph.
          core       (no internal dependencies: errors, public ids,
           │          capability catalogue, role presets, domain unions)
           │
-       database     → core, config
+       database     → core, config         contracts (zod only: events,
+          │                                 service auth, Core/Link APIs)
           │
       permissions   → core;  database is type-only (devDependency)
           │
-   applications / auth / discord / notifications / validation / ui
+   jobs (→ database, contracts) / applications / auth / discord / notifications / validation / ui
           │
-      apps/web, apps/bot, fivem/xenon_bridge
+      apps/web, apps/core-api, apps/worker, fivem/xenon_bridge
+
+      apps/link-bot     → contracts, discord (pure builders) — no database
+      apps/guardian-bot → contracts, discord (pure provisioning) — no database
 ```
 
 Two decisions worth knowing about:
@@ -96,9 +109,17 @@ Approving an application:
 
 1. **One transaction**: update `ApplicationSubmission.status`, write an
    `ApplicationEvent`, write an `AuditLog`, update `Whitelist`, insert
-   `UserRole` rows. Either all of it or none of it.
-2. **After it commits**: enqueue Redis jobs — grant the Discord role, edit the
-   review message, DM the applicant, push whitelist state to FXServer.
+   `UserRole` rows, and write the outbox rows (role sync, review-card update,
+   whitelist push, `WHITELIST_APPROVED`). Either all of it or none of it.
+2. **After it commits**: the worker's relay moves the outbox rows onto the
+   queue — grant the Discord role (through Link), edit the review message, DM
+   the applicant, push whitelist state to FXServer.
+   The worker reaches Link over one of two transports: signed HTTP to Link's
+   gateway (`LINK_GATEWAY_MODE=http`, default) or the relay (`relay`), where the
+   worker parks the signed request in Redis, Link pulls it from Core over
+   outbound HTTPS, verifies the worker's signature itself, executes it and
+   posts the result back. See [SECURITY.md](SECURITY.md) for the trust
+   boundaries.
 3. **Workers retry.** Every job is idempotent, so a retry re-applies the same
    end state rather than granting a role twice.
 
@@ -128,16 +149,32 @@ unknown errors collapse to a generic line instead.
 ## Configuration
 
 `@xenon/config` is the only module permitted to read `process.env`; ESLint
-enforces it everywhere else. Each runtime gets its own schema:
+enforces it everywhere else. Each runtime gets its own schema, holding only the
+credentials that process needs:
 
-- `@xenon/config/server` — the web tier. **Excludes `DISCORD_BOT_TOKEN`.**
-- `@xenon/config/bot` — the gateway service. Holds the bot token, no OAuth secret.
+- `@xenon/config/server` — the web tier. No bot token.
+- `@xenon/config/guardian` — Guardian: its own Discord token, nothing else.
+- `@xenon/config/link` — Link: its own Discord token plus the Core API and
+  gateway service secrets, and `LINK_GATEWAY_MODE` (`http`: listen for the
+  worker; `relay`: pull worker requests through Core, no socket). No database
+  or Redis.
+- `@xenon/config/core-api`, `@xenon/config/worker` — datastores and service
+  secrets, no Discord token. The worker takes `LINK_GATEWAY_MODE` too and needs
+  `LINK_GATEWAY_URL` only in `http` mode.
+- `@xenon/config/datastore`, `@xenon/config/fivem` — narrow slices shared by
+  low-level packages.
 - `@xenon/config/public` — the handful of `NEXT_PUBLIC_*` values.
-
-The web tier never holds the bot token because it never talks to the gateway; it
-enqueues jobs the bot performs. That keeps the most dangerous credential in the
-one process that needs it.
 
 Validation is lazy — Next.js evaluates modules during build in contexts where
 runtime secrets are legitimately absent — but total: the first real access
 reports every problem at once.
+
+## Side effects: the outbox
+
+Domain services write side effects to `outbox_messages` with
+`enqueueDurable(…, { db: tx })` and integration events with
+`emitIntegrationEvent(tx, …)`, inside the transaction that made the decision.
+The worker's relay moves due rows onto BullMQ (jobs) or fans them out to
+subscribers (events, typed and versioned in `@xenon/contracts`). A Redis or
+Discord outage delays a side effect; it can no longer lose one, and a retried
+delivery is de-duplicated by `integration_event_receipts`.

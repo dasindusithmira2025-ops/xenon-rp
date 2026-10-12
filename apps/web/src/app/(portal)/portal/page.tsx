@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { statusLabels, statusTones } from '@xenon/applications';
 import { prisma } from '@xenon/database';
 import { allSettings, currentRuleSet, onboardingState, statusBoard } from '@xenon/domain';
+import { cfxConnection } from '@xenon/fivem';
 import { Badge, Button, EmptyState, Panel, StatusDot } from '@xenon/ui';
 
 import type { Metadata } from 'next';
@@ -30,7 +31,7 @@ export const dynamic = 'force-dynamic';
 export default async function PortalHome(): Promise<React.ReactElement> {
   const userId = await requireUserId();
 
-  const [user, onboarding, board, settings, ruleSet, submissions, notifications] =
+  const [user, onboarding, board, settings, ruleSet, submissions, notifications, cfx] =
     await Promise.all([
       prisma.user.findUniqueOrThrow({
         where: { id: userId },
@@ -40,10 +41,6 @@ export default async function PortalHome(): Promise<React.ReactElement> {
           whitelistState: true,
           createdAt: true,
           discordAccount: { select: { username: true, guildMembershipState: true } },
-          gameIdentities: {
-            where: { unlinkedAt: null },
-            select: { kind: true, value: true, label: true },
-          },
           characters: {
             where: { status: 'ACTIVE' },
             select: { publicId: true, firstName: true, lastName: true, alias: true },
@@ -69,10 +66,16 @@ export default async function PortalHome(): Promise<React.ReactElement> {
         orderBy: { createdAt: 'desc' },
         take: 4,
       }),
+      cfxConnection(prisma, userId),
     ]);
 
   const invite = resolveDiscordInviteUrl(settings['community.discordInvite']);
   const primary = board.servers[0];
+  const configuredConnect = settings['community.connectUrl'];
+  const connectUrl =
+    configuredConnect !== undefined && configuredConnect.length > 0
+      ? configuredConnect
+      : (board.servers.find((server) => server.connectUrl !== null)?.connectUrl ?? null);
 
   return (
     <PortalPage
@@ -93,6 +96,7 @@ export default async function PortalHome(): Promise<React.ReactElement> {
         state={onboarding}
         discordInvite={invite}
         ruleVersion={ruleSet?.version ?? null}
+        connectUrl={connectUrl}
       />
 
       <div className="grid gap-4 sm:grid-cols-3">
@@ -102,20 +106,22 @@ export default async function PortalHome(): Promise<React.ReactElement> {
           value={user.whitelistState === 'APPROVED' ? 'Approved' : 'Not yet'}
           tone={user.whitelistState === 'APPROVED' ? 'success' : 'neutral'}
           hint={
-            user.whitelistState === 'APPROVED'
-              ? 'You can connect to the city'
-              : 'Apply to get access'
+            user.whitelistState !== 'APPROVED'
+              ? 'Apply to get access'
+              : cfx.linked
+                ? 'You can connect to the city'
+                : 'Connect Cfx.re to join the city'
           }
         />
         <StatCard
           icon={<Gamepad2 className="size-4" aria-hidden />}
-          label="Game account"
-          value={user.gameIdentities.length > 0 ? 'Linked' : 'Not linked'}
-          tone={user.gameIdentities.length > 0 ? 'success' : 'warning'}
+          label="Cfx.re account"
+          value={cfx.linked ? 'Linked' : 'Not linked'}
+          tone={cfx.linked ? 'success' : 'warning'}
           hint={
-            user.gameIdentities.length > 0
-              ? `${String(user.gameIdentities.length)} identifier${user.gameIdentities.length === 1 ? '' : 's'}`
-              : 'Generate a link code'
+            cfx.linked
+              ? (cfx.username ?? 'Verified on forum.cfx.re')
+              : 'Connect Cfx.re from your account'
           }
         />
         <StatCard

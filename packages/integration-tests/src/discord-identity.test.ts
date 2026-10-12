@@ -2,12 +2,12 @@ import { randomUUID } from 'node:crypto';
 
 import { beforeEach, describe, expect, it } from 'vitest';
 
+import { DEV_DISCORD_FIXTURES, seedDevFixtureUsers } from '@xenon/database';
 import {
   DiscordIdentityConflictError,
   ensureUserFromDiscord,
   syncDiscordIdentity,
 } from '@xenon/domain';
-import { DEV_DISCORD_FIXTURES, seedDevFixtureUsers } from '@xenon/database';
 
 import { createTemplate, createUser, prisma, resetDatabase } from './harness';
 

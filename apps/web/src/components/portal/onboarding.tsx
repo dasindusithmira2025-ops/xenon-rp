@@ -1,6 +1,6 @@
 'use client';
 
-import { Check, Circle } from 'lucide-react';
+import { ArrowUpRight, Check, Circle } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import * as React from 'react';
@@ -16,22 +16,29 @@ import {
 } from '@xenon/ui/motion';
 
 import { acceptRulesAction } from '~/app/(portal)/portal/actions';
+import { ConnectCfxForm } from '~/components/portal/cfx-connection-panel';
 
 /**
  * Onboarding checklist.
  *
  * Derived from facts rather than from a stored cursor, which is why a player
- * who links FiveM in game - never touching this page - sees the step already
- * ticked when they come back.
+ * who connects Cfx.re in another tab sees the step already ticked when they
+ * come back.
  *
- * The rules step accepts inline because it is the only step whose action
- * belongs to this page. Everything else links to where it actually happens.
+ * The rules step accepts inline and the Cfx.re step posts straight to the
+ * connect route, because those actions belong here. Everything else links to
+ * where it actually happens.
+ *
+ * Linking Cfx.re is identity, not admission: the "Connect to Xenon City" call
+ * appears only once staff have approved the whitelist.
  */
 
 export interface OnboardingProps {
   readonly state: OnboardingState;
   readonly discordInvite: string | null;
   readonly ruleVersion: number | null;
+  /** The configured FiveM connect link, or null when none is set. */
+  readonly connectUrl: string | null;
 }
 
 interface Step {
@@ -48,6 +55,7 @@ export function Onboarding({
   state,
   discordInvite,
   ruleVersion,
+  connectUrl,
 }: OnboardingProps): React.ReactElement | null {
   const router = useRouter();
   const toast = useToast();
@@ -69,15 +77,15 @@ export function Onboarding({
     {
       key: 'discord',
       short: 'Discord',
-      title: 'Discord connected',
-      body: 'Your Discord account is your Xenon identity.',
+      title: 'Connect Discord',
+      body: 'Your Discord account is how you sign in to Xenon.',
       met: state.checks.discordLinked,
       action: null,
     },
     {
       key: 'guild',
       short: 'Server',
-      title: 'Join the Discord',
+      title: 'Join the Xenon Discord server',
       body: 'Most applications require membership, and it is where staff reach you.',
       met: state.checks.guildMember,
       action:
@@ -92,10 +100,18 @@ export function Onboarding({
         ),
     },
     {
+      key: 'fivem',
+      short: 'FiveM',
+      title: 'Connect your FiveM account',
+      body: 'Approve Xenon on forum.cfx.re. We only learn your Cfx.re id and username, and it does not whitelist you on its own.',
+      met: state.checks.fivemLinked,
+      action: <ConnectCfxForm variant="outline" size="sm" />,
+    },
+    {
       key: 'profile',
       short: 'Profile',
-      title: 'Set a display name',
-      body: 'How staff and other players see you on the site.',
+      title: 'Complete your profile',
+      body: 'Set a display name: how staff and other players see you on the site.',
       met: state.checks.profileComplete,
       action: (
         <Button variant="outline" size="sm" asChild>
@@ -107,7 +123,9 @@ export function Onboarding({
       key: 'rules',
       short: 'Rules',
       title:
-        ruleVersion === null ? 'Accept the rules' : `Accept the rules (v${String(ruleVersion)})`,
+        ruleVersion === null
+          ? 'Accept the server rules'
+          : `Accept the server rules (v${String(ruleVersion)})`,
       body: 'Read the rulebook and confirm you accept the current version.',
       met: state.checks.rulesAccepted,
       action: state.checks.rulesAccepted ? null : (
@@ -128,18 +146,6 @@ export function Onboarding({
       ),
     },
     {
-      key: 'fivem',
-      short: 'FiveM',
-      title: 'Link your FiveM account',
-      body: 'Generate a code here and type it in game. This is how the server knows you.',
-      met: state.checks.fivemLinked,
-      action: (
-        <Button variant="outline" size="sm" asChild>
-          <Link href="/portal/account#fivem">Get a code</Link>
-        </Button>
-      ),
-    },
-    {
       key: 'whitelist',
       short: 'Whitelist',
       title: 'Get whitelisted',
@@ -154,8 +160,36 @@ export function Onboarding({
   ];
 
   const done = steps.filter((step) => step.met).length;
-  // Nothing to nag about once everything is done; the panel simply disappears.
-  if (done === steps.length) return null;
+  // The city admits by an approved whitelist plus a verified Cfx.re account;
+  // anything less is not presented as "you can play".
+  const canConnect = state.checks.whitelisted && state.checks.fivemLinked && connectUrl !== null;
+  const connect = canConnect ? (
+    <Button variant="accent" size="lg" asChild>
+      <a href={connectUrl} target="_blank" rel="noopener noreferrer">
+        Connect to Xenon City <ArrowUpRight />
+      </a>
+    </Button>
+  ) : null;
+
+  // Nothing to nag about once everything is done: only the way in remains.
+  if (done === steps.length) {
+    return connect === null ? null : (
+      <Panel
+        tone="raised"
+        pad="lg"
+        edgeLight
+        className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between"
+      >
+        <div>
+          <h2 className="font-display text-lg font-bold text-ink">You are whitelisted</h2>
+          <p className="mt-1 text-sm text-ink-secondary">
+            Your Cfx.re account is verified and staff have approved you. See you in the city.
+          </p>
+        </div>
+        {connect}
+      </Panel>
+    );
+  }
 
   /*
    * The same six steps, told twice.
@@ -163,8 +197,8 @@ export function Onboarding({
    * The journey rail is the shape of the thing - where you are, what is behind
    * you, what is still ahead - and the list below it is the detail. Neither
    * invents a state: every node comes from `state.checks`, which is derived
-   * from facts rather than from a stored cursor, so a player who linked FiveM
-   * in game without ever opening this page finds that node already lit.
+   * from facts rather than from a stored cursor, so a player who connected
+   * Cfx.re in another tab finds that node already lit.
    */
   const journey: JourneyStep[] = steps.map((step, index) => ({
     key: step.key,
@@ -192,6 +226,10 @@ export function Onboarding({
         {/* Hidden on the narrowest screens: six labelled nodes across 375px is
             six unreadable labels, and the list underneath already says it. */}
         <StepProgress steps={journey} className="hidden pt-2 sm:flex" label="Onboarding journey" />
+
+        {/* Whitelisted and verified, with something else to fix (say, guild
+            membership lapsed): the way in still belongs at the top. */}
+        {connect === null ? null : <div className="self-start">{connect}</div>}
       </div>
 
       <ol className="flex flex-col divide-y divide-line">

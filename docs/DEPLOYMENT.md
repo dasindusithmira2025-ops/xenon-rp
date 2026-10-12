@@ -1,7 +1,12 @@
 # Deployment
 
-Two processes, one database, one Redis. Nothing here needs a Kubernetes
-cluster; a single small VM runs all of it comfortably.
+Five processes, one database, one Redis: the website, the Core API, the
+worker, and two Discord bots (Xenon Guardian and Xenon Link). Nothing here
+needs a Kubernetes cluster; a single small VM runs all of it comfortably.
+`infrastructure/docker/compose.yml` runs them as separate containers with
+per-service env files in `infrastructure/env/`; the full split, Discord
+Developer Portal setup, migration and rollback are in
+[TWO_BOT_MIGRATION.md](TWO_BOT_MIGRATION.md).
 
 ---
 
@@ -37,8 +42,10 @@ AUTH_DISCORD_SECRET=
 AUTH_URL=https://your-domain
 AUTH_TRUST_HOST=true      # only behind a proxy that rewrites the origin
 
-DISCORD_BOT_TOKEN=
-DISCORD_APPLICATION_ID=
+# Bot tokens live in infrastructure/env/guardian.env and link.env only — never
+# in the web environment. See TWO_BOT_MIGRATION.md for every service's env file.
+DISCORD_MODE=enabled
+DISCORD_APPLICATION_ID=   # the OAuth application; must equal AUTH_DISCORD_ID
 DISCORD_GUILD_ID=
 
 R2_ACCOUNT_ID=
@@ -61,7 +68,10 @@ AUTH_DEV_LOGIN=false
 ```
 
 `NEXT_PUBLIC_*` values are **inlined at build time**. Changing one requires a
-rebuild, not a restart.
+rebuild, not a restart. So is `R2_PUBLIC_URL`'s host: `next.config.ts` adds it
+to the image allow-list, and without it gallery photos and the hero poster are
+refused by Next's image optimiser. Images hosted anywhere else (for example a
+poster URL pasted into settings from another site) are refused the same way.
 
 Leave `AUTH_DEV_LOGIN` false. It does nothing in production regardless — the
 dev sign-in route requires a non-production `NODE_ENV` as well as the flag —
@@ -77,8 +87,9 @@ pnpm db:generate
 pnpm build
 ```
 
-`pnpm build` produces the Next standalone output and the bot's bundled
-`dist/main.js`.
+`pnpm build` produces the Next output and each service's bundled
+`dist/main.js` (`apps/guardian-bot`, `apps/link-bot`, `apps/core-api`,
+`apps/worker`).
 
 ---
 
@@ -116,18 +127,23 @@ will know.
 ## 5. Start
 
 ```bash
-pnpm --filter @xenon/web start     # port 3200
-pnpm --filter @xenon/bot start
+pnpm --filter @xenon/web start            # port 3200
+pnpm --filter @xenon/core-api start       # port 3300, private network only
+pnpm --filter @xenon/worker start
+pnpm --filter @xenon/link-bot start       # http mode: gateway on 8082, private network only; relay mode: no listener
+pnpm --filter @xenon/guardian-bot start   # health on 127.0.0.1:8081
 ```
 
 Under a process manager — systemd, PM2, Docker — with restart-on-failure. The
-web tier is stateless; scale it horizontally if you need to. Run **one** bot
-process: a second one would double every Discord side effect. With
-`BOT_RUNTIME_MODE=discord-only` the bot keeps security configuration, trust,
-cases, incidents, lockdown/quarantine/raid recovery journals, and snapshots in
-`.data/discord-runtime.json` (no secrets). Mount `.data/` on a persistent
-volume, include it in backups, and keep the working directory stable. The
-runtime enforces a single instance with `.data/discord-runtime.json.lock`; see
+web tier and core-api are stateless; scale them horizontally if you need to.
+The worker is safe to run more than once (the outbox relay uses
+`FOR UPDATE SKIP LOCKED`). Run **one** Guardian and **one** Link process: a
+second copy would double every Discord side effect. Guardian keeps security
+configuration, trust, cases, incidents, lockdown/quarantine/raid recovery
+journals, and snapshots in `.data/discord-runtime.json` (no secrets). Mount
+`.data/` on a persistent volume, include it in backups, and keep the working
+directory stable. The runtime enforces a single instance with
+`.data/discord-runtime.json.lock`; see
 [DISCORD_SETUP.md § Single instance and recovery](DISCORD_SETUP.md#single-instance-and-recovery).
 
 ---
@@ -149,10 +165,13 @@ session.
 ## 7. Register slash commands
 
 ```bash
-pnpm --filter @xenon/bot register
+pnpm guardian:register   # Guardian's commands, with Guardian's credentials
+pnpm link:register       # Link's commands, with Link's credentials
 ```
 
-Guild-scoped, so it propagates immediately. Re-run after adding a command.
+Guild-scoped, so they propagate immediately. Both bots also register their own
+commands on startup, and both refuse a registry containing the other
+application's command names.
 
 ---
 
@@ -183,13 +202,14 @@ During:
 
 - [ ] `pnpm db:deploy`
 - [ ] `pnpm db:seed`
-- [ ] Restart web
-- [ ] Restart bot
-- [ ] `pnpm --filter @xenon/bot register` if commands changed
+- [ ] Restart core-api, worker, link
+- [ ] Restart guardian only if its build changed (it is independent of the rest)
+- [ ] `pnpm guardian:register` / `pnpm link:register` if commands changed
 
 After:
 
-- [ ] `/control → Health`: database, Redis, `bot=HEALTHY, worker=HEALTHY`
+- [ ] `/control → Health`: database, Redis, `core-api`, `worker`, `link` HEALTHY; outbox HEALTHY
+- [ ] Guardian `GET 127.0.0.1:8081/healthz` → 200
 - [ ] Queue `failed` count not climbing
 - [ ] Sign out and back in — the OAuth round trip
 - [ ] Open one application in `/control` and confirm the review card posted

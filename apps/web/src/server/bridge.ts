@@ -3,6 +3,7 @@ import 'server-only';
 import { NextResponse } from 'next/server';
 
 import { serverEnv } from '@xenon/config/server';
+import { RateLimitError } from '@xenon/core';
 import { NONCE_HEADER, SIGNATURE_HEADER, TIMESTAMP_HEADER, verifyRequest } from '@xenon/fivem';
 import { enforceRateLimit, redis } from '@xenon/jobs';
 
@@ -35,12 +36,22 @@ function refuse(status: number, message: string): NextResponse {
 }
 
 /**
+ * Which bridge route is being called. Each has its own rate-limit bucket, so
+ * players spamming `/link` or reconnecting cannot exhaust the budget the
+ * connect gate depends on.
+ */
+export type BridgeRoute = 'whitelist' | 'link' | 'events' | 'presence';
+
+/**
  * Verify an inbound bridge request and return its parsed body.
  *
  * The raw text is read first because the signature is over the bytes; parsing
  * and re-serialising would change them.
  */
-export async function verifyBridgeRequest<T>(request: Request): Promise<BridgeResult<T>> {
+export async function verifyBridgeRequest<T>(
+  request: Request,
+  route: BridgeRoute,
+): Promise<BridgeResult<T>> {
   const secret = serverEnv.FIVEM_BRIDGE_SECRET;
   if (!secret) {
     return {
@@ -77,9 +88,20 @@ export async function verifyBridgeRequest<T>(request: Request): Promise<BridgeRe
     console.warn('[bridge] replay cache unavailable, accepting on signature alone');
   }
 
-  // Rate limited per server rather than per player: this is one caller making
+  // Rate limited per route rather than per player: this is one caller making
   // a request per connection, and the limit exists to bound a runaway loop.
-  await enforceRateLimit('bridgeRequest', 'fivem');
+  // Exhaustion answers 429, which the bridge treats as a refusal - never as
+  // "Xenon unreachable", which could open the gate.
+  try {
+    await enforceRateLimit(route === 'whitelist' ? 'bridgeAdmission' : 'bridgeRequest', route);
+  } catch (error) {
+    if (error instanceof RateLimitError) {
+      const response = refuse(429, 'Too many requests');
+      response.headers.set('Retry-After', String(error.retryAfterSeconds));
+      return { ok: false, response };
+    }
+    throw error;
+  }
 
   try {
     return { ok: true, body: JSON.parse(raw) as T };

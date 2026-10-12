@@ -14,8 +14,8 @@ import {
   type Prisma,
   transaction,
 } from '@xenon/database';
-import { recordAudit } from '@xenon/domain';
-import { enforceRateLimit, enqueueBestEffort } from '@xenon/jobs';
+import { eventSubject, recordAudit } from '@xenon/domain';
+import { emitIntegrationEvent, enforceRateLimit, enqueueDurable } from '@xenon/jobs';
 import { createNotification, dispatchPending, notificationCopy } from '@xenon/notifications';
 import { type Actor, can, requireUser } from '@xenon/permissions';
 import {
@@ -330,9 +330,9 @@ export async function autosave(
  * Submit, or resubmit after changes were requested.
  *
  * Validation runs server-side against the stored answers, never against the
- * payload the client claims to have. The Discord review card is enqueued after
- * the transaction commits, so a Discord outage delays the notification and not
- * the submission.
+ * payload the client claims to have. The Discord review card is recorded in the
+ * outbox inside the same transaction, so a Discord outage delays the card and
+ * not the submission.
  */
 export async function submitApplication(
   db: Db,
@@ -400,13 +400,25 @@ export async function submitApplication(
       before: { status: current.status },
       after: { status: target },
     });
+
+    await enqueueDurable('discord.review.post', { submissionId: current.id }, { db: tx });
+    if (current.template.grantsWhitelist) {
+      await emitIntegrationEvent(tx, {
+        type: 'WHITELIST_SUBMITTED',
+        payload: {
+          ...(await eventSubject(tx, current.applicantId)),
+          applicationPublicId: current.publicId,
+          templateName: current.template.name.slice(0, 120),
+        },
+        idempotencyKey: `application.submitted:${current.id}:${String(now.getTime())}`,
+        source: actor.source,
+      });
+    }
   });
 
   const copy = notificationCopy.applicationSubmitted(current.publicId, current.template.name);
   const notification = await createNotification(db, { userId, ...copy });
   await dispatchPending([notification]);
-
-  await enqueueBestEffort('discord.review.post', { submissionId: current.id });
 
   return loadSubmission(db, current.id);
 }
@@ -449,11 +461,10 @@ export async function withdrawApplication(
       before: { status: current.status },
       after: { status: 'WITHDRAWN' },
     });
+    await enqueueDurable('discord.review.update', { submissionId: current.id }, { db: tx });
 
     return tx.applicationSubmission.findUniqueOrThrow({ where: { id: current.id } });
   });
-
-  await enqueueBestEffort('discord.review.update', { submissionId: current.id });
 
   return submission;
 }
@@ -529,6 +540,7 @@ export async function expireStaleSubmissions(db: Db, actor: Actor): Promise<numb
         before: { status: submission.status },
         after: { status: 'EXPIRED' },
       });
+      await enqueueDurable('discord.review.update', { submissionId: submission.id }, { db: tx });
       return true;
     });
     if (!expired) continue;
@@ -540,7 +552,6 @@ export async function expireStaleSubmissions(db: Db, actor: Actor): Promise<numb
       ...copy,
     });
     await dispatchPending([notification]);
-    await enqueueBestEffort('discord.review.update', { submissionId: submission.id });
   }
 
   return expiredCount;

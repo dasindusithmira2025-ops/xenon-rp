@@ -6,7 +6,6 @@ import { serverEnv } from '@xenon/config/server';
 import { ConflictError } from '@xenon/core';
 import { prisma } from '@xenon/database';
 import {
-  createRun,
   resolveConflict,
   type RunMode,
   saveBlueprintFeatures,
@@ -14,7 +13,6 @@ import {
   saveEnforcementMode,
   saveOrganizationSpace,
 } from '@xenon/discord/web';
-import { enqueue } from '@xenon/jobs';
 
 import { type ActionResult, runAction } from '~/server/action';
 import { currentActor } from '~/server/context';
@@ -22,10 +20,11 @@ import { currentActor } from '~/server/context';
 /**
  * Discord provisioning from the Control Center.
  *
- * These actions only record intent: a run row, an operator decision, a
- * setting. The bot executes runs, because only the bot holds the token -
- * the web tier never talks to Discord. Every service called here re-checks
- * `system.discord.bootstrap` (or the destructive capability) itself.
+ * These actions only record intent: an operator decision, a setting.
+ * Provisioning runs themselves belong to Xenon Guardian (`/xenon setup plan`
+ * and `/xenon setup apply`), because only Guardian administers the Discord
+ * server - the web tier never talks to Discord. Every service called here
+ * re-checks `system.discord.bootstrap` (or the destructive capability) itself.
  */
 
 const PATH = '/control/discord/setup';
@@ -50,30 +49,20 @@ export interface RunRequestInput {
   readonly force?: boolean;
 }
 
+/**
+ * Retired: web-triggered provisioning ran through the old integrated bot.
+ * Kept as an explicit refusal so an open Control Center tab gets a clear
+ * answer instead of a silently queued run that nothing will execute.
+ */
 export async function requestRunAction(
-  input: RunRequestInput,
+  _input: RunRequestInput,
 ): Promise<ActionResult<{ runId: string }>> {
   return runAction(async () => {
-    const actor = await currentActor();
-    const run = await createRun(prisma, actor, { guildId: guildId(), ...input });
-    try {
-      await enqueue('discord.setup.run', { runId: run.id });
-    } catch {
-      await prisma.discordProvisionRun.update({
-        where: { id: run.id },
-        data: {
-          status: 'FAILED',
-          completedAt: new Date(),
-          failure: 'The job queue is unavailable.',
-        },
-      });
-      throw new ConflictError(
-        'Job queue unavailable',
-        'The job queue is unavailable. Check Redis and try again.',
-      );
-    }
-    revalidatePath(PATH);
-    return { runId: run.id };
+    await currentActor();
+    throw new ConflictError(
+      'Discord provisioning moved to Xenon Guardian',
+      'Discord provisioning now runs in Xenon Guardian. Use /xenon setup plan and then /xenon setup apply in Discord.',
+    );
   });
 }
 

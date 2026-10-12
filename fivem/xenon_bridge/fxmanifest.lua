@@ -25,7 +25,7 @@ fx_version 'cerulean'
 game 'gta5'
 
 name 'xenon_bridge'
-description 'Connects a FiveM server to the XenonRP platform: whitelist gate and account linking.'
+description 'Connects a FiveM server to the XenonRP platform: whitelist gate, account linking and event forwarding.'
 author 'XenonRP'
 version '1.0.0'
 

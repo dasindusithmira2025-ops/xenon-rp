@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
     "lint": "eslint .",
@@ -15,6 +16,8 @@
   },
   "dependencies": {
     "@xenon/config": "workspace:*",
+    "@xenon/contracts": "workspace:*",
+    "@xenon/database": "workspace:*",
     "@xenon/core": "workspace:*",
     "@xenon/logger": "workspace:*",
     "bullmq": "6.3.8",

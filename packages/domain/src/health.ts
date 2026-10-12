@@ -22,8 +22,22 @@ export interface HealthReport {
   readonly checkedAt: string;
 }
 
-/** A bot heartbeat older than this means the process is gone, not just quiet. */
+/** A heartbeat older than this means the process is gone, not just quiet. */
 const HEARTBEAT_STALE_MS = 90 * 1000;
+
+/** An outbox row waiting longer than this means the relay is stuck or Redis is down. */
+const OUTBOX_STALE_MS = 5 * 60 * 1000;
+
+/**
+ * Services that write a heartbeat row. `link` is written by the worker after
+ * probing Xenon Link's gateway, because Link holds no database credential.
+ * Xenon Guardian has no database at all and reports only on its own endpoint.
+ */
+const HEARTBEAT_SERVICES: Readonly<Record<string, string>> = {
+  'core-api': 'Never reported. Start it with `pnpm --filter @xenon/core-api dev`.',
+  worker: 'Never reported. Start it with `pnpm --filter @xenon/worker dev`.',
+  link: 'Never reported. The worker records it after probing the Xenon Link gateway.',
+};
 
 async function timed<T>(run: () => Promise<T>): Promise<{ value: T | undefined; ms: number }> {
   const started = Date.now();
@@ -77,21 +91,22 @@ async function checkQueue(): Promise<HealthCheck> {
 /**
  * Long-running processes report in rather than being probed.
  *
- * The web tier cannot reach the bot's gateway connection, and trying to would
- * couple the two deployments. The bot writes a heartbeat row instead.
+ * The web tier cannot reach the bots' gateway connections, and trying to would
+ * couple the deployments. Core API and the worker write a heartbeat row; the
+ * worker writes Link's after probing its gateway.
  */
 async function checkHeartbeats(db: Db): Promise<readonly HealthCheck[]> {
   const rows = await db.serviceHeartbeat.findMany();
   const now = Date.now();
 
-  const expected = ['bot', 'worker'];
+  const expected = Object.keys(HEARTBEAT_SERVICES);
   return expected.map((service): HealthCheck => {
     const row = rows.find((candidate) => candidate.service === service);
     if (row === undefined) {
       return {
         name: service,
         status: 'UNKNOWN',
-        detail: 'Never reported. Start the process with `pnpm --filter @xenon/bot dev`.',
+        detail: HEARTBEAT_SERVICES[service] ?? 'Never reported.',
         latencyMs: null,
       };
     }
@@ -113,6 +128,41 @@ async function checkHeartbeats(db: Db): Promise<readonly HealthCheck[]> {
       latencyMs: null,
     };
   });
+}
+
+/**
+ * The transactional outbox. Rows waiting is normal; rows waiting for minutes
+ * means the relay is not running or cannot reach Redis, and side effects
+ * (Discord, FiveM) are being delayed - never lost.
+ */
+async function checkOutbox(db: Db): Promise<HealthCheck> {
+  const now = new Date();
+  const { value, ms } = await timed(() =>
+    Promise.all([
+      db.outboxMessage.count({ where: { dispatchedAt: null } }),
+      db.outboxMessage.findFirst({
+        where: { dispatchedAt: null, availableAt: { lte: now } },
+        orderBy: { availableAt: 'asc' },
+        select: { availableAt: true },
+      }),
+    ]),
+  );
+  if (value === undefined) {
+    return { name: 'outbox', status: 'UNHEALTHY', detail: 'Outbox unreadable', latencyMs: ms };
+  }
+
+  const [pending, oldest] = value;
+  const ageMs = oldest === null ? 0 : Math.max(0, now.getTime() - oldest.availableAt.getTime());
+  const ageSeconds = Math.round(ageMs / 1000);
+  return {
+    name: 'outbox',
+    status: ageMs > OUTBOX_STALE_MS ? 'DEGRADED' : 'HEALTHY',
+    detail:
+      pending === 0
+        ? 'Nothing pending'
+        : `${String(pending)} pending, oldest due ${String(ageSeconds)}s ago`,
+    latencyMs: ms,
+  };
 }
 
 async function checkGameServers(db: Db): Promise<HealthCheck> {
@@ -176,16 +226,17 @@ function worst(checks: readonly HealthCheck[]): ServiceStatus {
 }
 
 export async function healthReport(db: Db): Promise<HealthReport> {
-  const [database, redis, jobs, heartbeats, fivem, discord] = await Promise.all([
+  const [database, redis, jobs, outbox, heartbeats, fivem, discord] = await Promise.all([
     checkDatabase(db),
     checkRedis(),
     checkQueue(),
+    checkOutbox(db),
     checkHeartbeats(db),
     checkGameServers(db),
     checkDiscord(db),
   ]);
 
-  const checks = [database, redis, jobs, ...heartbeats, fivem, discord];
+  const checks = [database, redis, jobs, outbox, ...heartbeats, fivem, discord];
 
   return {
     status: worst(checks),

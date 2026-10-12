@@ -46,14 +46,15 @@ model User {
   lastSeenAt DateTime?
   deletedAt  DateTime?
 
-  discordAccount DiscordAccount?
-  gameIdentities GameIdentity[]
-  sessions       Session[]
-  accounts       Account[]
-  roles          UserRole[]
-  characters     Character[]
-  whitelist      Whitelist?
-  linkTokens     LinkToken[]
+  discordAccount  DiscordAccount?
+  gameIdentities  GameIdentity[]
+  sessions        Session[]
+  accounts        Account[]
+  roles           UserRole[]
+  characters      Character[]
+  whitelist       Whitelist?
+  linkTokens      LinkToken[]
+  cfxLinkAttempts CfxLinkAttempt[]
 
   submissions         ApplicationSubmission[] @relation("SubmissionApplicant")
   assignedSubmissions ApplicationSubmission[] @relation("SubmissionAssignee")
@@ -82,6 +83,9 @@ model User {
   articles      Article[]
   galleryItems  GalleryItem[]
   auditLogs     AuditLog[]     @relation("AuditActor")
+
+  moderationCases   ModerationCase[] @relation("ModerationSubject")
+  moderationActions ModerationCase[] @relation("ModerationActor")
 
   @@index([status])
   @@index([whitelistState])
@@ -133,16 +137,16 @@ model DiscordAccount {
   banner        String?
   locale        String?
 
-  isGuildMember Boolean   @default(false)
+  isGuildMember        Boolean                @default(false)
   /// The latest server-side bot lookup. Unknown is never treated as "not a member".
   guildMembershipState DiscordMembershipState @default(UNKNOWN)
-  guildNickname String?
-  guildJoinedAt DateTime?
+  guildNickname        String?
+  guildJoinedAt        DateTime?
   /// Role snowflakes observed at the last sync. Diagnostic only: authorization
   /// resolves from UserRole, never from this array.
-  guildRoleIds  String[]  @default([])
-  guildSyncedAt DateTime?
-  guildSyncError String?
+  guildRoleIds         String[]               @default([])
+  guildSyncedAt        DateTime?
+  guildSyncError       String?
 
   syncedAt     DateTime?
   syncFailedAt DateTime?
@@ -226,7 +230,7 @@ model GameIdentity {
   userId String
   user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  kind GameIdentityKind
+  kind  GameIdentityKind
   /// Identifier value as reported by FXServer, without its `kind:` prefix.
   value String
 
@@ -237,6 +241,8 @@ model GameIdentity {
 
   linkedAt   DateTime   @default(now())
   linkedVia  LinkSource @default(FIVEM)
+  /// When the provider last proved ownership (Cfx.re authorization for CFX links).
+  verifiedAt DateTime?
   unlinkedAt DateTime?
   lastSeenAt DateTime?
 
@@ -260,6 +266,39 @@ enum LinkSource {
   FIVEM
   STAFF
   IMPORT
+  /// Verified on the website through a Cfx.re (forum.cfx.re) User API key.
+  CFX
+}
+
+/// One "Connect Cfx.re" attempt. Holds the ephemeral RSA private key that
+/// decrypts the forum's response (encrypted with a server key, wiped once the
+/// attempt finishes) and hashes of the nonce and the browser binding secret.
+/// Single use: `consumedAt` is claimed atomically before the payload is read.
+model CfxLinkAttempt {
+  id     String @id @default(cuid(2))
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// SHA-256 of the nonce sent to the forum and echoed inside the encrypted payload.
+  nonceHash         String
+  /// SHA-256 of the random secret held only in the browser's httpOnly cookie.
+  browserSecretHash String
+  /// AES-256-GCM ciphertext of the PKCS#8 private key. Null once finished.
+  privateKeyEnc     String?
+
+  expiresAt  DateTime
+  consumedAt DateTime?
+  /// LINKED, CANCELLED, EXPIRED, SUPERSEDED, NONCE_MISMATCH, CONFLICT, PROVIDER_ERROR.
+  outcome    String?
+  /// Verified forum account id, recorded for audit once known.
+  cfxUserId  String?
+
+  createdAt     DateTime @default(now())
+  createdIpHash String?
+
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+  @@map("cfx_link_attempts")
 }
 
 /// Single-use, short-lived code proving a FiveM session belongs to a user.
@@ -419,10 +458,10 @@ model Whitelist {
   state  WhitelistState @default(NONE)
   reason String?
 
-  grantedAt   DateTime?
-  grantedBy   String?
-  revokedAt   DateTime?
-  revokedBy   String?
+  grantedAt      DateTime?
+  grantedBy      String?
+  revokedAt      DateTime?
+  revokedBy      String?
   /// Temporary suspensions expire without staff action.
   suspendedUntil DateTime?
 
@@ -503,9 +542,9 @@ model ApplicationTemplate {
   grantRoleKeys   String[] @default([])
   grantsWhitelist Boolean  @default(false)
 
-  sortOrder Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  sortOrder  Int       @default(0)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
   archivedAt DateTime?
 
   sections    ApplicationSection[]
@@ -547,10 +586,10 @@ model ApplicationQuestion {
   section   ApplicationSection @relation(fields: [sectionId], references: [id], onDelete: Cascade)
 
   /// Stable key used by answers, so re-ordering never orphans data.
-  key   String
-  type  QuestionType
-  label String
-  helpText    String? @db.Text
+  key         String
+  type        QuestionType
+  label       String
+  helpText    String?      @db.Text
   placeholder String?
 
   required  Boolean @default(false)
@@ -667,11 +706,11 @@ model ApplicationSubmission {
   lastSavedAt   DateTime @default(now())
   createdIpHash String?
 
-  answers    ApplicationAnswer[]
-  reviews    ApplicationReview[]
-  comments   ApplicationComment[]
-  events     ApplicationEvent[]
-  interviews Interview[]
+  answers     ApplicationAnswer[]
+  reviews     ApplicationReview[]
+  comments    ApplicationComment[]
+  events      ApplicationEvent[]
+  interviews  Interview[]
   messageRefs DiscordMessageReference[]
 
   @@index([status, submittedAt])
@@ -735,11 +774,11 @@ model ApplicationReview {
   reviewerId String
   reviewer   User   @relation(fields: [reviewerId], references: [id], onDelete: Cascade)
 
-  decision ReviewDecision
+  decision   ReviewDecision
   /// Notes shown to the applicant.
-  publicNote String? @db.Text
+  publicNote String?        @db.Text
   /// Notes visible to staff only.
-  staffNote  String? @db.Text
+  staffNote  String?        @db.Text
 
   /// Where the decision was made, for audit parity with AuditLog.
   source ActionSource @default(WEB)
@@ -768,7 +807,7 @@ model ApplicationComment {
   authorId String
   author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
-  body String @db.Text
+  body       String            @db.Text
   /// Internal comments are never serialised into applicant-facing responses.
   visibility CommentVisibility @default(INTERNAL)
 
@@ -795,7 +834,7 @@ model ApplicationEvent {
 
   /// Null when the system acted, e.g. expiry.
   actorId String?
-  actor   User?   @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  actor   User?        @relation(fields: [actorId], references: [id], onDelete: SetNull)
   source  ActionSource @default(SYSTEM)
 
   fromStatus ApplicationStatus?
@@ -949,11 +988,11 @@ model Department {
   /// provisioner (`departmentSpaceConfig`). Null means no Discord resources.
   discordSpace Json?
 
-  status       PublishStatus @default(DRAFT)
-  sortOrder    Int           @default(0)
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-  publishedAt  DateTime?
+  status      PublishStatus @default(DRAFT)
+  sortOrder   Int           @default(0)
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+  publishedAt DateTime?
 
   members   DepartmentMember[]
   templates ApplicationTemplate[]
@@ -998,7 +1037,7 @@ model DepartmentMember {
 
   /// Rank title within the department, e.g. "Sergeant". Free text because
   /// department structures differ and change often.
-  rank String?
+  rank         String?
   /// Leadership members are surfaced on the public department page.
   isLeadership Boolean @default(false)
   sortOrder    Int     @default(0)
@@ -1024,13 +1063,13 @@ model RuleCategory {
   sortOrder   Int     @default(0)
 
   /// Provenance for source-derived rulebook sections.
-  sourceRoot         String?   @db.Text
-  sourceUrl          String?   @db.Text
-  sourcePath         String?   @db.Text
-  sourcePageTitle    String?   @db.Text
-  sourceOrder        Int?
-  sourceContentHash  String?
-  sourceRetrievedAt  DateTime?
+  sourceRoot        String?   @db.Text
+  sourceUrl         String?   @db.Text
+  sourcePath        String?   @db.Text
+  sourcePageTitle   String?   @db.Text
+  sourceOrder       Int?
+  sourceContentHash String?
+  sourceRetrievedAt DateTime?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1059,12 +1098,12 @@ model Rule {
   /// Null when the official source does not define a severity.
   severity RuleSeverity? @default(STANDARD)
   /// Shorthand the community uses, e.g. ["RDM", "Random Deathmatch"].
-  aliases  String[]     @default([])
+  aliases  String[]      @default([])
 
-  status    PublishStatus @default(DRAFT)
-  sortOrder Int           @default(0)
+  status               PublishStatus @default(DRAFT)
+  sortOrder            Int           @default(0)
   /// Seeded demo material is excluded from the official rules publication.
-  isDevelopmentFixture Boolean @default(false)
+  isDevelopmentFixture Boolean       @default(false)
 
   /// Exact source provenance for imported rulebook pages.
   sourceRoot        String?   @db.Text
@@ -1102,8 +1141,8 @@ model RuleRevision {
   version Int
 
   title       String
-  description String  @db.Text
-  examples    String? @db.Text
+  description String        @db.Text
+  examples    String?       @db.Text
   severity    RuleSeverity?
 
   /// Content hash and source details are frozen with this revision.
@@ -1116,7 +1155,7 @@ model RuleRevision {
   sourceRetrievedAt DateTime?
 
   /// User id of the editor, or null for an import.
-  editedBy  String?
+  editedBy   String?
   changeNote String?
 
   createdAt DateTime @default(now())
@@ -1134,16 +1173,16 @@ model RuleSet {
   /// Rule revision ids included in this publication.
   revisionIds String[] @default([])
 
-  publishedAt DateTime  @default(now())
-  publishedBy String?
-  note        String?
+  publishedAt       DateTime  @default(now())
+  publishedBy       String?
+  note              String?
   /// Hash and provenance of an imported source ruleset, when applicable.
   sourceRoot        String?   @db.Text
   sourceContentHash String?
   sourceRetrievedAt DateTime?
   /// Exactly one ruleset is current; the service enforces this.
-  isCurrent   Boolean   @default(false)
-  retiredAt   DateTime?
+  isCurrent         Boolean   @default(false)
+  retiredAt         DateTime?
 
   acceptances RuleAcceptance[]
 
@@ -1191,12 +1230,12 @@ model Ticket {
   status   TicketStatus   @default(OPEN)
   priority TicketPriority @default(NORMAL)
 
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
-  lastMessageAt  DateTime  @default(now())
-  resolvedAt     DateTime?
-  closedAt       DateTime?
-  createdIpHash  String?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  lastMessageAt DateTime  @default(now())
+  resolvedAt    DateTime?
+  closedAt      DateTime?
+  createdIpHash String?
 
   messages    TicketMessage[]
   messageRefs DiscordMessageReference[]
@@ -1239,7 +1278,7 @@ model TicketMessage {
   authorId String
   author   User   @relation(fields: [authorId], references: [id], onDelete: Cascade)
 
-  body String @db.Text
+  body       String            @db.Text
   /// Staff notes stay internal; the player never receives them.
   visibility CommentVisibility @default(APPLICANT)
 
@@ -1268,20 +1307,20 @@ model Report {
   reporter   User?   @relation("ReportReporter", fields: [reporterId], references: [id], onDelete: SetNull)
 
   /// The account being reported, when it is a known Xenon user.
-  subjectId String?
-  subject   User?   @relation("ReportSubject", fields: [subjectId], references: [id], onDelete: SetNull)
+  subjectId    String?
+  subject      User?   @relation("ReportSubject", fields: [subjectId], references: [id], onDelete: SetNull)
   /// Free text when the subject is not a linked account.
   subjectLabel String?
 
   assigneeId String?
   assignee   User?   @relation("ReportAssignee", fields: [assigneeId], references: [id], onDelete: SetNull)
 
-  summary   String
-  details   String   @db.Text
+  summary    String
+  details    String    @db.Text
   /// When the incident happened, as reported.
   occurredAt DateTime?
   /// MediaAsset ids for evidence.
-  mediaIds  String[] @default([])
+  mediaIds   String[]  @default([])
 
   status   ReportStatus   @default(OPEN)
   priority TicketPriority @default(NORMAL)
@@ -1326,10 +1365,10 @@ model Appeal {
   kind AppealKind @default(BAN)
 
   /// What the applicant says happened, and why the decision should change.
-  statement String @db.Text
+  statement   String   @db.Text
   /// Staff reference for the original sanction, when known.
   sanctionRef String?
-  mediaIds  String[] @default([])
+  mediaIds    String[] @default([])
 
   status   AppealStatus @default(SUBMITTED)
   decision String?      @db.Text
@@ -1380,10 +1419,10 @@ model Notification {
   channels  NotificationChannel[] @default([WEB])
   webReadAt DateTime?
 
-  discordState NotificationDeliveryState @default(PENDING)
+  discordState  NotificationDeliveryState @default(PENDING)
   discordSentAt DateTime?
   /// Why a DM failed, e.g. the user has DMs closed. Recorded, never fatal.
-  discordError String?
+  discordError  String?
 
   /// Structured payload for rendering; never contains secrets.
   metadata Json?
@@ -1437,7 +1476,7 @@ model DiscordGuild {
   id String @id @default(cuid(2))
 
   /// Guild snowflake.
-  guildId String @unique
+  guildId String  @unique
   name    String
   iconUrl String?
 
@@ -1472,18 +1511,18 @@ model DiscordRoleMapping {
   role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
 
   /// Discord role snowflake.
-  discordRoleId String
+  discordRoleId   String
   /// Cached name, for a readable admin UI when the bot is offline.
   discordRoleName String?
 
   /// Push Xenon state to Discord.
-  syncToDiscord Boolean @default(true)
+  syncToDiscord   Boolean @default(true)
   /// Adopt Discord membership as evidence when reconciling. Off by default:
   /// Discord is not the source of truth.
   syncFromDiscord Boolean @default(false)
 
   /// Set when the bot's highest role sits below this role and so cannot manage it.
-  hierarchyBlocked Boolean @default(false)
+  hierarchyBlocked Boolean   @default(false)
   lastSyncedAt     DateTime?
   lastError        String?
 
@@ -1548,10 +1587,10 @@ model DiscordManagedResource {
   configurationHash String?
 
   /// False records an operator decision to leave a conflicting resource alone.
-  managed         Boolean   @default(true)
-  createdByRunId  String?
-  lastVerifiedAt  DateTime?
-  metadata        Json      @default("{}")
+  managed        Boolean   @default(true)
+  createdByRunId String?
+  lastVerifiedAt DateTime?
+  metadata       Json      @default("{}")
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1645,11 +1684,11 @@ model Server {
   adapter GameServerAdapterKind @default(MOCK)
 
   /// Public connect string shown on the site, e.g. `cfx.re/join/xxxxxx`.
-  connectUrl String?
+  connectUrl  String?
   /// Internal endpoint the status poller and whitelist sync call.
   endpointUrl String?
 
-  maxPlayers Int?
+  maxPlayers  Int?
   /// Cron expression describing scheduled restarts, when configured.
   restartCron String?
   timezone    String  @default("Asia/Colombo")
@@ -1680,12 +1719,12 @@ model ServerStatusSnapshot {
   serverId String
   server   Server @relation(fields: [serverId], references: [id], onDelete: Cascade)
 
-  online      Boolean
-  playerCount Int?
-  maxPlayers  Int?
-  queueLength Int?
+  online        Boolean
+  playerCount   Int?
+  maxPlayers    Int?
+  queueLength   Int?
   /// Round-trip time of the status probe, in milliseconds.
-  latencyMs   Int?
+  latencyMs     Int?
   /// Next scheduled restart, derived from `Server.restartCron`.
   nextRestartAt DateTime?
 
@@ -1715,18 +1754,18 @@ model Article {
   tags         String[] @default([])
 
   /// Structured announcement controls. Ordinary articles use the defaults.
-  announcementType  AnnouncementType @default(COMMUNITY)
-  publishToWebsite  Boolean           @default(false)
-  publishToDiscord  Boolean           @default(false)
-  discordChannelId  String?
+  announcementType    AnnouncementType @default(COMMUNITY)
+  publishToWebsite    Boolean          @default(false)
+  publishToDiscord    Boolean          @default(false)
+  discordChannelId    String?
   discordNotifyRoleId String?
-  scheduledAt       DateTime?
+  scheduledAt         DateTime?
 
   authorId String?
   author   User?   @relation(fields: [authorId], references: [id], onDelete: SetNull)
 
-  status    PublishStatus @default(DRAFT)
-  isPinned  Boolean       @default(false)
+  status   PublishStatus @default(DRAFT)
+  isPinned Boolean       @default(false)
 
   /// Set when this article was also posted to Discord, so it is not posted twice.
   announcedAt DateTime?
@@ -1737,14 +1776,15 @@ model Article {
 
   @@index([status, publishedAt])
   @@index([isPinned, publishedAt])
+  @@index([scheduledAt])
   @@map("articles")
 }
 
 model GalleryItem {
   id String @id @default(cuid(2))
 
-  mediaId  String
-  caption  String?
+  mediaId      String
+  caption      String?
   /// Credit for the person who captured the shot.
   photographer String?
 
@@ -1774,7 +1814,7 @@ model MediaAsset {
   id String @id @default(cuid(2))
 
   /// Key within the bucket, or path under the local driver root.
-  storageKey String @unique
+  storageKey String        @unique
   driver     StorageDriver
 
   mimeType  String
@@ -1821,21 +1861,21 @@ model AuditLog {
 
   action String
 
-  actorId String?
-  actor   User?   @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorId    String?
+  actor      User?   @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
   /// Preserved separately so the log stays readable after an account deletion.
   actorLabel String?
 
   source ActionSource @default(WEB)
 
-  entityType String
-  entityId   String
+  entityType  String
+  entityId    String
   /// Public identifier of the entity, for searchable logs.
   entityLabel String?
 
   /// Safe before/after projections. Never secrets, never tokens.
-  before Json?
-  after  Json?
+  before   Json?
+  after    Json?
   /// Extra context, e.g. the Discord interaction id that triggered the action.
   metadata Json?
 
@@ -1883,9 +1923,9 @@ model FeatureFlag {
   key         String  @id
   description String?
 
-  enabled Boolean @default(false)
+  enabled          Boolean  @default(false)
   /// Percentage rollout, 0-100. Applied only when `enabled` is true.
-  rollout Int     @default(100)
+  rollout          Int      @default(100)
   /// Role keys that always see the feature regardless of rollout.
   forceForRoleKeys String[] @default([])
 
@@ -1900,9 +1940,9 @@ model FeatureFlag {
 model ServiceHeartbeat {
   service String @id
 
-  status   ServiceStatus @default(UNKNOWN)
-  version  String?
-  detail   Json?
+  status  ServiceStatus @default(UNKNOWN)
+  version String?
+  detail  Json?
 
   beatAt DateTime @default(now())
 
@@ -1914,4 +1954,105 @@ enum ServiceStatus {
   HEALTHY
   DEGRADED
   UNHEALTHY
+}
+
+// =============================================================================
+// INTEGRATION
+// =============================================================================
+
+/// Transactional outbox. Domain services write a row in the same transaction as
+/// the decision it follows from; the worker's relay moves due rows onto the job
+/// queue (JOB) or fans them out to subscribers (EVENT). A Redis outage therefore
+/// delays a side effect instead of losing it.
+model OutboxMessage {
+  id   String     @id @default(cuid(2))
+  kind OutboxKind
+
+  /// Job name (`discord.role.sync`) or integration event type (`WHITELIST_APPROVED`).
+  name    String
+  /// Schema version of `payload`. Always 1 for jobs.
+  version Int    @default(1)
+  payload Json
+
+  /// Collapses duplicate emissions of the same intent. Null: no de-duplication.
+  dedupeKey String?      @unique
+  /// Where the change came from (events only; jobs record SYSTEM).
+  source    ActionSource @default(SYSTEM)
+
+  /// Not dispatched before this time. Delayed jobs and retry backoff both use it.
+  availableAt  DateTime  @default(now())
+  attempts     Int       @default(0)
+  lastError    String?
+  dispatchedAt DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([dispatchedAt, availableAt])
+  @@index([kind, name, createdAt])
+  @@map("outbox_messages")
+}
+
+enum OutboxKind {
+  JOB
+  EVENT
+}
+
+/// Consumer-side idempotency: one row per (consumer, event) once a delivery has
+/// succeeded, so a retried delivery is acknowledged without being re-applied.
+model IntegrationEventReceipt {
+  consumer    String
+  eventId     String
+  processedAt DateTime @default(now())
+
+  @@id([consumer, eventId])
+  @@index([processedAt])
+  @@map("integration_event_receipts")
+}
+
+/// Cross-platform moderation record. Discord moderation stays in Guardian's own
+/// journal; this table holds platform and game-server sanctions that need to be
+/// visible across the website, Link and the game server.
+model ModerationCase {
+  id String @id @default(cuid(2))
+
+  /// The sanctioned account, when the identity resolved to one.
+  userId         String?
+  user           User?   @relation("ModerationSubject", fields: [userId], references: [id], onDelete: SetNull)
+  /// Peppered hash of the primary identifier when no account matched. Never the raw value.
+  identifierHash String?
+
+  scope  ModerationScope
+  kind   ModerationKind
+  source ActionSource
+  reason String
+
+  /// External reference, e.g. txAdmin's action id. Unique per source for idempotent ingestion.
+  externalRef String?
+
+  actorId    String?
+  actor      User?   @relation("ModerationActor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorLabel String?
+
+  expiresAt DateTime?
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([source, externalRef])
+  @@index([userId, createdAt])
+  @@index([identifierHash])
+  @@map("moderation_cases")
+}
+
+enum ModerationScope {
+  PLATFORM
+  DISCORD
+  FIVEM
+}
+
+enum ModerationKind {
+  NOTE
+  WARN
+  KICK
+  SUSPEND
+  BAN
 }

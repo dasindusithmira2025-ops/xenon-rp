@@ -49,7 +49,8 @@ DISCORD_MODE=enabled
 AUTH_DISCORD_ID=1550168431163084921
 AUTH_DISCORD_SECRET=<OAuth client secret for application 1550168431163084921>
 DISCORD_APPLICATION_ID=1550168431163084921
-DISCORD_BOT_TOKEN=<bot token for application 1550168431163084921>
+# No bot token here: Guardian never reads this file, and Link uses its own
+# (development) application via LINK_DISCORD_TOKEN / LINK_DISCORD_APPLICATION_ID.
 DISCORD_GUILD_ID=1371209014372991137
 DISCORD_INVITE_URL=https://discord.gg/ybev9tk87f
 AUTH_URL=http://localhost:3200
@@ -77,16 +78,21 @@ log channel IDs under **Control → Discord**; a template can override the revie
 channel for a specific application type. Channel IDs stay with their
 guild/template configuration.
 
-## 3. Install the existing bot
+## 3. Install the existing bot (Xenon Guardian)
 
-In the same application, use the existing bot user and the token already
-configured in `DISCORD_BOT_TOKEN`. Do not create a replacement bot or reset the
-token. Under **Installation**, enable guild
-installation and the `bot` and `applications.commands` scopes.
+The existing application and bot user become **Xenon Guardian**. Keep its
+token; it moves from `DISCORD_BOT_TOKEN` to `GUARDIAN_DISCORD_TOKEN` in
+Guardian's own environment (`infrastructure/env/guardian.env`), never in the
+repository `.env`. Do not create a replacement bot or reset the token. Under
+**Installation**, enable guild installation and the `bot` and
+`applications.commands` scopes.
 
-The existing bot’s integrated mode needs View Channels, Send Messages, Embed
-Links, Read Message History, and Manage Roles when Xenon role mappings are
-enabled. The **Discord-only runtime security controller** additionally needs:
+Platform features (account linking, whitelist status, review cards, role
+synchronisation) run in a separate **Xenon Link** application. Its portal
+setup, invite URL and role placement are in
+[TWO_BOT_MIGRATION.md](TWO_BOT_MIGRATION.md#xenon-link--a-new-application).
+
+The **Guardian security controller** needs:
 
 - View Audit Log — audit-event attribution and anti-nuke correlation
 - Manage Channels — create security channels during setup
@@ -123,8 +129,7 @@ does not use presence data.
 Enable **Bot → Privileged Gateway Intents → Server Members Intent** for the
 Discord-only runtime. If Discord rejects it, join-based raid protection and
 welcomes cannot operate; the startup log gives the required portal setting.
-The integrated runtime separately requests GuildMembers only when a configured
-welcome feature needs it.
+Xenon Link requests no privileged intent at all.
 
 ## 3.1 Commission the Discord-only security controller
 
@@ -383,32 +388,40 @@ pnpm infra:up
 pnpm db:deploy
 ```
 
-In separate terminals, run the web and persistent bot processes:
+In separate terminals, run the platform processes (Guardian is started
+separately with its own environment; see §3.1 and
+[TWO_BOT_MIGRATION.md](TWO_BOT_MIGRATION.md)):
 
 ```powershell
 pnpm --filter @xenon/web dev
-pnpm --filter @xenon/bot dev
+pnpm --filter @xenon/core-api dev
+pnpm --filter @xenon/worker dev
+pnpm --filter @xenon/link-bot dev
 ```
 
-The web app is at `http://localhost:3200`. The bot is a persistent Node.js
-process; it must not be deployed as a Next.js route or serverless function.
+The web app is at `http://localhost:3200`. Both bots are persistent Node.js
+processes; neither may be deployed as a Next.js route or serverless function.
 The repository requires Node.js `>=24.17.0`; upgrade local Node before live
 commissioning. Node `24.12.0` is below the supported minimum.
 Run `pnpm discord:diagnose` to print the safe resolved application, guild,
 invite, credential-presence, Auth URL, site URL, and callback values. It never
 prints either Discord secret.
 Register or refresh development guild commands explicitly after configuring
-the application and guild:
+each application and the guild (both bots also register on startup):
 
 ```powershell
-pnpm discord:register
+pnpm guardian:register   # needs the GUARDIAN_* variables in the shell
+pnpm link:register       # reads LINK_* from the root .env in development
 ```
 
-The bot also runs the existing Redis-backed job worker. Startup verifies the
-configured application, gateway, guild, required channel access, mapped role
-hierarchy, and guild command registration. The heartbeat and details appear in
-the Xenon health and Discord integration pages. The bot token is never included
-in diagnostics.
+The worker runs the Redis-backed job queue and relays the outbox; Discord side
+effects go through Xenon Link's gateway, either over direct signed HTTP
+(`LINK_GATEWAY_MODE=http`) or through the relay (`relay`: Link pulls the
+worker's requests from Core, no listener). The `link` heartbeat (written by the
+worker: a `/healthz` probe over HTTP, or the presence Core records on each relay
+pull) appears in the Xenon health and Discord integration pages. Link registers
+its slash commands only once Core answers. No bot token is ever included in
+diagnostics.
 
 ## 6. Verify OAuth and community membership
 
@@ -458,8 +471,9 @@ application decision.
 
 ## 8. Operational behavior and secrets
 
-- Keep rotated `AUTH_DISCORD_SECRET` and `DISCORD_BOT_TOKEN` in local `.env` or
-  the deployment secret manager. Never use previously shared values.
+- Keep rotated `AUTH_DISCORD_SECRET`, `GUARDIAN_DISCORD_TOKEN` and
+  `LINK_DISCORD_TOKEN` in each service's own env file or the deployment secret
+  manager. Never use previously shared values.
 - Keep `AUTH_SECRET` server-side and stable for the deployment.
 - Do not log OAuth tokens, session tokens, bot tokens, or client secrets.
 - Signing out ends the Xenon session only; it does not remove Discord roles,
@@ -495,4 +509,5 @@ first, against a development guild. See
 [DISCORD_PERMISSIONS.md](DISCORD_PERMISSIONS.md),
 [DISCORD_ASSETS.md](DISCORD_ASSETS.md) and
 [DISCORD_RECOVERY.md](DISCORD_RECOVERY.md). After pulling this change, run
-`pnpm db:deploy` and `pnpm discord:register` so `/xenon` and `/room` exist.
+`pnpm db:deploy`, then restart Guardian (or `pnpm guardian:register`) so `/xenon`
+and `/room` exist, and start Link so its commands register.

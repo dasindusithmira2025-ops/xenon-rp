@@ -6,10 +6,10 @@ import type { z } from 'zod';
 /**
  * Configuration shared by every runtime.
  *
- * The web tier, the bot and the CLI scripts all need the datastore URLs and the
- * hashing pepper, and none of them should have to accept the others' schema to
- * get at them - the bot has no AUTH_DISCORD_SECRET and the web tier has no
- * DISCORD_BOT_TOKEN. Splitting this out is what lets a low-level package like
+ * The web tier, the Core API, the worker and the CLI scripts all need the
+ * datastore URLs and the hashing pepper, and none of them should have to accept
+ * the others' schema to get at them - the worker has no AUTH_DISCORD_SECRET and
+ * the web tier has no bot token. Splitting this out is what lets a low-level package like
  * `@xenon/jobs` read REDIS_URL without dragging in the whole web contract.
  */
 

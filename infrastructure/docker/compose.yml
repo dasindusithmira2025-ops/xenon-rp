@@ -1,0 +1,196 @@
+# XenonRP production services.
+#
+#   docker compose -f infrastructure/docker/compose.yml --profile migrate run --rm migrate
+#   docker compose -f infrastructure/docker/compose.yml up -d core-api worker link guardian web
+#
+# Every service is independently restartable and upgradable:
+#   docker compose -f infrastructure/docker/compose.yml up -d --no-deps --build guardian
+#   docker compose -f infrastructure/docker/compose.yml up -d --no-deps --build link
+#
+# Network isolation is the deployment half of least privilege:
+#   guardian    — its own network, internet egress only (Discord). No route to
+#                 Postgres, Redis, Core API, Link or the worker.
+#   link-plane  — internal (no internet): core-api <-> link <-> worker only.
+#   platform    — datastores + the services that hold datastore credentials.
+#   egress      — internet access for the services that call Discord / FXServer / R2.
+#
+# Postgres and Redis are managed services in production (DATABASE_URL /
+# REDIS_URL in the env files). The `datastores` profile runs local copies for a
+# self-hosted single box.
+name: xenonrp
+
+x-service: &service
+  restart: unless-stopped
+  init: true
+  stop_grace_period: 20s
+  logging:
+    driver: json-file
+    options: { max-size: '20m', max-file: '5' }
+
+x-build: &build
+  context: ../..
+  dockerfile: infrastructure/docker/Dockerfile
+  target: service
+
+services:
+  guardian:
+    <<: *service
+    image: xenon/guardian:${XENON_TAG:-local}
+    build: { <<: *build, args: { APP: guardian-bot } }
+    env_file: ../env/guardian.env
+    environment:
+      GUARDIAN_HEALTH_HOST: 127.0.0.1
+      GUARDIAN_HEALTH_PORT: '8081'
+    volumes:
+      # Security config, trust, cases, incidents, recovery journals, snapshots.
+      # Back this volume up; never run two Guardian containers against it.
+      - guardian-data:/repo/.data
+    networks: [guardian]
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8081/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  link:
+    <<: *service
+    image: xenon/link:${XENON_TAG:-local}
+    build: { <<: *build, args: { APP: link-bot } }
+    env_file: ../env/link.env
+    environment:
+      CORE_API_URL: http://core-api:3300
+      LINK_GATEWAY_MODE: http
+      LINK_GATEWAY_HOST: 0.0.0.0
+      LINK_GATEWAY_PORT: '8082'
+    networks: [link-plane, egress]
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8082/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+
+  core-api:
+    <<: *service
+    image: xenon/core-api:${XENON_TAG:-local}
+    build: { <<: *build, args: { APP: core-api } }
+    env_file: ../env/core-api.env
+    environment:
+      CORE_API_HOST: 0.0.0.0
+      CORE_API_PORT: '3300'
+    networks: [platform, link-plane]
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:3300/readyz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    <<: *service
+    image: xenon/worker:${XENON_TAG:-local}
+    build: { <<: *build, args: { APP: worker } }
+    env_file: ../env/worker.env
+    environment:
+      LINK_GATEWAY_MODE: http
+      LINK_GATEWAY_URL: http://link:8082
+      WORKER_HEALTH_HOST: 127.0.0.1
+      WORKER_HEALTH_PORT: '8083'
+    networks: [platform, link-plane, egress]
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'node',
+          '-e',
+          "fetch('http://127.0.0.1:8083/healthz').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  web:
+    <<: *service
+    image: xenon/web:${XENON_TAG:-local}
+    build:
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile
+      target: web
+      args:
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:?set NEXT_PUBLIC_SITE_URL for the web build}
+        NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
+        R2_PUBLIC_URL: ${R2_PUBLIC_URL:-}
+    env_file: ../env/web.env
+    # Published on loopback only: TLS terminates at the reverse proxy.
+    ports: ['127.0.0.1:3200:3200']
+    networks: [platform, egress]
+
+  migrate:
+    image: xenon/tools:${XENON_TAG:-local}
+    build: { context: ../.., dockerfile: infrastructure/docker/Dockerfile, target: tools }
+    env_file: ../env/migrate.env
+    command: ['sh', '-c', 'pnpm db:deploy && pnpm db:seed']
+    networks: [platform]
+    profiles: [migrate]
+
+  postgres:
+    image: postgres:18-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-xenon}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-xenon}
+      POSTGRES_INITDB_ARGS: '--locale-provider=icu --icu-locale=en-US --encoding=UTF8'
+    volumes: [postgres-data:/var/lib/postgresql]
+    networks: [platform]
+    profiles: [datastores]
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U $${POSTGRES_USER:-xenon}']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    restart: unless-stopped
+    command: ['redis-server', '--appendonly', 'yes']
+    volumes: [redis-data:/data]
+    networks: [platform]
+    profiles: [datastores]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+networks:
+  guardian: {}
+  egress: {}
+  platform: {}
+  link-plane:
+    internal: true
+
+volumes:
+  guardian-data:
+  postgres-data:
+  redis-data:

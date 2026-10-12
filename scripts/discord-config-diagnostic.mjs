@@ -62,7 +62,19 @@ const checks = [
   ['Guild ID', guildId || 'missing'],
   ['Discord invite', inviteUrl || 'missing'],
   ['OAuth secret', env.AUTH_DISCORD_SECRET?.trim() ? 'configured' : 'missing'],
-  ['Bot token', env.DISCORD_BOT_TOKEN?.trim() ? 'configured' : 'missing'],
+  ['Link bot token', env.LINK_DISCORD_TOKEN?.trim() ? 'configured' : 'missing'],
+  [
+    'Link uses its own application (not the OAuth/Guardian one)',
+    env.LINK_DISCORD_APPLICATION_ID?.trim() &&
+    env.LINK_DISCORD_APPLICATION_ID !== expectedApplicationId
+      ? 'YES'
+      : 'NO',
+  ],
+  ['Guardian token absent from this file', env.GUARDIAN_DISCORD_TOKEN?.trim() ? 'NO' : 'YES'],
+  [
+    'Legacy DISCORD_BOT_TOKEN removed (nothing reads it after the split)',
+    env.DISCORD_BOT_TOKEN?.trim() ? 'NO' : 'YES',
+  ],
   ['Auth URL', env.AUTH_URL || 'missing'],
   ['Site URL', siteUrl || 'missing'],
   ['OAuth callback', callbackUrl],
@@ -89,7 +101,7 @@ if (
   guildId !== expectedGuildId ||
   inviteUrl !== 'https://discord.gg/ybev9tk87f' ||
   !env.AUTH_DISCORD_SECRET?.trim() ||
-  !env.DISCORD_BOT_TOKEN?.trim() ||
+  env.GUARDIAN_DISCORD_TOKEN?.trim() ||
   !validOrigins ||
   callbackUrl !== 'http://localhost:3200/api/auth/callback/discord'
 ) {

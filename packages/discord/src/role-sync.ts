@@ -23,6 +23,12 @@ export interface GuildRolePort {
     readonly roleFound: boolean;
     readonly hierarchyBlocked: boolean;
     readonly manageRolesMissing: boolean;
+    /**
+     * The role carries a permission the managing bot refuses to grant
+     * (Xenon Link's `PRIVILEGED_ROLE_PERMISSIONS`). Permanent until an
+     * operator remaps it to a role without privileged permissions.
+     */
+    readonly privileged?: boolean;
   }>;
 }
 
@@ -173,6 +179,18 @@ export async function syncUserRoles(
       await db.discordRoleMapping.updateMany({
         where: { guildId: guild.id, discordRoleId: roleId },
         data: { hierarchyBlocked: false, lastError: 'Discord role no longer exists' },
+      });
+      continue;
+    }
+    if (prerequisite.privileged === true) {
+      permanentlyBlockedRoleIds.push(roleId);
+      permanentErrors.push(`role ${roleId} carries privileged permissions`);
+      await db.discordRoleMapping.updateMany({
+        where: { guildId: guild.id, discordRoleId: roleId },
+        data: {
+          hierarchyBlocked: false,
+          lastError: 'Role carries privileged permissions; Link will not manage it',
+        },
       });
       continue;
     }

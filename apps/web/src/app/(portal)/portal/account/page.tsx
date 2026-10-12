@@ -1,15 +1,17 @@
 import { serverEnv } from '@xenon/config/server';
 import { prisma } from '@xenon/database';
 import { allSettings, onboardingState } from '@xenon/domain';
-import { activeLinkToken } from '@xenon/fivem';
+import { CFX_ATTEMPT_TTL_MS, cfxConnection, pendingCfxLink } from '@xenon/fivem';
 import { Badge, Panel } from '@xenon/ui';
 
 import type { Metadata } from 'next';
 
+import { CfxConnectionPanel } from '~/components/portal/cfx-connection-panel';
+import { CfxStatusBanner, parseCfxStatus } from '~/components/portal/cfx-status-banner';
 import { DiscordMembership } from '~/components/portal/discord-membership';
-import { FivemLinkPanel } from '~/components/portal/fivem-link-panel';
 import { PortalPage, PortalSection } from '~/components/portal/portal-page';
 import { ProfileForm } from '~/components/portal/profile-form';
+import { UNLINK_PHRASE } from '~/server/cfx';
 import { requireUserId } from '~/server/context';
 import { resolveDiscordInviteUrl } from '~/server/site';
 
@@ -18,19 +20,27 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
+// Rendered per request: the page is where every Cfx.re route lands, and the
+// connection and onboarding state must reflect the link the moment it exists.
 export const dynamic = 'force-dynamic';
 
 /**
  * /portal/account
  *
- * Identity, profile and connections. The Discord block is read-only on purpose:
- * Discord is a credential attached to the account, and "disconnect" would leave
- * a Xenon account with no way to sign in.
+ * Identity, profile and connections. Discord and Cfx.re are separate blocks
+ * because they are separate credentials: Discord is how you sign in and is
+ * read-only on purpose ("disconnect" would leave an account with no way in);
+ * Cfx.re is the verified game account that admits you to the city.
  */
-export default async function AccountPage(): Promise<React.ReactElement> {
+export default async function AccountPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}): Promise<React.ReactElement> {
   const userId = await requireUserId();
+  const status = parseCfxStatus((await searchParams).cfx);
 
-  const [user, onboarding, settings, linkToken] = await Promise.all([
+  const [user, onboarding, settings, cfx, pendingUntil] = await Promise.all([
     prisma.user.findUniqueOrThrow({
       where: { id: userId },
       select: {
@@ -52,7 +62,7 @@ export default async function AccountPage(): Promise<React.ReactElement> {
           },
         },
         gameIdentities: {
-          where: { unlinkedAt: null },
+          where: { unlinkedAt: null, kind: { not: 'FIVEM' } },
           orderBy: { linkedAt: 'desc' },
         },
         ruleAcceptances: {
@@ -65,7 +75,8 @@ export default async function AccountPage(): Promise<React.ReactElement> {
     }),
     onboardingState(prisma, userId),
     allSettings(prisma),
-    activeLinkToken(prisma, userId),
+    cfxConnection(prisma, userId),
+    pendingCfxLink(prisma, userId),
   ]);
 
   const invite = resolveDiscordInviteUrl(settings['community.discordInvite']);
@@ -75,6 +86,8 @@ export default async function AccountPage(): Promise<React.ReactElement> {
       title="Your account"
       lead={`Xenon ID ${user.publicId}. This is the account everything else hangs off.`}
     >
+      {status === null ? null : <CfxStatusBanner status={status} next={onboarding.next} />}
+
       <PortalSection title="Profile" description="How staff and other players see you.">
         <Panel tone="flat" pad="lg">
           <ProfileForm
@@ -88,7 +101,7 @@ export default async function AccountPage(): Promise<React.ReactElement> {
         </Panel>
       </PortalSection>
 
-      <PortalSection title="Discord" description="Your identity and Xenon community membership.">
+      <PortalSection title="Discord" description="How you sign in, and your community membership.">
         <Panel tone="flat" pad="lg" className="flex flex-col gap-4">
           {user.discordAccount === null ? (
             <p className="text-sm text-ink-muted">No Discord account is linked.</p>
@@ -121,20 +134,26 @@ export default async function AccountPage(): Promise<React.ReactElement> {
 
       <div id="fivem" className="scroll-mt-6">
         <PortalSection
-          title="FiveM"
-          description="Link your game account so the server knows who you are."
+          title="Cfx.re"
+          description="Your verified FiveM account. The city admits you by it once you are whitelisted."
         >
-          <FivemLinkPanel
-            identities={user.gameIdentities.map((identity) => ({
+          <CfxConnectionPanel
+            connection={{
+              linked: cfx.linked,
+              username: cfx.username,
+              cfxUserId: cfx.cfxUserId,
+              linkedAt: cfx.linkedAt?.toISOString() ?? null,
+            }}
+            pendingExpiresAt={pendingUntil?.toISOString() ?? null}
+            attemptWindowSeconds={CFX_ATTEMPT_TTL_MS / 1000}
+            legacyIdentities={user.gameIdentities.map((identity) => ({
               id: identity.id,
               kind: identity.kind,
               value: identity.value,
-              label: identity.label,
               linkedAt: identity.linkedAt.toISOString(),
               isPrimary: identity.isPrimary,
             }))}
-            activeCodeHint={linkToken?.hint ?? null}
-            activeCodeExpiresAt={linkToken?.expiresAt.toISOString() ?? null}
+            unlinkPhrase={UNLINK_PHRASE}
           />
         </PortalSection>
       </div>

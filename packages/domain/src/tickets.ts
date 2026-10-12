@@ -7,7 +7,7 @@ import {
   type TicketStatus,
   transaction,
 } from '@xenon/database';
-import { enqueueBestEffort, enforceRateLimit } from '@xenon/jobs';
+import { enforceRateLimit, enqueueDurable } from '@xenon/jobs';
 import { createNotification, dispatchPending, notificationCopy } from '@xenon/notifications';
 import {
   type Actor,
@@ -75,7 +75,7 @@ export async function createTicket(
     after: { category: ticket.category, subject: ticket.subject },
   });
 
-  await enqueueBestEffort('discord.ticket.created', { ticketId: ticket.id });
+  await enqueueDurable('discord.ticket.created', { ticketId: ticket.id }, { db });
 
   return ticket;
 }

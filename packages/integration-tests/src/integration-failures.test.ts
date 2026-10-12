@@ -13,11 +13,11 @@ import type * as Jobs from '@xenon/jobs';
  * never be the reason a committed approval is not honoured.
  *
  * The job queue is dead for this entire file. That is the point: every
- * assertion below is made in a world where nothing can be scheduled, so a code
- * path that quietly depends on the queue succeeding fails here.
+ * assertion below is made in a world where nothing can be scheduled on Redis,
+ * so a code path that quietly depends on the queue succeeding fails here.
+ * Side effects land in the Postgres outbox instead, inside the decision's
+ * transaction, and the worker relays them once Redis returns.
  */
-
-const queue = vi.hoisted(() => ({ enqueued: [] as string[] }));
 
 vi.mock('@xenon/jobs', async (importOriginal) => {
   const actual = await importOriginal<typeof Jobs>();
@@ -28,12 +28,6 @@ vi.mock('@xenon/jobs', async (importOriginal) => {
     enqueue: () => {
       throw new Error('ECONNREFUSED 127.0.0.1:6389');
     },
-    enqueueBestEffort: (name: string) => {
-      queue.enqueued.push(name);
-      // Exactly what the real function does when the queue is unreachable:
-      // records the failure and reports it, without throwing.
-      return Promise.resolve(false);
-    },
   };
 });
 
@@ -42,15 +36,8 @@ const { approveApplication, autosave, startApplication, submitApplication } =
 const { ConflictError } = await import('@xenon/core');
 const { syncUserRoles } = await import('@xenon/discord');
 const { assignRole } = await import('@xenon/domain');
-const {
-  issueLinkCode,
-  NONCE_HEADER,
-  redeemLinkCode,
-  SIGNATURE_HEADER,
-  signRequest,
-  TIMESTAMP_HEADER,
-  verifyRequest,
-} = await import('@xenon/fivem');
+const { NONCE_HEADER, SIGNATURE_HEADER, signRequest, TIMESTAMP_HEADER, verifyRequest } =
+  await import('@xenon/fivem');
 
 const {
   actorFor,
@@ -63,7 +50,6 @@ const {
 } = await import('./harness');
 
 beforeEach(async () => {
-  queue.enqueued = [];
   await resetDatabase();
 });
 
@@ -99,11 +85,17 @@ describe('Discord unavailable', () => {
     });
     expect(audit).not.toBeNull();
 
-    // And the side effects were attempted, so the reconciliation sweep has
-    // something to find. An approval that never tried to sync is a bug of a
-    // different kind.
-    expect(queue.enqueued).toContain('discord.role.sync');
-    expect(queue.enqueued).toContain('fivem.whitelist.sync');
+    // And the side effects were recorded durably in the same transaction, so
+    // the relay delivers them once Redis is back. An approval that never tried
+    // to sync is a bug of a different kind.
+    const outbox = await prisma.outboxMessage.findMany({
+      where: { dispatchedAt: null },
+      select: { kind: true, name: true },
+    });
+    const names = outbox.map((row) => `${row.kind}:${row.name}`);
+    expect(names).toContain('JOB:discord.role.sync');
+    expect(names).toContain('JOB:fivem.whitelist.sync');
+    expect(names).toContain('EVENT:WHITELIST_APPROVED');
   });
 
   it('still notifies the applicant in Xenon when Discord cannot be reached', async () => {
@@ -284,114 +276,6 @@ describe('role authority', () => {
     expect(
       await prisma.userRole.findFirst({ where: { userId: target.id, roleId: contentEditor.id } }),
     ).toBeNull();
-  });
-});
-
-describe('FiveM link codes', () => {
-  const identifiers = [
-    { kind: 'LICENSE' as const, value: 'fixture-license-0001' },
-    { kind: 'STEAM' as const, value: '110000100000001' },
-  ];
-
-  it('links an account when the code and the identifiers arrive together', async () => {
-    const { user, actor } = await createActor();
-    const issued = await issueLinkCode(prisma, actor);
-
-    const result = await redeemLinkCode(prisma, {
-      code: issued.code,
-      identifiers,
-      playerName: 'Fixture Player',
-    });
-
-    expect(result.userId).toBe(user.id);
-    expect(result.identities).toHaveLength(2);
-
-    const stored = await prisma.gameIdentity.findMany({ where: { userId: user.id } });
-    expect(stored.map((row) => row.kind).sort()).toEqual(['LICENSE', 'STEAM']);
-    expect(stored.find((row) => row.kind === 'LICENSE')?.isPrimary).toBe(true);
-  });
-
-  it('refuses a code that has already been redeemed', async () => {
-    const { actor } = await createActor();
-    const issued = await issueLinkCode(prisma, actor);
-
-    await redeemLinkCode(prisma, { code: issued.code, identifiers });
-
-    await expect(redeemLinkCode(prisma, { code: issued.code, identifiers })).rejects.toBeInstanceOf(
-      ConflictError,
-    );
-  });
-
-  it('refuses an expired code', async () => {
-    const { actor } = await createActor();
-    const issued = await issueLinkCode(prisma, actor);
-
-    await prisma.linkToken.updateMany({
-      where: { consumedAt: null },
-      data: { expiresAt: new Date(Date.now() - 60_000) },
-    });
-
-    await expect(redeemLinkCode(prisma, { code: issued.code, identifiers })).rejects.toBeInstanceOf(
-      ConflictError,
-    );
-  });
-
-  it('refuses an unknown code with the same message as a spent one', async () => {
-    // Same user-facing text as expiry and reuse: distinguishing them would
-    // turn this endpoint into an oracle for guessing live codes.
-    await expect(redeemLinkCode(prisma, { code: 'XEN-ZZZZZ', identifiers })).rejects.toThrow(
-      ConflictError,
-    );
-    await expect(redeemLinkCode(prisma, { code: 'XEN-YYYYY', identifiers })).rejects.toHaveProperty(
-      'safeMessage',
-      expect.stringContaining('not valid'),
-    );
-  });
-
-  it('refuses to move an identifier that already belongs to another account', async () => {
-    const { actor: first } = await createActor();
-    const firstCode = await issueLinkCode(prisma, first);
-    await redeemLinkCode(prisma, { code: firstCode.code, identifiers });
-
-    const { actor: second } = await createActor();
-    const secondCode = await issueLinkCode(prisma, second);
-
-    await expect(
-      redeemLinkCode(prisma, { code: secondCode.code, identifiers }),
-    ).rejects.toBeInstanceOf(ConflictError);
-  });
-
-  it('issues one live code at a time, revoking the previous one', async () => {
-    const { user, actor } = await createActor();
-
-    const first = await issueLinkCode(prisma, actor);
-    const second = await issueLinkCode(prisma, actor);
-    expect(second.code).not.toBe(first.code);
-
-    expect(
-      await prisma.linkToken.count({
-        where: { userId: user.id, consumedAt: null, revokedAt: null },
-      }),
-    ).toBe(1);
-
-    await expect(redeemLinkCode(prisma, { code: first.code, identifiers })).rejects.toBeInstanceOf(
-      ConflictError,
-    );
-  });
-
-  it('never stores the code itself', async () => {
-    const { actor } = await createActor();
-    const issued = await issueLinkCode(prisma, actor);
-
-    const tokens = await prisma.linkToken.findMany();
-    expect(tokens).toHaveLength(1);
-    expect(JSON.stringify(tokens)).not.toContain(issued.code);
-
-    // Nor does the audit entry that records the issue.
-    const audit = await prisma.auditLog.findFirstOrThrow({
-      where: { action: 'link_token.issued' },
-    });
-    expect(JSON.stringify(audit)).not.toContain(issued.code);
   });
 });
 

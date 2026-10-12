@@ -1,3 +1,5 @@
+import { z } from 'zod';
+
 import { lazyEnv, parseEnv } from './parse';
 import {
   authSchema,
@@ -16,14 +18,12 @@ import {
   validateDiscordMode,
 } from './schema';
 
-import type { z } from 'zod';
-
 /**
  * Configuration for the Next.js server runtime.
  *
- * Deliberately excludes DISCORD_BOT_TOKEN: the web tier never talks to the
- * Discord Gateway or the bot's REST identity. It enqueues jobs that the bot
- * process performs, which keeps the most sensitive credential in one process.
+ * Deliberately excludes every bot token: the web tier never talks to the
+ * Discord Gateway. It records side effects in the outbox, which the worker
+ * performs through Xenon Link, so bot credentials stay in the bot processes.
  */
 const webServerSchema = validateDiscordMode(
   requireInProduction(
@@ -40,6 +40,16 @@ const webServerSchema = validateDiscordMode(
       .extend(storageSchema.shape)
       .extend(integrationsSchema.shape)
       .extend(fivemSchema.shape)
+      .extend({
+        /**
+         * Cfx.re forum used for "Connect Cfx.re" (Discourse User API keys).
+         * Overridable only so staging can point at a test double; the link
+         * routes refuse a non-https forum in production.
+         */
+        CFX_FORUM_URL: z.url().default('https://forum.cfx.re'),
+        /** Name shown on the Cfx.re consent screen and in the player's Apps tab. */
+        CFX_APP_NAME: z.string().trim().min(3).max(60).default('Xenon Roleplay'),
+      })
       .extend(siteSchema.shape),
   ),
 );

@@ -42,8 +42,10 @@ export const rateLimits = {
   applicationStart: { name: 'app:start', limit: 10, windowSeconds: 3600 },
   applicationSubmit: { name: 'app:submit', limit: 6, windowSeconds: 3600 },
   applicationAutosave: { name: 'app:autosave', limit: 240, windowSeconds: 300 },
-  linkCode: { name: 'fivem:linkcode', limit: 5, windowSeconds: 900 },
-  bridgeRedeem: { name: 'fivem:redeem', limit: 20, windowSeconds: 300 },
+  /** Starting (or unlinking) a website Cfx.re link, per Xenon account. */
+  cfxLinkStart: { name: 'fivem:cfx-link', limit: 10, windowSeconds: 900 },
+  /** The connect gate's own budget, separate from every other bridge route. */
+  bridgeAdmission: { name: 'fivem:admission', limit: 3000, windowSeconds: 60 },
   bridgeRequest: { name: 'fivem:bridge', limit: 600, windowSeconds: 60 },
   ticketCreate: { name: 'ticket:create', limit: 5, windowSeconds: 3600 },
   ticketReply: { name: 'ticket:reply', limit: 30, windowSeconds: 600 },
@@ -54,6 +56,8 @@ export const rateLimits = {
   discordSelfRole: { name: 'discord:self-role', limit: 10, windowSeconds: 60 },
   discordTempRoom: { name: 'discord:temp-room', limit: 3, windowSeconds: 300 },
   discordRoomEdit: { name: 'discord:room-edit', limit: 6, windowSeconds: 600 },
+  /** Every Xenon Link → Core API call, per Discord user. */
+  discordCommand: { name: 'discord:command', limit: 30, windowSeconds: 60 },
 } as const satisfies Record<string, RateLimitRule>;
 
 export type RateLimitName = keyof typeof rateLimits;

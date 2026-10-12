@@ -1,5 +1,7 @@
 import { NextResponse } from 'next/server';
 
+import { fivemEnv } from '@xenon/config/fivem';
+import { isTrustedIdentityKind } from '@xenon/contracts';
 import { prisma } from '@xenon/database';
 import { touchIdentity, whitelistStateForIdentifiers } from '@xenon/fivem';
 import { bridgeWhitelistCheckInput } from '@xenon/validation';
@@ -18,7 +20,7 @@ import { verifyBridgeRequest } from '~/server/bridge';
  * connection screen, where "NOT_WHITELISTED" helps nobody.
  */
 export async function POST(request: Request): Promise<NextResponse> {
-  const verified = await verifyBridgeRequest<unknown>(request);
+  const verified = await verifyBridgeRequest<unknown>(request, 'whitelist');
   if (!verified.ok) return verified.response;
 
   const parsed = bridgeWhitelistCheckInput.safeParse(verified.body);
@@ -26,11 +28,20 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ ok: false, error: 'Malformed body' }, { status: 422 });
   }
 
-  const state = await whitelistStateForIdentifiers(prisma, parsed.data.identifiers);
+  const state = await whitelistStateForIdentifiers(
+    prisma,
+    parsed.data.identifiers,
+    fivemEnv.FIVEM_ADMISSION_MODE,
+  );
 
   // Presence is recorded regardless of the outcome: knowing somebody tried to
-  // connect is useful to staff even when they were refused.
-  await touchIdentity(prisma, parsed.data.identifiers);
+  // connect is useful to staff even when they were refused. Only verified
+  // identifiers count, so a spoofed Steam or Discord id cannot move somebody
+  // else's last-seen time.
+  await touchIdentity(
+    prisma,
+    parsed.data.identifiers.filter((identifier) => isTrustedIdentityKind(identifier.kind)),
+  );
 
   return NextResponse.json({
     ok: true,

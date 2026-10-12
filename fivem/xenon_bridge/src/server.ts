@@ -1,3 +1,15 @@
+import {
+  banFromTxAdmin,
+  type Identifier,
+  isPlayerSource,
+  isUnreachableStatus,
+  newEventId,
+  parseFailMode,
+  parseIdentifiers,
+  restartFromTxAdmin,
+  UNAVAILABLE_MESSAGE,
+  UNVERIFIED_MESSAGE,
+} from './events';
 import { type BridgeConfig, callXenon, readConfig, verifyFromXenon } from './xenon';
 
 /**
@@ -5,9 +17,12 @@ import { type BridgeConfig, callXenon, readConfig, verifyFromXenon } from './xen
  *
  * Three jobs:
  *
- *  1. Gate connections on the whitelist Xenon holds.
- *  2. Let a player redeem a link code with `/link`.
- *  3. Answer Xenon's signed requests for status, whitelist pushes and presence.
+ *  1. Gate connections on the whitelist Xenon holds, keyed on the `fivem:`
+ *     (Cfx.re account) identifier the player verified on the Xenon website.
+ *     There is no in-game linking step.
+ *  2. Answer Xenon's signed requests for status, whitelist pushes and presence.
+ *  3. Forward gameplay events (joins, drops, txAdmin restarts and bans) to
+ *     Xenon, best-effort.
  *
  * It deliberately owns no state. The whitelist is not cached to a local file,
  * there is no local player table, and nothing here decides who may play -
@@ -21,24 +36,19 @@ import { type BridgeConfig, callXenon, readConfig, verifyFromXenon } from './xen
  */
 
 const config: BridgeConfig | null = readConfig();
+const failMode = parseFailMode(GetConvar('xenon_fail_mode', 'open'));
 
-/** Identifiers FXServer reports, as `kind:value`, normalised to Xenon's shape. */
-function identifiersFor(source: number): { kind: string; value: string }[] {
-  const known = new Set(['license', 'license2', 'steam', 'discord', 'fivem', 'xbl', 'live']);
-  const output: { kind: string; value: string }[] = [];
-
+/**
+ * Identifiers FXServer reports for a connected player, normalised to Xenon's
+ * shape. Always read server-side through the natives: an identifier a client
+ * sends in an event payload proves nothing.
+ */
+function identifiersFor(source: number): Identifier[] {
+  const raw: string[] = [];
   for (let index = 0; index < GetNumPlayerIdentifiers(String(source)); index += 1) {
-    const raw = GetPlayerIdentifier(String(source), index);
-    const separator = raw.indexOf(':');
-    if (separator <= 0) continue;
-
-    const prefix = raw.slice(0, separator).toLowerCase();
-    if (!known.has(prefix)) continue;
-
-    output.push({ kind: prefix.toUpperCase(), value: raw.slice(separator + 1) });
+    raw.push(GetPlayerIdentifier(String(source), index));
   }
-
-  return output;
+  return parseIdentifiers(raw);
 }
 
 if (config === null) {
@@ -48,6 +58,31 @@ if (config === null) {
   );
 } else {
   console.log(`[xenon_bridge] Connected to ${config.endpoint} as "${config.slug}"`);
+}
+
+if (!failMode.recognised) {
+  console.error(
+    '[xenon_bridge] Unrecognised xenon_fail_mode; expected "open" or "closed". Failing CLOSED.',
+  );
+}
+console.log(
+  failMode.mode === 'open'
+    ? '[xenon_bridge] Fail mode: OPEN - players are admitted without a check while Xenon is unreachable.'
+    : '[xenon_bridge] Fail mode: CLOSED - players are refused while Xenon is unreachable.',
+);
+
+/**
+ * Settle a connection when the whitelist could not be checked: admit in open
+ * mode, refuse with a retry message in closed mode. Logged either way.
+ */
+function settleUnchecked(deferrals: Deferrals, name: string, why: string): void {
+  if (failMode.mode === 'closed') {
+    console.error(`[xenon_bridge] ${why}; refusing ${name} (fail mode closed).`);
+    deferrals.done(UNAVAILABLE_MESSAGE);
+    return;
+  }
+  console.error(`[xenon_bridge] ${why}; admitting ${name} without a whitelist check.`);
+  deferrals.done();
 }
 
 // --- Connect gate ------------------------------------------------------------
@@ -82,24 +117,29 @@ on('playerConnecting', (name: string, _setReason: unknown, deferrals: Deferrals)
     }>(config, '/api/bridge/whitelist', { identifiers });
 
     if (!response.ok || response.body === null) {
+      if (!isUnreachableStatus(response.status)) {
+        // Xenon answered and refused the request itself (signature, replay,
+        // rate limit, malformed). That is not an outage, so it never opens
+        // the gate regardless of the fail mode.
+        console.error(
+          `[xenon_bridge] Whitelist check refused by Xenon (status ${String(response.status)}); refusing ${name}.`,
+        );
+        deferrals.done(UNVERIFIED_MESSAGE);
+        return;
+      }
       /*
        * Xenon is unreachable.
        *
-       * Fail OPEN, and say so in the log. This is a deliberate choice and the
-       * reasoning matters: the alternative is that a website outage empties
-       * the city, which is a far worse and far more visible failure than a
-       * handful of unwhitelisted connections during a few minutes of
-       * downtime. Whitelist state is re-checked on every connection, so the
-       * gate closes again the moment Xenon returns.
+       * The default is to fail OPEN, and say so in the log: the alternative is
+       * that a website outage empties the city, which is a far worse and far
+       * more visible failure than a handful of unwhitelisted connections
+       * during a few minutes of downtime. Whitelist state is re-checked on
+       * every connection, so the gate closes again the moment Xenon returns.
        *
-       * Operators who would rather fail closed can change `done()` below to
-       * `done('...')`. Make that choice knowingly.
+       * `set xenon_fail_mode "closed"` refuses instead. Make that choice
+       * knowingly.
        */
-      console.error(
-        `[xenon_bridge] Xenon unreachable (status ${String(response.status)}); ` +
-          `admitting ${name} without a whitelist check.`,
-      );
-      deferrals.done();
+      settleUnchecked(deferrals, name, `Xenon unreachable (status ${String(response.status)})`);
       return;
     }
 
@@ -114,62 +154,92 @@ on('playerConnecting', (name: string, _setReason: unknown, deferrals: Deferrals)
     deferrals.done();
   })().catch((error: unknown) => {
     console.error('[xenon_bridge] Connect check threw', error);
-    deferrals.done();
+    settleUnchecked(deferrals, name, 'Connect check threw');
   });
 });
 
-// --- /link -------------------------------------------------------------------
+// --- Event forwarding --------------------------------------------------------
 
-RegisterCommand(
-  'link',
-  (source: number, args: string[]) => {
-    const reply = (message: string): void => {
-      if (source === 0) console.log(`[xenon_bridge] ${message}`);
-      else emitNet('chat:addMessage', source, { args: ['[Xenon]', message] });
-    };
+/**
+ * Forward one gameplay event to Xenon. Best-effort: a failure is logged and
+ * dropped, never retried in a loop and never allowed to touch gameplay. The
+ * event id makes a duplicate delivery harmless on Xenon's side.
+ *
+ * Every handler below uses `on` (server-local), never `onNet`, so a client
+ * cannot raise these events directly.
+ */
+function forward(event: { type: string } & Record<string, unknown>): void {
+  if (config === null) return;
 
-    if (config === null) {
-      reply('Account linking is not configured on this server.');
-      return;
-    }
-
-    const code = args[0];
-    if (code === undefined) {
-      reply('Usage: /link XEN-7K4P9 — generate a code in your Xenon portal first.');
-      return;
-    }
-
-    void (async (): Promise<void> => {
-      const response = await callXenon<{
-        ok: boolean;
-        publicId?: string;
-        displayName?: string | null;
-        error?: string;
-      }>(config, '/api/bridge/link', {
-        code,
-        identifiers: identifiersFor(source),
-        playerName: GetPlayerName(String(source)),
-      });
-
-      if (response.body?.ok === true) {
-        reply(
-          `Linked to ${response.body.displayName ?? response.body.publicId ?? 'your Xenon account'}. ` +
-            'Reconnect for your whitelist to take effect.',
-        );
-        return;
-      }
-
-      reply(
-        response.body?.error ??
-          'Could not reach Xenon. Try again in a moment, or open a support ticket.',
+  void callXenon<{ ok?: boolean; error?: string }>(config, '/api/bridge/events', {
+    ...event,
+    eventId: newEventId(),
+    serverSlug: config.slug,
+  }).then((response) => {
+    if (!response.ok) {
+      console.warn(
+        `[xenon_bridge] ${event.type} not recorded by Xenon (status ${String(response.status)})`,
       );
-    })().catch((error: unknown) => {
-      console.error('[xenon_bridge] /link threw', error);
-      reply('Something went wrong. Try again in a moment.');
-    });
-  },
-  false,
-);
+    }
+  });
+}
+
+on('playerJoining', () => {
+  const player = source;
+  const identifiers = identifiersFor(player);
+  if (identifiers.length === 0) return;
+
+  forward({
+    type: 'PLAYER_CONNECTED',
+    identifiers,
+    playerName: GetPlayerName(String(player)).trim().slice(0, 64),
+  });
+});
+
+on('playerDropped', (reason: string) => {
+  // Read now: once this handler returns the player's identifiers are gone.
+  const player = source;
+  const identifiers = identifiersFor(player);
+  if (identifiers.length === 0) return;
+
+  forward({
+    type: 'PLAYER_DISCONNECTED',
+    identifiers,
+    playerName: GetPlayerName(String(player)).trim().slice(0, 64),
+    reason: typeof reason === 'string' ? reason.trim().slice(0, 200) : '',
+  });
+});
+
+/*
+ * txAdmin raises these server-side. A player `source` means a client got the
+ * event to fire (another resource registering it as a net event would allow
+ * that), so it is ignored rather than trusted.
+ *
+ * The ban's identifiers come from txAdmin's own server-side payload. Xenon only
+ * records the ban as a FiveM-scope moderation case; txAdmin keeps enforcing it
+ * in its own playerConnecting handler, and nothing here overrides that.
+ */
+on('txAdmin:events:scheduledRestart', (payload: unknown) => {
+  if (isPlayerSource(source)) {
+    console.warn('[xenon_bridge] Ignored txAdmin restart event raised by a player');
+    return;
+  }
+  const event = restartFromTxAdmin(payload);
+  if (event !== null) forward({ ...event });
+});
+
+on('txAdmin:events:playerBanned', (payload: unknown) => {
+  if (isPlayerSource(source)) {
+    console.warn('[xenon_bridge] Ignored txAdmin ban event raised by a player');
+    return;
+  }
+  const event = banFromTxAdmin(payload, Math.floor(Date.now() / 1000));
+  if (event === null) {
+    console.warn('[xenon_bridge] txAdmin ban event carried no usable identifiers; not forwarded');
+    return;
+  }
+  forward({ ...event });
+});
 
 // --- Inbound endpoints -------------------------------------------------------
 

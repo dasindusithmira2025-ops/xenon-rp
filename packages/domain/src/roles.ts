@@ -1,6 +1,6 @@
 import { ConflictError, isPermissionKey, NotFoundError, type PermissionKey } from '@xenon/core';
-import type { Db } from '@xenon/database';
-import { enqueueBestEffort } from '@xenon/jobs';
+import { transaction, type Db } from '@xenon/database';
+import { enqueueDurable } from '@xenon/jobs';
 import { type Actor, requirePermission } from '@xenon/permissions';
 
 import { recordAudit } from './audit';
@@ -81,29 +81,32 @@ export async function assignRole(db: Db, actor: Actor, input: AssignRoleInput): 
   });
   if (user === null) throw new NotFoundError('User', input.userId);
 
-  await db.userRole.upsert({
-    where: { userId_roleId: { userId: input.userId, roleId: input.roleId } },
-    create: {
-      userId: input.userId,
-      roleId: input.roleId,
-      assignedBy: actor.userId,
-      expiresAt: input.expiresAt ?? null,
-    },
-    update: { expiresAt: input.expiresAt ?? null, assignedBy: actor.userId },
-  });
+  await transaction(db, async (tx) => {
+    await tx.userRole.upsert({
+      where: { userId_roleId: { userId: input.userId, roleId: input.roleId } },
+      create: {
+        userId: input.userId,
+        roleId: input.roleId,
+        assignedBy: actor.userId,
+        expiresAt: input.expiresAt ?? null,
+      },
+      update: { expiresAt: input.expiresAt ?? null, assignedBy: actor.userId },
+    });
 
-  await recordAudit(db, actor, {
-    action: 'role.assigned',
-    entityType: 'user',
-    entityId: input.userId,
-    entityLabel: user.publicId,
-    after: { roleKey: role.key, expiresAt: input.expiresAt?.toISOString() ?? null },
-    metadata: input.reason === undefined ? undefined : { reason: input.reason },
-  });
+    await recordAudit(tx, actor, {
+      action: 'role.assigned',
+      entityType: 'user',
+      entityId: input.userId,
+      entityLabel: user.publicId,
+      after: { roleKey: role.key, expiresAt: input.expiresAt?.toISOString() ?? null },
+      metadata: input.reason === undefined ? undefined : { reason: input.reason },
+    });
 
-  await enqueueBestEffort('discord.role.sync', {
-    userId: input.userId,
-    reason: `role.assigned:${role.key}`,
+    await enqueueDurable(
+      'discord.role.sync',
+      { userId: input.userId, reason: `role.assigned:${role.key}` },
+      { db: tx },
+    );
   });
 }
 
@@ -127,18 +130,24 @@ export async function removeRole(
   const user = await db.user.findUnique({ where: { id: userId }, select: { publicId: true } });
   if (user === null) throw new NotFoundError('User', userId);
 
-  await db.userRole.deleteMany({ where: { userId, roleId } });
+  await transaction(db, async (tx) => {
+    await tx.userRole.deleteMany({ where: { userId, roleId } });
 
-  await recordAudit(db, actor, {
-    action: 'role.removed',
-    entityType: 'user',
-    entityId: userId,
-    entityLabel: user.publicId,
-    before: { roleKey: role.key },
-    metadata: reason === undefined ? undefined : { reason },
+    await recordAudit(tx, actor, {
+      action: 'role.removed',
+      entityType: 'user',
+      entityId: userId,
+      entityLabel: user.publicId,
+      before: { roleKey: role.key },
+      metadata: reason === undefined ? undefined : { reason },
+    });
+
+    await enqueueDurable(
+      'discord.role.sync',
+      { userId, reason: `role.removed:${role.key}` },
+      { db: tx },
+    );
   });
-
-  await enqueueBestEffort('discord.role.sync', { userId, reason: `role.removed:${role.key}` });
 }
 
 /**
@@ -237,13 +246,15 @@ export async function expireRoleAssignments(db: Db): Promise<number> {
 
   if (expired.length === 0) return 0;
 
-  await db.userRole.deleteMany({
-    where: { OR: expired.map(({ userId, roleId }) => ({ userId, roleId })) },
-  });
+  await transaction(db, async (tx) => {
+    await tx.userRole.deleteMany({
+      where: { OR: expired.map(({ userId, roleId }) => ({ userId, roleId })) },
+    });
 
-  for (const userId of new Set(expired.map((row) => row.userId))) {
-    await enqueueBestEffort('discord.role.sync', { userId, reason: 'role.expired' });
-  }
+    for (const userId of new Set(expired.map((row) => row.userId))) {
+      await enqueueDurable('discord.role.sync', { userId, reason: 'role.expired' }, { db: tx });
+    }
+  });
 
   return expired.length;
 }

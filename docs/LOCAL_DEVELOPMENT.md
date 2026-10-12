@@ -30,13 +30,14 @@ always beats the file — which is what makes CI and container deployments behav
 
 ### Required before anything boots
 
-| Variable                                 | Where to get it                                              |
-| ---------------------------------------- | ------------------------------------------------------------ |
-| `AUTH_SECRET`                            | `openssl rand -base64 32`                                    |
-| `AUTH_DISCORD_ID`, `AUTH_DISCORD_SECRET` | Discord Developer Portal → your app → OAuth2                 |
-| `DISCORD_BOT_TOKEN`                      | Discord Developer Portal → your app → Bot → Reset Token      |
-| `DISCORD_APPLICATION_ID`                 | Discord Developer Portal → General Information               |
-| `DISCORD_GUILD_ID`                       | Right-click your server → Copy Server ID (Developer Mode on) |
+| Variable                                            | Where to get it                                                            |
+| --------------------------------------------------- | -------------------------------------------------------------------------- |
+| `AUTH_SECRET`                                       | `openssl rand -base64 32`                                                  |
+| `AUTH_DISCORD_ID`, `AUTH_DISCORD_SECRET`            | Discord Developer Portal → your app → OAuth2                               |
+| `LINK_DISCORD_TOKEN`, `LINK_DISCORD_APPLICATION_ID` | A development Xenon Link application (never the production Guardian token) |
+| `LINK_CORE_SECRET`, `LINK_GATEWAY_SECRET`           | `openssl rand -hex 32` each (distinct values)                              |
+| `DISCORD_APPLICATION_ID`                            | Discord Developer Portal → General Information                             |
+| `DISCORD_GUILD_ID`                                  | Right-click your server → Copy Server ID (Developer Mode on)               |
 
 Add `http://localhost:3000/api/auth/callback/discord` as an OAuth2 redirect URI.
 

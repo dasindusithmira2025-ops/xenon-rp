@@ -6,7 +6,11 @@
   "exports": {
     ".": "./src/index.ts",
     "./server": "./src/server.ts",
-    "./bot": "./src/bot.ts",
+    "./guardian": "./src/guardian.ts",
+    "./link": "./src/link.ts",
+    "./core-api": "./src/core-api.ts",
+    "./worker": "./src/worker.ts",
+    "./fivem": "./src/fivem.ts",
     "./public": "./src/public.ts",
     "./load-env": "./src/load-env.ts",
     "./eslint/base": "./eslint/base.mjs",

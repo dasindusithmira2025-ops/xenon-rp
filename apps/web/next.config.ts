@@ -7,6 +7,15 @@ import '@xenon/config/load-env';
 
 import type { NextConfig } from 'next';
 
+/** Origin of the Cfx.re forum used for account linking (CFX_FORUM_URL, default forum.cfx.re). */
+function cfxForumOrigin(): string {
+  try {
+    return new URL(process.env.CFX_FORUM_URL ?? 'https://forum.cfx.re').origin;
+  } catch {
+    return 'https://forum.cfx.re';
+  }
+}
+
 /**
  * Content Security Policy.
  *
@@ -33,7 +42,10 @@ function contentSecurityPolicy(isDev: boolean): string {
     "font-src 'self' data:",
     `connect-src 'self'${isDev ? ' ws: wss:' : ''}`,
     "frame-src 'self' https://challenges.cloudflare.com",
-    "form-action 'self'",
+    // "Connect Cfx.re" is a same-origin form whose response redirects to the
+    // Cfx.re forum's consent page; browsers check that redirect against
+    // form-action, so the forum origin must be listed.
+    `form-action 'self' ${cfxForumOrigin()}`,
     // Nothing on this site should ever be framed: the control centre has
     // destructive buttons, and clickjacking is exactly how they get clicked.
     "frame-ancestors 'none'",
@@ -44,6 +56,25 @@ function contentSecurityPolicy(isDev: boolean): string {
 }
 
 const isDev = process.env.NODE_ENV !== 'production';
+
+/**
+ * The media CDN as an image source.
+ *
+ * Gallery photographs and the hero poster are served from `R2_PUBLIC_URL`, and
+ * `next/image` answers 400 for any host that is not listed. Read from the
+ * environment rather than hard-coded because the bucket's domain is the
+ * operator's, not ours. Unset or malformed means there is no CDN host to allow.
+ */
+function mediaImagePatterns(): NonNullable<NextConfig['images']>['remotePatterns'] {
+  const raw = process.env.R2_PUBLIC_URL;
+  if (raw === undefined || raw === '') return [];
+  try {
+    const { protocol, hostname, port } = new URL(raw);
+    return [{ protocol: protocol === 'http:' ? 'http' : 'https', hostname, port }];
+  } catch {
+    return [];
+  }
+}
 
 const nextConfig: NextConfig = {
   reactStrictMode: true,
@@ -79,6 +110,7 @@ const nextConfig: NextConfig = {
     '@xenon/applications',
     '@xenon/auth',
     '@xenon/config',
+    '@xenon/contracts',
     '@xenon/core',
     '@xenon/database',
     '@xenon/discord',
@@ -93,13 +125,23 @@ const nextConfig: NextConfig = {
     '@xenon/validation',
   ],
 
-  serverExternalPackages: ['@prisma/client', 'bullmq', 'ioredis', 'pino', 'pino-pretty'],
+  // discord.js is reached through @xenon/discord's shared embed builders; its
+  // optional native codecs (zlib-sync, bufferutil) cannot be bundled.
+  serverExternalPackages: [
+    '@prisma/client',
+    'bullmq',
+    'discord.js',
+    'ioredis',
+    'pino',
+    'pino-pretty',
+  ],
 
   images: {
     formats: ['image/avif', 'image/webp'],
     remotePatterns: [
       { protocol: 'https', hostname: 'cdn.discordapp.com' },
       { protocol: 'https', hostname: 'media.discordapp.net' },
+      ...(mediaImagePatterns() ?? []),
     ],
   },
 

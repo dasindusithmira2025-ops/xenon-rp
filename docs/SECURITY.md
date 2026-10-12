@@ -163,21 +163,21 @@ Fixed-window, in Redis, **fail-open**. A Redis outage must not make the site
 unusable, and everything behind these limits is additionally authorized and
 audited — the limit is an abuse control, not an authorization boundary.
 
-| Bucket             | Limit | Window |
-| ------------------ | ----- | ------ |
-| Sign-in            | 10    | 5 min  |
-| Start application  | 10    | 1 hour |
-| Submit application | 6     | 1 hour |
-| Autosave           | 240   | 5 min  |
-| Issue link code    | 5     | 15 min |
-| Redeem link code   | 20    | 5 min  |
-| Bridge request     | 600   | 1 min  |
-| Create ticket      | 5     | 1 hour |
-| Reply to ticket    | 30    | 10 min |
-| Create report      | 5     | 1 hour |
-| Create appeal      | 3     | 24 h   |
-| Search             | 120   | 1 min  |
-| Upload             | 40    | 1 hour |
+| Bucket                | Limit | Window            |
+| --------------------- | ----- | ----------------- |
+| Sign-in               | 10    | 5 min             |
+| Start application     | 10    | 1 hour            |
+| Submit application    | 6     | 1 hour            |
+| Autosave              | 240   | 5 min             |
+| Connect/unlink Cfx.re | 10    | 15 min            |
+| Bridge admission      | 3000  | 1 min             |
+| Other bridge routes   | 600   | 1 min (per route) |
+| Create ticket         | 5     | 1 hour            |
+| Reply to ticket       | 30    | 10 min            |
+| Create report         | 5     | 1 hour            |
+| Create appeal         | 3     | 24 h              |
+| Search                | 120   | 1 min             |
+| Upload                | 40    | 1 hour            |
 
 ---
 
@@ -228,6 +228,29 @@ integration test that runs an entire file with the queue dead and asserts
 exactly this.
 
 ---
+
+## Worker → Link gateway: HTTP and relay
+
+Every Discord effect is an HMAC-signed gateway request from the worker
+(`LINK_GATEWAY_SECRET`, service `worker`, exact operation path, ±120 s window,
+single-use nonce). Link verifies it with the same code on both transports. In
+`relay` mode (`LINK_GATEWAY_MODE=relay`) Link opens no socket: it pulls the
+signed requests from Core over outbound HTTPS (`relay.pull`) and posts results
+back (`relay.complete`), both signed with `LINK_CORE_SECRET`.
+
+| Concern                                  | Trust boundary                                                    | Notes                                                                                                                                                                                                         |
+| ---------------------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Who may request a Discord effect         | `LINK_GATEWAY_SECRET`, end to end worker → Link                   | Redis and Core can drop, delay or reorder requests but cannot forge them. A captured envelope can be replayed only within 120 s, and Link's nonce cache blocks it (per process, so a Link restart resets it). |
+| What a Discord effect may do             | Link's handler policy (`apps/link-bot/src/gateway/operations.ts`) | Unchanged on both transports: guild only, no privileged/managed/`@everyone` roles, mentions suppressed.                                                                                                       |
+| Who may drain the queue or post results  | `LINK_CORE_SECRET` plus Core's Redis replay guard                 | Only an authenticated Link can claim requests or complete them.                                                                                                                                               |
+| Result integrity, availability, ordering | **Redis**                                                         | Results in Redis are not signed: anyone with Redis write access can forge or delete them. That access already allows injecting or deleting BullMQ jobs, so the relay does not widen exposure.                 |
+| Data at rest                             | Redis                                                             | Request bodies (DM text, Discord ids) sit in Redis for at most the request timeout plus 60 s, the same exposure class as BullMQ payloads.                                                                     |
+
+Each relay request is claimed at most once; job-level delivery stays
+at-least-once through BullMQ retries, as in HTTP mode. If the worker times out
+after Link begins a Discord REST operation, the result may be unknown and a
+retry can repeat the side effect; neither transport provides exactly-once
+delivery. Signatures, bodies and results are never logged.
 
 ## Production configuration
 
