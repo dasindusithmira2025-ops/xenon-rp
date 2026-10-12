@@ -284,7 +284,7 @@ export function SetupConsole({
         <TabsContent value="assets" className="pt-5">
           <PhaseList
             items={plan?.items.filter((item) => item.phase === 'ASSETS') ?? []}
-            empty="No enabled assets. Import a pack with pnpm discord:assets:import, curate the manifest, then plan again."
+            empty="No enabled assets. Import a pack with pnpm guardian:assets:import, curate the manifest, then plan again."
             note="Capacity follows the server's boost level. Required assets upload first; anything that does not fit is reported, never forced."
           />
         </TabsContent>
